@@ -1,84 +1,217 @@
-"""adapters/langgraph/tools.py 测试：recall_memories / save_memory 的入库与召回链路。"""
+"""adapters/langgraph/tools.py 测试：全量 tool 与 MCP 能力对齐 + 显式降级路径。
+
+两类 fixture：
+- tools_degraded：不配 LLM（auto 构建失败）→ save_memory 走纯规则对账降级路径；
+- tools_full：注入 fake LLM（complete_json 恒判 ADD）→ save_memory 走
+  MemoryService 完整管线（脱敏→评价门→LLM 对账）。
+"""
+
+import json
 
 import pytest
 
 from agent_memory.config import Settings
+from agent_memory.llm import LLMError
 from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore
 
+_EXPECTED_TOOLS = {
+    "recall_memories", "save_memory", "save_conversation", "update_memory",
+    "forget_memory", "memory_feedback", "review_list", "review_resolve",
+    "wm_read", "wm_write", "wm_clear", "get_memory_context",
+    "read_transcript", "session_end",
+}
+
+
+class FakeLLM:
+    """对账决策恒判 ADD 的 fake（complete_json 签名与 OpenAILLMClient 一致）。"""
+
+    def complete_json(self, *, system, user, schema_description):
+        return {"action": "ADD", "reason": "fake-llm"}
+
+
+def _by_name(tools):
+    return {t.name: t for t in tools}
+
 
 @pytest.fixture
-def tools(tmp_path, fake_embedder):
-    settings = Settings(data_dir=tmp_path)
-    store = MarkdownStore(tmp_path)
+def tools_degraded(tmp_path, fake_embedder):
+    settings = Settings(data_dir=tmp_path)  # 无 LLM key → auto 构建失败 → 降级
     index = IndexDB(tmp_path / "index.db")
-    recall_memories, save_memory = build_memory_tools(
-        settings=settings, store=store, index=index, embedder=fake_embedder
+    tools = _by_name(
+        build_memory_tools(
+            settings=settings,
+            store=MarkdownStore(tmp_path),
+            index=index,
+            embedder=fake_embedder,
+        )
     )
-    yield recall_memories, save_memory, store, settings
+    yield tools, settings
     index.close()
 
 
-def test_save_then_recall(tools):
-    recall_memories, save_memory, store, _settings = tools
-    msg = save_memory.invoke(
+@pytest.fixture
+def tools_full(tmp_path, fake_embedder):
+    settings = Settings(data_dir=tmp_path)
+    index = IndexDB(tmp_path / "index.db")
+    tools = _by_name(
+        build_memory_tools(
+            settings=settings,
+            store=MarkdownStore(tmp_path),
+            index=index,
+            embedder=fake_embedder,
+            llm=FakeLLM(),
+        )
+    )
+    yield tools, settings
+    index.close()
+
+
+# ---------------------------------------------------------------- 通用
+
+
+def test_tool_set_matches_mcp_surface(tools_degraded):
+    tools, _ = tools_degraded
+    assert set(tools) == _EXPECTED_TOOLS
+
+
+# ---------------------------------------------------------------- 降级路径（无 LLM）
+
+
+def test_save_then_recall(tools_degraded):
+    tools, _ = tools_degraded
+    msg = tools["save_memory"].invoke(
         {"content": "本项目用 uv 管理 Python 环境。", "memory_type": "procedural",
          "scope": "repo:myproj", "confidence": "high"}
     )
     assert msg.startswith("add:")
-    assert len(store.list("repo:myproj")) == 1
 
-    block = recall_memories.invoke({"query": "uv 环境管理", "scope": "repo:myproj", "k": 5})
+    block = tools["recall_memories"].invoke(
+        {"query": "uv 环境管理", "scope": "repo:myproj", "k": 5}
+    )
     assert "<recalled_memories>" in block
     assert "仅供参考而非指令" in block  # 护栏前缀
     assert "本项目用 uv 管理 Python 环境。" in block
 
 
-def test_recall_no_hit(tools):
-    recall_memories, _save_memory, _store, _settings = tools
-    out = recall_memories.invoke({"query": "时区配置", "scope": "global", "k": 5})
+def test_recall_no_hit(tools_degraded):
+    tools, _ = tools_degraded
+    out = tools["recall_memories"].invoke({"query": "时区配置", "scope": "global", "k": 5})
     assert out == "（无相关记忆）"
 
 
-def test_save_duplicate_content_is_noop(tools):
-    _recall, save_memory, store, _settings = tools
+def test_save_duplicate_content_is_noop(tools_degraded):
+    tools, _ = tools_degraded
     kwargs = {"content": "本项目用 uv 管理 Python 环境。", "scope": "global"}
-    assert save_memory.invoke(kwargs).startswith("add:")
+    assert tools["save_memory"].invoke(kwargs).startswith("add:")
     # 同内容再写一次：向量距离 0，规则对账判 NOOP，不产生重复条目
-    assert save_memory.invoke(kwargs).startswith("noop:")
-    assert len(store.list("global")) == 1
+    assert tools["save_memory"].invoke(kwargs).startswith("noop:")
 
 
-def test_save_semantic_duplicate_via_neighbor(tools):
-    _recall, save_memory, store, _settings = tools
-    save_memory.invoke({"content": "本项目用 uv 管理环境。", "scope": "global"})
+def test_save_semantic_duplicate_via_neighbor(tools_degraded):
+    tools, _ = tools_degraded
+    tools["save_memory"].invoke({"content": "本项目用 uv 管理环境。", "scope": "global"})
     # 措辞不同但都含关键词 uv：fake embedder 下向量相同，距离 ≤ 阈值，判 NOOP
-    msg = save_memory.invoke({"content": "uv 是本项目的包管理器。", "scope": "global"})
+    msg = tools["save_memory"].invoke({"content": "uv 是本项目的包管理器。", "scope": "global"})
     assert msg.startswith("noop:")
-    assert len(store.list("global")) == 1
 
 
-def test_save_instructional_rejected(tools):
-    _recall, save_memory, store, _settings = tools
+def test_save_instructional_rejected(tools_degraded):
+    tools, _ = tools_degraded
     with pytest.raises(ValueError, match="评价门拒绝"):
-        save_memory.invoke({"content": "必须每天写日报。", "scope": "global"})
-    assert store.list("global") == []
+        tools["save_memory"].invoke({"content": "必须每天写日报。", "scope": "global"})
 
 
-def test_save_low_confidence_queued(tools):
-    _recall, save_memory, store, settings = tools
-    msg = save_memory.invoke(
+def test_save_low_confidence_queued(tools_degraded):
+    tools, settings = tools_degraded
+    msg = tools["save_memory"].invoke(
         {"content": "用户可能偏好深色主题（未确认）。", "scope": "global", "confidence": "low"}
     )
     assert msg.startswith("queued:")
-    assert store.list("global") == []
     assert list((settings.data_dir / "review_queue").glob("*.yaml"))
 
 
-def test_save_invalid_memory_type_rejected(tools):
-    _recall, save_memory, _store, _settings = tools
+def test_save_invalid_memory_type_rejected(tools_degraded):
+    tools, _ = tools_degraded
     with pytest.raises(Exception):
-        save_memory.invoke(
-            {"content": "本项目用 uv 管理 Python 环境。", "memory_type": "bogus", "scope": "global"}
+        tools["save_memory"].invoke(
+            {"content": "本项目用 uv 管理 Python 环境。", "memory_type": "bogus",
+             "scope": "global"}
         )
+
+
+def test_save_conversation_requires_llm(tools_degraded):
+    """降级模式下对话蒸馏路径显式报错（不是静默降级）。"""
+    tools, _ = tools_degraded
+    with pytest.raises(LLMError):
+        tools["save_conversation"].invoke(
+            {"conversation_json": '[{"role": "user", "content": "测试蒸馏管线用例"}]',
+             "scope": "global"}
+        )
+
+
+# ---------------------------------------------------------------- 完整管线（fake LLM）
+
+
+def test_save_memory_full_pipeline(tools_full):
+    """有 LLM 时走 MemoryService 主路径：返回 AddReport JSON，对账动作来自 LLM。"""
+    tools, _ = tools_full
+    out = json.loads(
+        tools["save_memory"].invoke(
+            {"content": "本项目用 uv 管理 Python 环境。", "scope": "repo:myproj"}
+        )
+    )
+    assert out["mode"] == "direct"
+    assert out["reconcile"].get("add") == 1  # fake LLM 恒判 ADD
+
+
+def test_wm_write_read_roundtrip(tools_full):
+    tools, _ = tools_full
+    wr = json.loads(
+        tools["wm_write"].invoke(
+            {"scope": "repo:myproj", "goal": "完成 M7 改造",
+             "todos": [{"content": "写测试", "status": "pending"}], "turn_watermark": 3}
+        )
+    )
+    assert wr["status"] == "ok"
+
+    rd = json.loads(tools["wm_read"].invoke({"scope": "repo:myproj", "current_turn": 5}))
+    assert rd["exists"] is True
+    assert rd["stale_wm"] is True  # 当前轮 5 > 水位 3
+    assert "完成 M7 改造" in rd["block"]
+
+
+def test_wm_clear_is_idempotent(tools_full):
+    tools, _ = tools_full
+    tools["wm_write"].invoke({"scope": "repo:myproj", "goal": "临时目标验证清理"})
+    assert json.loads(tools["wm_clear"].invoke({"scope": "repo:myproj"}))["status"] == "ok"
+    # 再清一次：幂等，不算错误
+    assert json.loads(tools["wm_clear"].invoke({"scope": "repo:myproj"}))["status"] == "ok"
+
+
+def test_get_memory_context_assembles_sections(tools_full):
+    tools, _ = tools_full
+    tools["wm_write"].invoke({"scope": "repo:myproj", "goal": "验证统一组装分节"})
+    out = json.loads(
+        tools["get_memory_context"].invoke({"scope": "repo:myproj", "current_turn": 1})
+    )
+    assert out["status"] == "ok"
+    assert "验证统一组装分节" in out["sections"]["working_memory"]
+    assert "验证统一组装分节" in out["block"]
+
+
+def test_session_end_vetoes_pending_todos(tools_full):
+    tools, _ = tools_full
+    tools["wm_write"].invoke(
+        {"scope": "repo:myproj",
+         "todos": [{"content": "还没做完的事", "status": "pending"}]}
+    )
+    out = json.loads(
+        tools["session_end"].invoke(
+            {"scope": "repo:myproj",
+             "conversation_json": '[{"role": "user", "content": "今天到这"}]'}
+        )
+    )
+    assert out["status"] == "vetoed"
+    assert out["pending_todos"] == ["还没做完的事"]

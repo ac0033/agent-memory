@@ -2,7 +2,7 @@
 
 演示一个自写的 LangGraph ReAct agent 零改造接入 agent-memory：
 - build_system_context(scope)：profile 类记忆常驻 system prompt；
-- build_memory_tools()：recall_memories / save_memory 两个 tool 挂进 ReAct loop；
+- build_memory_tools()：与 MCP 全量对齐的记忆 tool 集合挂进 ReAct loop；
 - AgentMemoryStore：作为 LangGraph BaseStore 传给 graph（跨 thread 长期记忆层）。
 
 剧情：session 1（thread s1）用户说"记住：我偏好用 uv 管理 Python 环境"；

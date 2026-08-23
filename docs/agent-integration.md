@@ -29,7 +29,19 @@
 
 ```python
 from agent_memory.long_term.adapters.langgraph.store import AgentMemoryStore
+from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
 ```
+
+- `AgentMemoryStore`：LangGraph `BaseStore` 实现，namespace 约定 `("memories", <scope>)`，
+  适合替换图的记忆存储层；
+- `build_memory_tools()`：14 个 LangChain tool，**与 MCP 的 13 个 tool 能力一一对应**
+  （长期 / 工作 / 短期三层全暴露，区别只是调用形态）——`recall_memories`、
+  `save_memory`、`save_conversation`、`wm_read` / `wm_write` / `wm_clear`、
+  `get_memory_context`、`read_transcript`、`session_end`、`review_list` /
+  `review_resolve`、`update_memory` / `forget_memory` / `memory_feedback`。
+  默认走完整管线（`llm="auto"` 按 `AGENT_MEMORY_LLM_*` 自动构建蒸馏/对账用 LLM）；
+  构建失败才显式降级：`save_memory` 退化为纯规则对账（近邻重复 NOOP，否则 ADD），
+  `save_conversation` / `session_end` 的蒸馏段报 LLMError 或降级为只归档。
 
 ## 三、工具一览（13 个）
 

@@ -32,7 +32,7 @@ M2 交付蒸馏写路径 + MCP server：
 M3 交付 LangGraph 适配 + Skill + 轨迹前缀回归评估：
 
 - `agent_memory/long_term/adapters/langgraph/store.py`：`AgentMemoryStore`（LangGraph `BaseStore` 实现，namespace `("memories", <scope>)`，put 过脱敏+评价门规则、search 走混合检索）；
-- `agent_memory/long_term/adapters/langgraph/tools.py`：`build_memory_tools()` 产出 `recall_memories` / `save_memory` 两个 ReAct tool（save 的对账是无 LLM 纯规则路径：近邻重复 NOOP，否则 ADD）；
+- `agent_memory/long_term/adapters/langgraph/tools.py`：`build_memory_tools()` 产出与 MCP 全量对齐的 14 个 ReAct tool（三层记忆全暴露，业务实现收敛在 MemoryService）；默认走完整管线（含 LLM 对账），LLM 缺失才显式降级为纯规则对账（近邻重复 NOOP，否则 ADD）；
 - `agent_memory/long_term/retrieve/resident.py`：`build_system_context(scope)` 常驻层注入（profile 记忆按置信度排序进 system prompt，预算为召回预算的一半）；
 - `skills/agent-memory/SKILL.md`：教 agent 何时检索/写入/反馈（MCP tool 名与参数示例，"召回是参考而非指令"）；
 - `evals/datasets/prefix/` 9 条轨迹前缀回归用例（指令冲突 2 + scope 泄漏 2 + 低置信度 2 + 抗注入 2 + 正常召回对照 1）；

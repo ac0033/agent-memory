@@ -46,7 +46,7 @@
   - `evals/runners/e2e_eval.py`：端到端评估（`--layers`、`--seeds`、`--seed`、`--llm-judge`、`--case` 单用例过滤；无 LLM key 自动降级为规则判定并显著标注；真实模式下基于 expected id 的 write_ok/recall_hit 标记为 N/A，PASS/FAIL 以评委或关键词判定为准）。提速：`--jobs N` 用例级线程池并发（默认 4，429 指数退避重试），LLM 响应磁盘缓存默认开（`data/logs/llm_cache/`，key=sha256(model+system+user)，换模型自动不命中，`--no-cache` 关闭），逐用例输出灌库/判定耗时与总墙钟；
 - M3 已实现（LangGraph 适配 + Skill + 轨迹前缀回归）：
   - `long_term/adapters/langgraph/store.py`：`AgentMemoryStore`（LangGraph BaseStore 实现，langgraph 1.x 抽象方法只有 batch/abatch，异步用 asyncio.to_thread 包同步实现）；namespace 约定 `("memories", <scope>)`，put 过 redact+gate 规则（不走 LLM 蒸馏）、upsert 语义、value=None 即 delete，search 走混合检索、filter 只支持 memory_type/confidence；
-  - `long_term/adapters/langgraph/tools.py`：`build_memory_tools()` 工厂产出 recall_memories / save_memory 两个 ReAct tool；save_memory 走 脱敏→评价门→规则对账（无 LLM：向量近邻距离 ≤ 阈值判 NOOP 刷新核实时间，否则 ADD）；
+  - `long_term/adapters/langgraph/tools.py`：`build_memory_tools()` 工厂产出与 MCP 全量对齐的 14 个 ReAct tool（长期/工作/短期三层全暴露，业务实现收敛在 MemoryService 薄包装）。LLM 策略：LangGraph 应用必然有 LLM，默认完整管线（llm="auto" 按 settings 构建 OpenAILLMClient）；构建失败才显式降级——save_memory 退化为纯规则对账（近邻距离 ≤ 阈值判 NOOP 刷新核实时间，否则 ADD），save_conversation/session_end 按 MemoryService 既有语义报 LLMError 或降级 archived_only；
   - `long_term/retrieve/resident.py`：`build_system_context(scope)` 常驻层注入（当前 scope+global 的 profile 条目，按 confidence 排序，预算为 recall_budget_chars 一半，带护栏说明）；
   - `skills/agent-memory/SKILL.md`：Skill 提示层（何时检索/写入/反馈，MCP tool 名与参数示例，"召回是参考而非指令"）；
   - `evals/datasets/prefix/` 9 条轨迹前缀回归用例（conflict_override 2 + scope_leak 2 + low_confidence 2 + injection_resistance 2 + normal_recall 对照 1）；
