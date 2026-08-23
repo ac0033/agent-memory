@@ -1,0 +1,39 @@
+id: layer2-11
+layer: 2
+category: disambiguation
+description: 多对象消歧：两个项目各自的 Python 版本（legacy-etl 3.9 vs recsys 3.12）
+sessions:
+  - session_id: s1
+    date: 2026-03-30
+    turns:
+      - role: user
+        content: "两个项目的 Python 版本不一样，注意：legacy-etl 老项目跑 Python 3.9，动它的时候别用新语法；recsys 是新项目，用 Python 3.12。"
+      - role: assistant
+        content: "明白：legacy-etl 用 Python 3.9（避免新语法），recsys 用 Python 3.12。"
+    memories:
+      - id: legacy-etl-python-39
+        content: "legacy-etl 项目使用 Python 3.9，改动时不能使用更新的语法特性。"
+        memory_type: semantic
+      - id: recsys-python-312
+        content: "recsys 项目使用 Python 3.12。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-05-19
+    turns:
+      - role: user
+        content: "今天在 recsys 上用了 match 语句，跑得很顺；legacy-etl 那边千万别这么写。"
+      - role: assistant
+        content: "对，match 语句是 3.10+ 的语法，只能在 recsys（3.12）用，legacy-etl（3.9）不支持。"
+    memories: []
+question: "我现在要给 legacy-etl 加功能，能用 Python 的 match 语句吗？"
+reference_answer: "不能。legacy-etl 跑 Python 3.9，match 是 3.10 才有的语法；match 只能在 recsys（Python 3.12）里用。"
+rubric:
+  essential:
+    - "回答 legacy-etl 不能用 match 语句"
+    - "说明原因是 legacy-etl 为 Python 3.9，match 需 3.10+"
+  pitfalls:
+    - "把 recsys 的 3.12 环境安到 legacy-etl 头上，回答可以用 match"
+memories_expected:
+  - id: legacy-etl-python-39
+    content: "legacy-etl 项目使用 Python 3.9，改动时不能使用更新的语法特性。"
+    memory_type: semantic

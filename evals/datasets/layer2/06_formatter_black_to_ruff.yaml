@@ -1,0 +1,41 @@
+id: layer2-06
+layer: 2
+category: temporal
+description: 时序冲突：代码格式化工具从 black 换成 ruff format
+sessions:
+  - session_id: s1
+    date: 2026-02-10
+    turns:
+      - role: user
+        content: "仓库格式化用 black，行宽 100，pre-commit 里挂着。"
+      - role: assistant
+        content: "好，格式化工具为 black，行宽 100，已挂 pre-commit。"
+    memories:
+      - id: formatter-black
+        content: "本仓库代码格式化用 black，行宽 100，挂在 pre-commit。"
+        memory_type: procedural
+  - session_id: s2
+    date: 2026-06-08
+    turns:
+      - role: user
+        content: "工具链收敛一下：格式化从 black 换成 ruff format，行宽还是 100，black 从 pre-commit 和依赖里都移除了。"
+      - role: assistant
+        content: "收到，格式化工具从 black 换成 ruff format，行宽保持 100，black 已移除。"
+    memories:
+      - id: formatter-ruff
+        content: "本仓库代码格式化已从 black 换成 ruff format，行宽仍为 100，black 已从 pre-commit 与依赖中移除。"
+        memory_type: procedural
+        supersedes: formatter-black
+question: "这个仓库现在代码格式化用什么工具、行宽多少？"
+reference_answer: "现在用 ruff format，行宽 100。之前用 black，已从 pre-commit 和依赖中移除。"
+rubric:
+  essential:
+    - "回答当前格式化工具是 ruff format"
+    - "回答行宽仍是 100"
+  pitfalls:
+    - "回答用 black 格式化（旧信息已失效）"
+    - "编造行宽改为 88 或 120（会话明确保持 100）"
+memories_expected:
+  - id: formatter-ruff
+    content: "本仓库代码格式化已从 black 换成 ruff format，行宽仍为 100，black 已从 pre-commit 与依赖中移除。"
+    memory_type: procedural

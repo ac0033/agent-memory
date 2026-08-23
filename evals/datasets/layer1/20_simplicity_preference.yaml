@@ -1,0 +1,26 @@
+id: layer1-20
+layer: 1
+description: 测试 agent 能否记住用户的代码品味偏好——简单直白、反对过度抽象
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "我的代码口味先跟你说清楚：能三行写完的别整成抽象基类加工厂。重复两三次可以忍，抽象错了比重复难改得多。"
+      - role: assistant
+        content: "明白：优先简单直白的实现，容忍少量重复，不做 speculative 的抽象。"
+      - role: user
+        content: "对，设计模式只有在确实有第二种实现要接的时候才用。"
+question: "给我写代码时在抽象程度上应该把握什么原则？什么时候才用设计模式？"
+reference_answer: "优先简单直白的实现，能三行写完就不引入抽象基类/工厂；容忍两三次重复（错误的抽象比重复更难改）；设计模式只在确实存在第二种实现需要接入时才使用。"
+rubric:
+  essential:
+    - "回答优先简单直白、避免过度抽象"
+    - "回答容忍少量重复的理由（抽象错了比重复难改）"
+    - "回答设计模式的使用前提：确有第二种实现"
+  pitfalls:
+    - "建议优先做通用抽象或提前设计扩展点（与会话偏好相反）"
+    - "编造用户推崇某个具体设计模式（会话中未提及任何具体模式）"
+memories_expected:
+  - id: user-code-style-simplicity
+    content: "用户的代码品味：优先简单直白实现，容忍两三次重复（错误的抽象比重复更难改）；设计模式只在确有第二种实现需要接入时才使用。"
+    memory_type: profile

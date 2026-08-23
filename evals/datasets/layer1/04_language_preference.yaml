@@ -1,0 +1,28 @@
+id: layer1-04
+layer: 1
+description: 测试 agent 能否记住用户的语言偏好——中文交流、英文代码注释
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "约定一下沟通风格：解释和讨论都用中文，但写进代码里的注释一律用英文，我团队协作要求这样。"
+      - role: assistant
+        content: "明白：对话用中文，代码注释用英文。"
+      - role: user
+        content: "commit message 也用英文。"
+      - role: assistant
+        content: "好的，commit message 同样用英文。"
+question: "跟我协作的时候，回复语言、代码注释和 commit message 分别应该用什么语言？"
+reference_answer: "回复和讨论用中文；代码注释用英文；commit message 用英文。"
+rubric:
+  essential:
+    - "指出对话/解释用中文"
+    - "指出代码注释用英文"
+    - "指出 commit message 用英文"
+  pitfalls:
+    - "声称 commit message 用中文（会话中明确说用英文）"
+    - "声称所有输出都只用中文，忽略代码注释英文的约定"
+memories_expected:
+  - id: user-language-preference
+    content: "用户偏好：对话与解释用中文，代码注释和 commit message 用英文（团队协作要求）。"
+    memory_type: profile

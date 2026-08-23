@@ -1,0 +1,27 @@
+id: layer1-11
+layer: 1
+description: 测试 agent 能否记住某次会话中做出的技术选型决策及其理由（事件性记忆）
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "我们之前在纠结要不要把数据库从 SQLite 换成 PostgreSQL，今天定一下。"
+      - role: assistant
+        content: "从现状看：单机部署、数据量 2GB 以内、没有多实例写入，SQLite 够用；PostgreSQL 的收益主要是并发写入和 JSONB 查询。"
+      - role: user
+        content: "那就定了：继续用 SQLite，不迁移。等出现多实例部署需求再说。"
+      - role: assistant
+        content: "记录决策：维持 SQLite，触发重新评估的条件是出现多实例部署需求。"
+question: "我们关于数据库选型最后做了什么决定？什么情况下需要重新评估？"
+reference_answer: "2026 年的这次会话中决定：继续用 SQLite，不迁移 PostgreSQL。重新评估的触发条件是出现多实例部署需求。"
+rubric:
+  essential:
+    - "回答决定是维持 SQLite、不迁移"
+    - "回答重新评估的触发条件是多实例部署需求"
+  pitfalls:
+    - "回答决定迁移到 PostgreSQL（与会话结论相反）"
+    - "编造决定的具体日期或会议纪要链接（会话中未给出）"
+memories_expected:
+  - id: decision-stay-on-sqlite
+    content: "技术选型决策：维持 SQLite，不迁移 PostgreSQL（单机部署、数据量 2GB 内）；触发重新评估的条件是出现多实例部署需求。"
+    memory_type: episodic

@@ -1,0 +1,26 @@
+id: layer1-08
+layer: 1
+description: 测试 agent 能否记住用户的分支命名习惯——feature/ 前缀加 issue 号
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "我开分支的习惯是 feature/<issue号>-<短描述>，比如 feature/123-add-login。bug 修复用 fix/ 前缀，格式一样。"
+      - role: assistant
+        content: "明白：功能分支 feature/<issue号>-<短描述>，修复分支 fix/<issue号>-<短描述>。"
+      - role: user
+        content: "对，短描述用英文小写加连字符，别用下划线。"
+question: "如果要给 issue 45（加一个导出功能）开分支，分支名应该叫什么？修复类分支呢？"
+reference_answer: "功能分支形如 feature/45-add-export（feature/ 前缀 + issue 号 + 英文小写连字符短描述）；修复类分支用 fix/ 前缀，格式相同。"
+rubric:
+  essential:
+    - "给出 feature/45-xxx 形式的分支名"
+    - "指出修复分支用 fix/ 前缀"
+    - "指出短描述用英文小写连字符，不用下划线"
+  pitfalls:
+    - "使用下划线命名（如 feature/45_add_export，会话中明确禁止）"
+    - "编造会话中未提过的前缀（如 bugfix/、hotfix/ 替代 fix/）"
+memories_expected:
+  - id: user-branch-naming-convention
+    content: "用户的分支命名习惯：功能分支 feature/<issue号>-<短描述>，修复分支 fix/<issue号>-<短描述>，短描述用英文小写连字符，不用下划线。"
+    memory_type: procedural

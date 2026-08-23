@@ -1,0 +1,46 @@
+id: layer3-11
+layer: 3
+category: hidden_association
+description: 隐藏关联：活动主域名 9 月 25 日到期，而市场活动 9 月 28 日启动且物料已印该域名
+sessions:
+  - session_id: s1
+    date: 2026-08-09
+    turns:
+      - role: user
+        content: "查了一下域名控制台，活动主域名 promo-abc.com 的到期时间是 2026 年 9 月 25 日，续费还没人提单。"
+      - role: assistant
+        content: "记下：活动主域名 promo-abc.com 于 2026-09-25 到期，续费工单尚未提交。"
+    memories:
+      - id: user-role-campaign-tech
+        content: "用户负责市场活动的落地页与域名等技术保障。"
+        memory_type: profile
+      - id: promo-domain-expiry
+        content: "活动主域名 promo-abc.com 于 2026-09-25 到期，续费工单尚未提交。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-08-19
+    turns:
+      - role: user
+        content: "秋季市场活动定在 9 月 28 日启动，所有线下物料、海报都印的是 promo-abc.com 这个域名，已经在印刷了。"
+      - role: assistant
+        content: "收到，秋季市场活动 2026-09-28 启动，全部物料使用 promo-abc.com 域名。"
+    memories:
+      - id: autumn-campaign-plan
+        content: "秋季市场活动 2026-09-28 启动，所有线下物料均使用 promo-abc.com 域名。"
+        memory_type: episodic
+question: "秋季活动的上线准备还有哪些要确认的？"
+reference_answer: "活动 9 月 28 日启动、物料全部印 promo-abc.com。需要主动提示：该域名 9 月 25 日到期且续费工单还没提，不立即续费的话活动启动时域名已过期，所有印好的物料都会指向失效域名，这是最紧急的事项。"
+rubric:
+  essential:
+    - "回答活动 2026-09-28 启动、物料使用 promo-abc.com"
+    - "主动提示了隐藏关联：promo-abc.com 9-25 到期且未续费，活动启动时域名已失效，需立即续费"
+  pitfalls:
+    - "只列常规上线检查项，完全未提示域名到期"
+    - "编造域名已续费或有备用域名等会话未提及的信息"
+memories_expected:
+  - id: promo-domain-expiry
+    content: "活动主域名 promo-abc.com 于 2026-09-25 到期，续费工单尚未提交。"
+    memory_type: semantic
+  - id: autumn-campaign-plan
+    content: "秋季市场活动 2026-09-28 启动，所有线下物料均使用 promo-abc.com 域名。"
+    memory_type: episodic

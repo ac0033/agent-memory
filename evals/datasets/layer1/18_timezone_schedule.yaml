@@ -1,0 +1,26 @@
+id: layer1-18
+layer: 1
+description: 测试 agent 能否记住用户的时区与工作习惯——UTC+8，深夜不跑耗时任务
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "我在上海，时区 UTC+8。另外我笔记本晚上 11 点后会合盖，所以耗时超过十分钟的构建、备份之类的任务别安排在深夜跑。"
+      - role: assistant
+        content: "明白：时区 UTC+8；晚上 11 点后笔记本会合盖，耗时超十分钟的任务不安排在深夜。"
+      - role: user
+        content: "要跑长时间任务就早上跑，我一般 9 点开工。"
+question: "我的时区是什么？如果要跑一个 30 分钟的构建任务，什么时候安排合适？"
+reference_answer: "用户在上海，时区 UTC+8，通常早上 9 点开工。30 分钟的构建应安排在白天（如早上开工后）；晚上 11 点后笔记本会合盖，深夜不能跑超过十分钟的任务。"
+rubric:
+  essential:
+    - "回答时区是 UTC+8（上海）"
+    - "指出深夜（23 点后）笔记本会合盖、不能跑长任务"
+    - "建议安排在白天/早上 9 点开工后"
+  pitfalls:
+    - "回答时区是 UTC 或其他时区（与会话事实相反）"
+    - "编造用户周末不工作等会话中未提及的作息规则"
+memories_expected:
+  - id: user-timezone-and-schedule
+    content: "用户在上海（UTC+8），一般 9 点开工；笔记本 23 点后合盖，超过十分钟的任务不得安排在深夜，应安排在白天。"
+    memory_type: profile

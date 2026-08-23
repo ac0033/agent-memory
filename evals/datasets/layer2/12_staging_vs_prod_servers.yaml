@@ -1,0 +1,40 @@
+id: layer2-12
+layer: 2
+category: disambiguation
+description: 多对象消歧：staging 与 prod 两台服务器的 SSH 端口和部署方式
+sessions:
+  - session_id: s1
+    date: 2026-04-05
+    turns:
+      - role: user
+        content: "部署目标两台机器：staging 是 staging.internal，SSH 端口 2222，随便折腾；prod 是 prod.internal，SSH 端口 22，动 prod 必须有变更单。"
+      - role: assistant
+        content: "记下：staging（staging.internal:2222）可自由实验；prod（prod.internal:22）变更需变更单。"
+    memories:
+      - id: staging-server-access
+        content: "staging 服务器为 staging.internal，SSH 端口 2222，可自由实验。"
+        memory_type: semantic
+      - id: prod-server-access
+        content: "prod 服务器为 prod.internal，SSH 端口 22，任何变更必须先开变更单。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-06-12
+    turns:
+      - role: user
+        content: "刚才在 staging 上把服务搞挂了一次，已恢复，反正 staging 就是用来折腾的。"
+      - role: assistant
+        content: "了解，staging 环境可自由实验；prod 仍须走变更单流程。"
+    memories: []
+question: "我要上 prod 改个配置，SSH 连哪里？有什么前置流程？"
+reference_answer: "prod 服务器是 prod.internal，SSH 端口 22；上 prod 前必须先开变更单。注意区别于 staging（staging.internal，端口 2222，可自由实验）。"
+rubric:
+  essential:
+    - "回答 prod 主机 prod.internal、SSH 端口 22"
+    - "回答 prod 变更需要变更单"
+  pitfalls:
+    - "把 staging 的端口 2222 安到 prod 头上"
+    - "遗漏变更单要求，或说 prod 可以随意改"
+memories_expected:
+  - id: prod-server-access
+    content: "prod 服务器为 prod.internal，SSH 端口 22，任何变更必须先开变更单。"
+    memory_type: semantic

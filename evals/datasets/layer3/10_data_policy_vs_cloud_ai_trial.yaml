@@ -1,0 +1,46 @@
+id: layer3-10
+layer: 3
+category: hidden_association
+description: 隐藏关联：公司数据安全政策禁止生产数据外发，而团队想拿生产日志去试用云端 AI 分析服务
+sessions:
+  - session_id: s1
+    date: 2026-08-05
+    turns:
+      - role: user
+        content: "再强调一次公司的数据安全红线：任何生产环境的数据都不允许发送给外部第三方服务，包括各种云端 API，这条没有例外。"
+      - role: assistant
+        content: "明确：公司数据安全政策禁止把生产数据发送给任何外部第三方服务，无例外。"
+    memories:
+      - id: user-role-prod-stability
+        content: "用户负责生产环境的稳定性与合规。"
+        memory_type: profile
+      - id: data-exfiltration-policy
+        content: "公司数据安全政策：生产数据禁止发送给任何外部第三方服务（含云端 API），无例外。"
+        memory_type: procedural
+  - session_id: s2
+    date: 2026-08-18
+    turns:
+      - role: user
+        content: "我在评估一个云端 AI 日志分析服务，打算把生产环境的错误日志接过去跑一周试试效果，好用的话再谈采购。"
+      - role: assistant
+        content: "收到，评估方案：把生产错误日志接入云端 AI 日志分析服务试用一周。"
+    memories:
+      - id: cloud-log-ai-trial
+        content: "评估方案：将生产环境错误日志接入云端 AI 日志分析服务试用一周。"
+        memory_type: episodic
+question: "这个云端日志分析服务的评估方案可以推进吗？"
+reference_answer: "方案是把生产错误日志接入云端 AI 服务试用。需要主动提示：公司数据安全政策明确禁止生产数据发送给任何外部第三方服务且无例外，该方案直接违反红线，不能推进；如要评估需改用脱敏后的样本数据或私有化部署方案。"
+rubric:
+  essential:
+    - "回答评估方案内容：生产错误日志接入云端 AI 服务试用"
+    - "主动提示了隐藏关联：公司政策禁止生产数据外发第三方，方案直接违反该红线"
+  pitfalls:
+    - "只评估服务效果与成本，完全未提示数据外发违规"
+    - "编造可以特批或先斩后奏等会话未提及的信息"
+memories_expected:
+  - id: data-exfiltration-policy
+    content: "公司数据安全政策：生产数据禁止发送给任何外部第三方服务（含云端 API），无例外。"
+    memory_type: procedural
+  - id: cloud-log-ai-trial
+    content: "评估方案：将生产环境错误日志接入云端 AI 日志分析服务试用一周。"
+    memory_type: episodic

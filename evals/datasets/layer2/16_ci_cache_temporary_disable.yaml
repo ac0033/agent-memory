@@ -1,0 +1,40 @@
+id: layer2-16
+layer: 2
+category: stale
+description: 有效 vs 失效：CI 缓存曾因故障临时关闭，故障修复后已恢复开启
+sessions:
+  - session_id: s1
+    date: 2026-05-08
+    turns:
+      - role: user
+        content: "CI 缓存服务挂了，先在流水线配置里临时把缓存关了，注意这只是临时的，修好要开回来。"
+      - role: assistant
+        content: "收到，CI 缓存已临时关闭，待缓存服务修复后需恢复开启。"
+    memories:
+      - id: ci-cache-disabled
+        content: "CI 缓存因缓存服务故障临时关闭，修复后需恢复开启。"
+        memory_type: episodic
+  - session_id: s2
+    date: 2026-05-22
+    turns:
+      - role: user
+        content: "缓存服务修好了，CI 缓存已经重新开启，之前那个临时关闭的配置撤掉了。"
+      - role: assistant
+        content: "明白，CI 缓存已恢复开启，临时关闭的配置已撤销。"
+    memories:
+      - id: ci-cache-reenabled
+        content: "CI 缓存服务已修复，缓存重新开启，此前的临时关闭配置已撤销。"
+        memory_type: episodic
+        supersedes: ci-cache-disabled
+question: "现在 CI 流水线的缓存是开着的还是关着的？"
+reference_answer: "现在是开着的。5 月曾因缓存服务故障临时关闭，服务修复后已重新开启，临时配置已撤销。"
+rubric:
+  essential:
+    - "回答 CI 缓存当前是开启状态"
+    - "说明此前的关闭是临时措施、已撤销"
+  pitfalls:
+    - "回答缓存仍处于关闭状态（临时信息已过期）"
+memories_expected:
+  - id: ci-cache-reenabled
+    content: "CI 缓存服务已修复，缓存重新开启，此前的临时关闭配置已撤销。"
+    memory_type: episodic

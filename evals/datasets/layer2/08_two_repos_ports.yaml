@@ -1,0 +1,44 @@
+id: layer2-08
+layer: 2
+category: disambiguation
+description: 多对象消歧：两个仓库各自的 dev server 端口约定，问其中一个
+sessions:
+  - session_id: s1
+    date: 2026-05-06
+    turns:
+      - role: user
+        content: "记一下两个仓库的端口约定：trading-api 的 dev server 固定 8765，data-pipeline 的 dev server 固定 9100，别起串了。"
+      - role: assistant
+        content: "收到：trading-api 用 8765，data-pipeline 用 9100。"
+      - role: user
+        content: "另外 trading-api 本地连的是 SQLite（data/trading.db），data-pipeline 连的是公司 PostgreSQL 测试库。"
+      - role: assistant
+        content: "明白：trading-api 本地用 SQLite（data/trading.db），data-pipeline 连公司 PostgreSQL 测试库。"
+    memories:
+      - id: trading-api-dev-port
+        content: "trading-api 仓库 dev server 固定端口 8765，本地数据库为 SQLite（data/trading.db）。"
+        memory_type: semantic
+      - id: data-pipeline-dev-port
+        content: "data-pipeline 仓库 dev server 固定端口 9100，连接公司 PostgreSQL 测试库。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-06-18
+    turns:
+      - role: user
+        content: "今天在 data-pipeline 上调了一天 DAG，9100 端口起了三个 worker，累死了。trading-api 那边没动。"
+      - role: assistant
+        content: "辛苦了。data-pipeline 的调度问题记下了，trading-api 今天无变更。"
+    memories: []
+question: "trading-api 这个仓库本地开发用什么端口、连什么数据库？"
+reference_answer: "trading-api 的 dev server 固定用 8765 端口，本地数据库是 SQLite（data/trading.db）。注意 9100 是 data-pipeline 的端口，不要混淆。"
+rubric:
+  essential:
+    - "回答 trading-api 端口是 8765"
+    - "回答 trading-api 本地数据库是 SQLite（data/trading.db）"
+  pitfalls:
+    - "把 data-pipeline 的 9100 端口安到 trading-api 头上"
+    - "声称 trading-api 连 PostgreSQL 测试库（那是 data-pipeline 的）"
+memories_expected:
+  - id: trading-api-dev-port
+    content: "trading-api 仓库 dev server 固定端口 8765，本地数据库为 SQLite（data/trading.db）。"
+    memory_type: semantic

@@ -1,0 +1,46 @@
+id: layer3-05
+layer: 3
+category: hidden_association
+description: 隐藏关联：支付沙箱 API key 9 月 10 日轮换，而全链路压测排在 9-08~9-12
+sessions:
+  - session_id: s1
+    date: 2026-08-08
+    turns:
+      - role: user
+        content: "记一下，支付网关的沙箱 API key 每 30 天强制轮换，下次轮换是 9 月 10 日凌晨，旧 key 当场失效，要提前找对方运营拿新 key。"
+      - role: assistant
+        content: "记下：支付沙箱 API key 每 30 天轮换，下次 2026-09-10 凌晨，旧 key 当场失效。"
+    memories:
+      - id: user-role-payment-integration
+        content: "用户负责支付网关的对接与压测。"
+        memory_type: profile
+      - id: sandbox-key-rotation
+        content: "支付沙箱 API key 每 30 天强制轮换，下次轮换 2026-09-10 凌晨，旧 key 当场失效。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-08-18
+    turns:
+      - role: user
+        content: "全链路压测排在 9 月 8 日到 9 月 12 日，走沙箱环境，支付链路是重点验证对象。"
+      - role: assistant
+        content: "收到，全链路压测 2026-09-08 至 2026-09-12 在沙箱环境进行，重点验证支付链路。"
+    memories:
+      - id: stress-test-window
+        content: "全链路压测定于 2026-09-08 至 2026-09-12，走沙箱环境，重点验证支付链路。"
+        memory_type: episodic
+question: "这次压测安排有什么风险点？"
+reference_answer: "压测排在 9 月 8 日至 12 日、重点验证支付链路。需要主动提示：支付沙箱 API key 9 月 10 日凌晨轮换、旧 key 当场失效，正好落在压测中段，不提前拿新 key 的话 9 月 10 日起支付链路会全部失败，压测结论作废。"
+rubric:
+  essential:
+    - "回答压测时间是 2026-09-08 至 2026-09-12、重点验证支付链路"
+    - "主动提示了隐藏关联：沙箱 key 2026-09-10 轮换失效，落在压测窗口中间，需提前准备新 key"
+  pitfalls:
+    - "只列常规压测注意事项，完全未提示 key 轮换与压测窗口重叠"
+    - "编造 key 轮换可延期等会话未提及的信息"
+memories_expected:
+  - id: sandbox-key-rotation
+    content: "支付沙箱 API key 每 30 天强制轮换，下次轮换 2026-09-10 凌晨，旧 key 当场失效。"
+    memory_type: semantic
+  - id: stress-test-window
+    content: "全链路压测定于 2026-09-08 至 2026-09-12，走沙箱环境，重点验证支付链路。"
+    memory_type: episodic

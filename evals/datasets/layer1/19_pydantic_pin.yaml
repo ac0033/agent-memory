@@ -1,0 +1,25 @@
+id: layer1-19
+layer: 1
+description: 测试 agent 能否记住依赖版本锁定的事实及原因——pydantic 锁 v2
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "注意：这个项目 pydantic 必须锁在 v2 大版本（>=2.0,<3.0），我们大量用了 model_validator，v1 没有这个 API，降回去代码直接崩。"
+      - role: assistant
+        content: "明白：pydantic 锁定 >=2.0,<3.0，原因是代码大量使用 model_validator，pydantic v1 没有该 API，降级会直接崩。"
+      - role: user
+        content: "谁提 PR 把 pydantic 降到 1.x，直接打回。"
+question: "这个项目的 pydantic 版本有什么约束？为什么不能降到 v1？"
+reference_answer: "pydantic 必须锁定在 >=2.0,<3.0。原因：代码大量使用 model_validator，这是 v2 才有的 API，降到 v1 会直接崩溃。"
+rubric:
+  essential:
+    - "回答 pydantic 锁定 v2 大版本（>=2.0,<3.0）"
+    - "回答原因是依赖 model_validator，v1 无此 API"
+  pitfalls:
+    - "声称可以随意升降 pydantic 版本（与会话约束相反）"
+    - "编造其他锁定原因，如性能问题或许可证问题（会话中只说 model_validator）"
+memories_expected:
+  - id: project-pydantic-pinned-v2
+    content: "本项目 pydantic 锁定 >=2.0,<3.0：代码大量使用 model_validator，v1 无此 API，降级会直接崩溃；降级 PR 直接打回。"
+    memory_type: semantic

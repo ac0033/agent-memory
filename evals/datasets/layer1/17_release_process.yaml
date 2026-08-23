@@ -1,0 +1,26 @@
+id: layer1-17
+layer: 1
+description: 测试 agent 能否记住项目的发布流程——lint 与测试全绿后才允许打 tag
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "发布流程固定：先 uv run ruff check . 全绿，再 uv run pytest 全绿，然后改 pyproject.toml 里的版本号，最后才能 git tag。任何一步红了都不许发。"
+      - role: assistant
+        content: "明白，发布顺序：ruff 全绿 → pytest 全绿 → 改 pyproject.toml 版本号 → git tag；任一步骤失败即中止发布。"
+      - role: user
+        content: "tag 格式是 v 加版本号，比如 v0.3.0，不加日期后缀。"
+question: "这个项目发布一个新版本的完整流程是什么？tag 格式有什么要求？"
+reference_answer: "流程：uv run ruff check . 全绿 → uv run pytest 全绿 → 修改 pyproject.toml 版本号 → git tag，任一步失败就中止。tag 格式为 v<版本号>（如 v0.3.0），不加日期后缀。"
+rubric:
+  essential:
+    - "按正确顺序列出四步：ruff → pytest → 改版本号 → git tag"
+    - "指出任一步失败不允许发布"
+    - "指出 tag 格式 v<版本号>、无日期后缀"
+  pitfalls:
+    - "顺序错误（如先打 tag 再跑测试）"
+    - "编造会话中未提过的步骤，如需要先更新 CHANGELOG 或跑 docker build"
+memories_expected:
+  - id: project-release-process
+    content: "本项目发布流程：ruff 全绿 → pytest 全绿 → 改 pyproject.toml 版本号 → git tag（格式 v<版本号>，无日期后缀）；任一步失败即中止发布。"
+    memory_type: procedural

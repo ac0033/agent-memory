@@ -1,0 +1,40 @@
+id: layer2-18
+layer: 2
+category: stale
+description: 有效 vs 失效：仓库 maintainer 换人，老 maintainer 已离职
+sessions:
+  - session_id: s1
+    date: 2026-02-20
+    turns:
+      - role: user
+        content: "payment-sdk 这个仓库的 maintainer 是老周（zhouyi），合并权限和发版都找他。"
+      - role: assistant
+        content: "记下：payment-sdk 的 maintainer 是老周（zhouyi），负责合并与发版。"
+    memories:
+      - id: payment-sdk-maintainer-zhou
+        content: "payment-sdk 仓库 maintainer 是老周（zhouyi），负责合并权限与发版。"
+        memory_type: profile
+  - session_id: s2
+    date: 2026-07-05
+    turns:
+      - role: user
+        content: "老周上个月离职了，payment-sdk 由小唐（tangxiao）接手，合并和发版都转给她了，别再找老周。"
+      - role: assistant
+        content: "收到，payment-sdk maintainer 已变更为小唐（tangxiao），老周（zhouyi）已离职，不再负责。"
+    memories:
+      - id: payment-sdk-maintainer-tang
+        content: "payment-sdk 仓库 maintainer 已变更为小唐（tangxiao），负责合并与发版；老周（zhouyi）已离职不再负责。"
+        memory_type: profile
+        supersedes: payment-sdk-maintainer-zhou
+question: "payment-sdk 要发版，现在应该找谁操作？"
+reference_answer: "现在找小唐（tangxiao），她接手了 payment-sdk 的合并与发版。老周（zhouyi）已离职，不再负责。"
+rubric:
+  essential:
+    - "回答当前 maintainer 是小唐（tangxiao）"
+    - "指出老周已离职、不再负责"
+  pitfalls:
+    - "回答找老周（zhouyi）发版（人已离职，信息失效）"
+memories_expected:
+  - id: payment-sdk-maintainer-tang
+    content: "payment-sdk 仓库 maintainer 已变更为小唐（tangxiao），负责合并与发版；老周（zhouyi）已离职不再负责。"
+    memory_type: profile

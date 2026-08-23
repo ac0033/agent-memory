@@ -1,0 +1,27 @@
+id: layer1-02
+layer: 1
+description: 测试 agent 能否记住项目级事实——测试必须通过 uv run pytest 运行
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "这个仓库的测试有个坑：依赖只装在 uv 的虚拟环境里，直接敲 pytest 会用到系统 Python，import 直接报错。必须 uv run pytest。"
+      - role: assistant
+        content: "明白了，这个项目的测试统一用 uv run pytest 跑，避免系统 Python 找不到依赖。"
+      - role: user
+        content: "对，CI 里也是这么跑的，README 里写的 pytest 是过时文档，别信。"
+      - role: assistant
+        content: "收到，以 uv run pytest 为准，README 里的旧说明不参考。"
+question: "这个项目应该怎么跑测试？直接敲 pytest 可以吗？"
+reference_answer: "必须用 uv run pytest；直接敲 pytest 会用到系统 Python，因缺依赖而 import 报错。README 里的写法是过时文档。"
+rubric:
+  essential:
+    - "回答必须指出用 uv run pytest 运行测试"
+    - "说明直接 pytest 会失败的原因（系统 Python 缺依赖）"
+  pitfalls:
+    - "回答可以直接运行 pytest（与会话事实相反）"
+    - "编造需要激活 venv 后运行 pytest 的步骤（会话中未提及）"
+memories_expected:
+  - id: project-tests-use-uv-run-pytest
+    content: "本项目的测试必须通过 uv run pytest 运行；直接 pytest 会用系统 Python 导致 import 报错，README 中的旧写法已过时。"
+    memory_type: semantic

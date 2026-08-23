@@ -1,0 +1,25 @@
+id: layer1-15
+layer: 1
+description: 测试 agent 能否记住之前会话中修复过的 bug 及其根因（事件性记忆）
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "昨天那个报表时间对不上的 bug 查出来了：服务器存的是 UTC，前端直接当北京时间显示了，差了 8 小时。修法是查询层统一转成 Asia/Shanghai 再返回。"
+      - role: assistant
+        content: "明白：根因是 UTC 时间被前端当作北京时间直接展示；修复方案是在查询层统一转换为 Asia/Shanghai 时区后返回。"
+      - role: user
+        content: "对，改在 app/services/report.py 里，别在前端一个个组件改。"
+question: "报表时间偏差 8 小时的 bug 根因是什么？最后在哪一层、哪个文件修的？"
+reference_answer: "根因：服务器存 UTC 时间，前端直接按北京时间显示，差 8 小时。修复在查询层统一转 Asia/Shanghai 再返回，改动位置是 app/services/report.py，不在前端组件逐个改。"
+rubric:
+  essential:
+    - "回答根因是 UTC 被当作北京时间显示（差 8 小时）"
+    - "回答修复点在查询层，文件是 app/services/report.py"
+  pitfalls:
+    - "声称修复在前端组件中完成（与会话明确的方案相反）"
+    - "编造会话中未提及的根因，如数据库时区配置错误或夏令时问题"
+memories_expected:
+  - id: bugfix-report-timezone
+    content: "报表时间偏差 8 小时的 bug：根因是 UTC 时间被前端当北京时间直接显示；修复在查询层统一转 Asia/Shanghai 返回，改动文件 app/services/report.py。"
+    memory_type: episodic

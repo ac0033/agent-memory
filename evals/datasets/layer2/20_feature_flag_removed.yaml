@@ -1,0 +1,40 @@
+id: layer2-20
+layer: 2
+category: stale
+description: 有效 vs 失效：功能开关灰度期间有效，全量后开关已删除
+sessions:
+  - session_id: s1
+    date: 2026-04-12
+    turns:
+      - role: user
+        content: "新版结算页在灰度，功能开关是 checkout_v2_enabled，只对 5% 流量开，排查问题时先看这个开关的状态。"
+      - role: assistant
+        content: "记下：新版结算页灰度中，开关 checkout_v2_enabled，当前 5% 流量。"
+    memories:
+      - id: checkout-v2-flag
+        content: "新版结算页处于灰度期，功能开关 checkout_v2_enabled 仅对 5% 流量开启。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-06-22
+    turns:
+      - role: user
+        content: "新版结算页上周全量了，checkout_v2_enabled 这个开关已经从代码里删掉，旧版结算页代码也清了。"
+      - role: assistant
+        content: "收到，新版结算页已全量，开关 checkout_v2_enabled 与旧版代码均已删除。"
+    memories:
+      - id: checkout-v2-ga
+        content: "新版结算页已全量上线，功能开关 checkout_v2_enabled 已从代码删除，旧版结算页代码已清理。"
+        memory_type: semantic
+        supersedes: checkout-v2-flag
+question: "线上结算页出了问题，我要不要先查 checkout_v2_enabled 这个开关的状态？"
+reference_answer: "不用。新版结算页已全量上线，checkout_v2_enabled 开关已从代码里删除，旧版代码也清理了，排查直接看新版结算页链路即可。"
+rubric:
+  essential:
+    - "回答开关已删除、无需再查"
+    - "说明新版结算页已全量"
+  pitfalls:
+    - "仍按灰度期思路回答先查开关状态（信息已失效）"
+memories_expected:
+  - id: checkout-v2-ga
+    content: "新版结算页已全量上线，功能开关 checkout_v2_enabled 已从代码删除，旧版结算页代码已清理。"
+    memory_type: semantic

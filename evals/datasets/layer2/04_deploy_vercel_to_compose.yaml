@@ -1,0 +1,40 @@
+id: layer2-04
+layer: 2
+category: temporal
+description: 时序冲突：部署方式从 Vercel 改为自托管 Docker Compose
+sessions:
+  - session_id: s1
+    date: 2026-04-20
+    turns:
+      - role: user
+        content: "官网先部署在 Vercel 上，图省事，域名直接绑 Vercel 给的。"
+      - role: assistant
+        content: "好，官网部署到 Vercel，使用平台分配的域名绑定。"
+    memories:
+      - id: site-deploy-vercel
+        content: "官网部署在 Vercel，域名绑定平台分配地址。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-06-30
+    turns:
+      - role: user
+        content: "Vercel 的流量费超标了，而且合规要求数据不出机房。官网改自托管：Docker Compose 部署在公司机房服务器上，Vercel 项目已经删掉。"
+      - role: assistant
+        content: "收到，官网从 Vercel 迁移到自托管 Docker Compose（公司机房），Vercel 项目已删除。"
+    memories:
+      - id: site-deploy-compose
+        content: "官网已从 Vercel 迁移到自托管 Docker Compose（公司机房服务器，合规要求数据不出机房），Vercel 项目已删除。"
+        memory_type: semantic
+        supersedes: site-deploy-vercel
+question: "官网现在部署在哪里？还能往 Vercel 上发版吗？"
+reference_answer: "官网现在自托管在公司机房服务器上，用 Docker Compose 部署。Vercel 项目已删除，不能再往 Vercel 发版。"
+rubric:
+  essential:
+    - "回答当前部署是自托管 Docker Compose（公司机房）"
+    - "明确 Vercel 已停用、不能再发版"
+  pitfalls:
+    - "回答仍部署在 Vercel（旧信息已失效）"
+memories_expected:
+  - id: site-deploy-compose
+    content: "官网已从 Vercel 迁移到自托管 Docker Compose（公司机房服务器，合规要求数据不出机房），Vercel 项目已删除。"
+    memory_type: semantic

@@ -1,0 +1,40 @@
+id: layer2-02
+layer: 2
+category: temporal
+description: 时序冲突：Web 框架从 Flask 迁到 FastAPI，旧结论失效
+sessions:
+  - session_id: s1
+    date: 2026-04-08
+    turns:
+      - role: user
+        content: "这个内部工具后端用 Flask 写，蓝图按模块拆，先别上异步。"
+      - role: assistant
+        content: "好，后端框架定为 Flask，按模块拆蓝图，同步视图。"
+    memories:
+      - id: backend-framework-flask
+        content: "内部工具后端框架定为 Flask，按模块拆蓝图，同步视图。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-06-15
+    turns:
+      - role: user
+        content: "Flask 那边接口越加越多，校验太啰嗦了。决定整体迁到 FastAPI，用 pydantic 做校验，Flask 代码逐步废弃。"
+      - role: assistant
+        content: "收到，后端框架从 Flask 迁移到 FastAPI，校验用 pydantic，旧 Flask 代码逐步废弃。"
+    memories:
+      - id: backend-framework-fastapi
+        content: "内部工具后端框架已从 Flask 迁移到 FastAPI，请求校验用 pydantic，旧 Flask 代码逐步废弃。"
+        memory_type: semantic
+        supersedes: backend-framework-flask
+question: "这个内部工具的后端框架现在用什么？写新接口应该基于什么？"
+reference_answer: "现在用 FastAPI，请求校验用 pydantic；早期是 Flask，已决定迁移，新接口都应写在 FastAPI 上。"
+rubric:
+  essential:
+    - "回答当前框架是 FastAPI"
+    - "指出 Flask 是历史状态、已废弃或正在废弃"
+  pitfalls:
+    - "回答新接口继续用 Flask 写（旧结论已失效）"
+memories_expected:
+  - id: backend-framework-fastapi
+    content: "内部工具后端框架已从 Flask 迁移到 FastAPI，请求校验用 pydantic，旧 Flask 代码逐步废弃。"
+    memory_type: semantic

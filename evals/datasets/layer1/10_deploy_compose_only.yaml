@@ -1,0 +1,26 @@
+id: layer1-10
+layer: 1
+description: 测试 agent 能否记住项目的部署环境约束——只用 Docker Compose，不上 k8s
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "这个服务部署很简单：一台云主机，docker compose up 就完事。别给我整 Kubernetes，团队就三个人，维护不动。"
+      - role: assistant
+        content: "明白，部署目标是单机 Docker Compose，不引入 Kubernetes。"
+      - role: user
+        content: "compose 文件在仓库根目录 deploy/docker-compose.yml，改配置改那个文件。"
+question: "这个项目怎么部署？如果要改部署配置应该动哪个文件？需要 Kubernetes 吗？"
+reference_answer: "单机部署，docker compose up 即可；不需要 Kubernetes（团队只有三人，维护不动）。部署配置文件在仓库根目录 deploy/docker-compose.yml。"
+rubric:
+  essential:
+    - "回答部署方式是单机 Docker Compose"
+    - "明确不需要 Kubernetes 及原因（团队三人维护不动）"
+    - "指出配置文件路径 deploy/docker-compose.yml"
+  pitfalls:
+    - "建议使用 Kubernetes 或 Helm（会话中明确排除）"
+    - "编造 compose 文件路径（如 docker-compose.yaml 在根目录，实际是 deploy/docker-compose.yml）"
+memories_expected:
+  - id: project-deploy-docker-compose-only
+    content: "本项目部署为单机 Docker Compose（docker compose up），明确不引入 Kubernetes（团队仅三人）；compose 文件位于 deploy/docker-compose.yml。"
+    memory_type: semantic

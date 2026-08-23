@@ -1,0 +1,52 @@
+id: layer2-07
+layer: 2
+category: temporal
+description: 时序冲突（三 session 反转）：任务队列 Celery → Dramatiq → 又改回 Celery
+sessions:
+  - session_id: s1
+    date: 2026-03-20
+    turns:
+      - role: user
+        content: "异步任务队列用 Celery，broker 是 RabbitMQ，worker 单独起一个服务跑。"
+      - role: assistant
+        content: "好，任务队列定为 Celery，broker 用 RabbitMQ，worker 独立服务部署。"
+    memories:
+      - id: task-queue-celery
+        content: "异步任务队列定为 Celery，broker 用 RabbitMQ，worker 独立服务部署。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-05-11
+    turns:
+      - role: user
+        content: "Celery 太重了，我们任务量不大。换成 Dramatiq 试试，broker 也顺手换成 Redis。"
+      - role: assistant
+        content: "收到，任务队列从 Celery 切换到 Dramatiq，broker 改用 Redis。"
+    memories:
+      - id: task-queue-dramatiq
+        content: "异步任务队列改为 Dramatiq（Celery 过重），broker 改用 Redis。"
+        memory_type: semantic
+        supersedes: task-queue-celery
+  - session_id: s3
+    date: 2026-07-15
+    turns:
+      - role: user
+        content: "Dramatiq 试下来生态太差，定时任务和重试都要自己拼。定了：改回 Celery，broker 用回 RabbitMQ，这次不再折腾了。"
+      - role: assistant
+        content: "明白，任务队列最终改回 Celery + RabbitMQ，Dramatiq 方案废弃。"
+    memories:
+      - id: task-queue-celery-final
+        content: "异步任务队列最终定为 Celery + RabbitMQ；中间曾试 Dramatiq + Redis，因生态问题废弃改回。"
+        memory_type: semantic
+        supersedes: task-queue-dramatiq
+question: "异步任务队列现在用的是什么方案？broker 是什么？"
+reference_answer: "最终定为 Celery，broker 用 RabbitMQ。中间试过 Dramatiq + Redis，因生态问题废弃，又改回 Celery。"
+rubric:
+  essential:
+    - "回答当前任务队列是 Celery"
+    - "回答 broker 是 RabbitMQ"
+  pitfalls:
+    - "回答当前用 Dramatiq 或 Redis broker（中间态，已废弃）"
+memories_expected:
+  - id: task-queue-celery-final
+    content: "异步任务队列最终定为 Celery + RabbitMQ；中间曾试 Dramatiq + Redis，因生态问题废弃改回。"
+    memory_type: semantic

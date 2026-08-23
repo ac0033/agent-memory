@@ -1,0 +1,46 @@
+id: layer3-09
+layer: 3
+category: hidden_association
+description: 隐藏关联：框架 webx 官方宣布 2026 年 12 月停止维护，而新项目正打算采用它
+sessions:
+  - session_id: s1
+    date: 2026-08-07
+    turns:
+      - role: user
+        content: "看到 webx 官方博客发了公告：webx 框架 2026 年 12 月起停止维护，之后不再有安全补丁。我们老系统就在用 webx。"
+      - role: assistant
+        content: "记下：webx 框架官方宣布 2026-12 停止维护，之后无安全补丁。"
+    memories:
+      - id: user-role-arch-reviewer
+        content: "用户是架构评审委员会成员，负责新项目的技术选型把关。"
+        memory_type: profile
+      - id: webx-eol-announcement
+        content: "webx 框架官方宣布 2026-12 停止维护，之后不再提供安全补丁。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-08-19
+    turns:
+      - role: user
+        content: "新起的内部运营平台项目，开发组报上来的技术选型是 webx，说团队熟、上手快，评审会下周开。"
+      - role: assistant
+        content: "收到，内部运营平台项目的技术选型为 webx，评审会下周召开。"
+    memories:
+      - id: new-project-webx-choice
+        content: "内部运营平台新项目的技术选型报的是 webx，下周开评审会。"
+        memory_type: episodic
+question: "新项目的技术选型评审该给什么意见？"
+reference_answer: "新项目选型报的是 webx。需要主动提示：webx 官方已宣布 2026 年 12 月停止维护、之后无安全补丁，新项目此时上马等于把新系统建在即将 EOL 的框架上，评审应否决或要求改用仍在维护的框架。"
+rubric:
+  essential:
+    - "回答新项目选型是 webx、下周评审"
+    - "主动提示了隐藏关联：webx 2026-12 停止维护且无安全补丁，新项目不应采用"
+  pitfalls:
+    - "只按团队熟悉度给正面意见，完全未提示 EOL 风险"
+    - "编造官方已延长维护期等会话未提及的信息"
+memories_expected:
+  - id: webx-eol-announcement
+    content: "webx 框架官方宣布 2026-12 停止维护，之后不再提供安全补丁。"
+    memory_type: semantic
+  - id: new-project-webx-choice
+    content: "内部运营平台新项目的技术选型报的是 webx，下周开评审会。"
+    memory_type: episodic

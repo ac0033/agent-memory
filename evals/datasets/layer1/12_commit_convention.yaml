@@ -1,0 +1,26 @@
+id: layer1-12
+layer: 1
+description: 测试 agent 能否记住提交信息规范——Conventional Commits 及项目特有限定
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "commit message 统一用 Conventional Commits，type 只用 feat、fix、docs、refactor、test、chore 这六个，scope 写模块名，比如 feat(auth): add token refresh。"
+      - role: assistant
+        content: "明白：Conventional Commits，type 限定在 feat / fix / docs / refactor / test / chore，scope 填模块名。"
+      - role: user
+        content: "subject 用英文、现在时、首字母小写，别写句号结尾。"
+question: "给 auth 模块加一个 token 刷新功能，commit message 应该怎么写？有哪些格式约束？"
+reference_answer: "形如 feat(auth): add token refresh。约束：type 只能是 feat / fix / docs / refactor / test / chore；scope 写模块名；subject 用英文、现在时、首字母小写、结尾不加句号。"
+rubric:
+  essential:
+    - "给出符合 Conventional Commits 的示例且 type 为 feat、scope 为 auth"
+    - "列出允许的六个 type"
+    - "提到 subject 英文现在时、首字母小写、无句号"
+  pitfalls:
+    - "使用会话中未允许的 type（如 perf、style、ci）"
+    - "示例 subject 首字母大写或结尾带句号（违反会话约定）"
+memories_expected:
+  - id: project-commit-message-convention
+    content: "本项目 commit message 用 Conventional Commits：type 限定 feat / fix / docs / refactor / test / chore，scope 写模块名，subject 英文现在时、首字母小写、结尾不加句号。"
+    memory_type: procedural

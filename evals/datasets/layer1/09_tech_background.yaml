@@ -1,0 +1,24 @@
+id: layer1-09
+layer: 1
+description: 测试 agent 能否记住用户的技术背景画像——后端方向、主力语言 Python 和 Go
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "先介绍下我自己：我是后端工程师，主力语言是 Python 和 Go，前端只会改改现成的 Vue 组件，别让我写复杂的 CSS。"
+      - role: assistant
+        content: "了解了：后端方向，主力 Python 和 Go；前端限于修改现有 Vue 组件，不写复杂 CSS。"
+question: "我的技术栈背景是什么？哪些事情可以交给我做，哪些不要？"
+reference_answer: "用户是后端工程师，主力语言 Python 和 Go；可以处理少量现有 Vue 组件的修改，但不要安排复杂 CSS / 前端工作。"
+rubric:
+  essential:
+    - "指出用户是后端工程师"
+    - "指出主力语言是 Python 和 Go"
+    - "指出前端仅限于改现有 Vue 组件，不做复杂 CSS"
+  pitfalls:
+    - "声称用户精通前端或可以独立写复杂 CSS（与会话相反）"
+    - "编造会话中未提及的语言，如 Rust、Java"
+memories_expected:
+  - id: user-tech-background
+    content: "用户是后端工程师，主力语言 Python 和 Go；前端能力限于修改现有 Vue 组件，不写复杂 CSS。"
+    memory_type: profile

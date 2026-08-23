@@ -1,0 +1,46 @@
+id: layer3-03
+layer: 3
+category: hidden_association
+description: 隐藏关联：核心评审人王芳 9-14~9-20 休假，而支付重构评审排在 9-16
+sessions:
+  - session_id: s1
+    date: 2026-08-12
+    turns:
+      - role: user
+        content: "王芳刚在群里说她 9 月 14 日到 9 月 20 日休年假，期间不看工作消息。支付重构的设计评审她是必到的评审人。"
+      - role: assistant
+        content: "记下：王芳 2026-09-14 至 2026-09-20 休假，她是支付重构设计评审的必到评审人。"
+    memories:
+      - id: user-role-backend-lead
+        content: "用户是后端组组长，负责组织设计评审与排期。"
+        memory_type: profile
+      - id: wangfang-vacation
+        content: "评审人王芳 2026-09-14 至 2026-09-20 休年假，期间不看工作消息。"
+        memory_type: episodic
+  - session_id: s2
+    date: 2026-08-19
+    turns:
+      - role: user
+        content: "支付重构的设计评审我排在了 9 月 16 日下午，会议室订好了。"
+      - role: assistant
+        content: "收到，支付重构设计评审定于 2026-09-16 下午。"
+    memories:
+      - id: payment-review-schedule
+        content: "支付重构设计评审定于 2026-09-16 下午，王芳是必到评审人。"
+        memory_type: episodic
+question: "支付重构的评审安排有没有问题？"
+reference_answer: "评审排在 2026-09-16，需要主动提示：必到评审人王芳 9 月 14 日至 9 月 20 日休假，9 月 16 日她不在，评审需要改期或更换评审人。"
+rubric:
+  essential:
+    - "回答评审时间是 2026-09-16"
+    - "主动提示了隐藏关联：必到评审人王芳 9-14 至 9-20 休假，评审日她不在，需改期或换评审人"
+  pitfalls:
+    - "只确认评审时间，完全未提示评审人休假冲突"
+    - "编造王芳可以线上参会等会话未提及的信息"
+memories_expected:
+  - id: wangfang-vacation
+    content: "评审人王芳 2026-09-14 至 2026-09-20 休年假，期间不看工作消息。"
+    memory_type: episodic
+  - id: payment-review-schedule
+    content: "支付重构设计评审定于 2026-09-16 下午，王芳是必到评审人。"
+    memory_type: episodic

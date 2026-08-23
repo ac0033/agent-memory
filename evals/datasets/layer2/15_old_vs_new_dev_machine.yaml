@@ -1,0 +1,40 @@
+id: layer2-15
+layer: 2
+category: stale
+description: 有效 vs 失效：旧开发机（8G 内存）已退役，新开发机 32G，问"现在"的配置
+sessions:
+  - session_id: s1
+    date: 2026-02-15
+    turns:
+      - role: user
+        content: "我这台开发机只有 8G 内存，跑不动本地全套服务，起服务的时候一次最多起两个。"
+      - role: assistant
+        content: "明白，当前开发机 8G 内存，本地一次最多同时起两个服务。"
+    memories:
+      - id: dev-machine-8g
+        content: "用户开发机内存 8G，本地一次最多同时起两个服务。"
+        memory_type: profile
+  - session_id: s2
+    date: 2026-06-10
+    turns:
+      - role: user
+        content: "换新机器了，32G 内存，旧那台 8G 的已经上交退役。现在本地全套服务一起起都没问题。"
+      - role: assistant
+        content: "收到，开发机已更换为 32G 内存新机，旧 8G 机器退役，本地可全量起服务。"
+    memories:
+      - id: dev-machine-32g
+        content: "用户开发机已更换为 32G 内存新机（旧 8G 机器已退役），本地可同时起全套服务。"
+        memory_type: profile
+        supersedes: dev-machine-8g
+question: "我现在本地能同时起多少个服务？我的开发机内存多大？"
+reference_answer: "现在的开发机是 32G 内存的新机器，本地全套服务可以同时起。旧的 8G 内存机器已退役，“一次最多起两个”的限制不再适用。"
+rubric:
+  essential:
+    - "回答当前开发机 32G 内存"
+    - "回答现在可以同时起全套服务"
+  pitfalls:
+    - "回答内存 8G 或最多起两个服务（旧机器信息已失效）"
+memories_expected:
+  - id: dev-machine-32g
+    content: "用户开发机已更换为 32G 内存新机（旧 8G 机器已退役），本地可同时起全套服务。"
+    memory_type: profile

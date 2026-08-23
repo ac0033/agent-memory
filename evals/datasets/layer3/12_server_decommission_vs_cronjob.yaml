@@ -1,0 +1,46 @@
+id: layer3-12
+layer: 3
+category: hidden_association
+description: 隐藏关联：老服务器 db-legacy 10 月 15 日退役，而新日报表任务正打算部署到它的 MySQL 上
+sessions:
+  - session_id: s1
+    date: 2026-08-11
+    turns:
+      - role: user
+        content: "基础设施组发了通知：老服务器 db-legacy 将在 2026 年 10 月 15 日正式退役下线，到时候整机回收，上面的 MySQL 实例一起下线。"
+      - role: assistant
+        content: "记下：db-legacy 服务器 2026-10-15 退役下线，其上 MySQL 实例一并下线。"
+    memories:
+      - id: user-role-reporting-owner
+        content: "用户负责数据报表平台的建设与维护。"
+        memory_type: profile
+      - id: db-legacy-decommission
+        content: "老服务器 db-legacy 将于 2026-10-15 退役下线，其上的 MySQL 实例一并下线。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-08-19
+    turns:
+      - role: user
+        content: "新的日报表任务我打算直接部署在 db-legacy 的 MySQL 上读数据，反正它现在还很稳，省得再申请新库。"
+      - role: assistant
+        content: "收到，新日报表任务计划部署在 db-legacy 的 MySQL 上读取数据。"
+    memories:
+      - id: daily-report-deploy-plan
+        content: "新日报表任务计划部署在 db-legacy 的 MySQL 上读取数据。"
+        memory_type: episodic
+question: "日报表任务的部署计划靠谱吗？"
+reference_answer: "计划是把日报表任务部署在 db-legacy 的 MySQL 上。需要主动提示：db-legacy 将于 2026-10-15 退役下线、MySQL 实例一并回收，任务上线后很快就会失去数据源，应改部署到长期可用的数据库上，而不是图省事用即将退役的机器。"
+rubric:
+  essential:
+    - "回答部署计划内容：日报表任务部署在 db-legacy 的 MySQL 上"
+    - "主动提示了隐藏关联：db-legacy 2026-10-15 退役，任务上线后很快失去数据源，应换库部署"
+  pitfalls:
+    - "只按省事角度肯定方案，完全未提示服务器退役"
+    - "编造退役计划已取消等会话未提及的信息"
+memories_expected:
+  - id: db-legacy-decommission
+    content: "老服务器 db-legacy 将于 2026-10-15 退役下线，其上的 MySQL 实例一并下线。"
+    memory_type: semantic
+  - id: daily-report-deploy-plan
+    content: "新日报表任务计划部署在 db-legacy 的 MySQL 上读取数据。"
+    memory_type: episodic

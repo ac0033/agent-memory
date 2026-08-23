@@ -1,0 +1,25 @@
+id: layer1-16
+layer: 1
+description: 测试 agent 能否记住用户的代码评审习惯——先看测试再看实现
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "帮我 review PR 的时候按我的顺序来：先看测试改动，判断行为预期；再看实现；最后才看命名和风格。别一上来就抠变量名。"
+      - role: assistant
+        content: "明白，review 顺序：测试改动 → 实现逻辑 → 命名与风格。"
+      - role: user
+        content: "对，没有测试的 PR 直接打回，不用看实现。"
+question: "帮我 review PR 时应该按什么顺序看？没有测试的 PR 怎么处理？"
+reference_answer: "顺序：先看测试改动（判断行为预期）→ 再看实现 → 最后看命名和风格。没有测试的 PR 直接打回，不看实现。"
+rubric:
+  essential:
+    - "给出正确顺序：测试 → 实现 → 命名风格"
+    - "指出无测试的 PR 直接打回"
+  pitfalls:
+    - "把顺序说反或说成先看命名风格（与会话约定相反）"
+    - "编造会话中未提过的规则，如 PR 行数超过 400 行自动打回"
+memories_expected:
+  - id: user-review-order
+    content: "用户的 PR review 顺序：先看测试改动判断行为预期，再看实现，最后看命名与风格；没有测试的 PR 直接打回不看实现。"
+    memory_type: procedural

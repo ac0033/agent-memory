@@ -1,0 +1,41 @@
+id: layer2-03
+layer: 2
+category: temporal
+description: 时序冲突：仓库 Python 版本从 3.10 升到 3.12
+sessions:
+  - session_id: s1
+    date: 2026-03-02
+    turns:
+      - role: user
+        content: "注意这个仓库 pinned 在 Python 3.10，因为有个内部依赖只编了 3.10 的 wheel。"
+      - role: assistant
+        content: "明白，本仓库 Python 版本锁定 3.10，原因是内部依赖只有 3.10 的 wheel。"
+    memories:
+      - id: repo-python-version
+        content: "本仓库 Python 版本锁定 3.10（内部依赖只提供 3.10 的 wheel）。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-07-01
+    turns:
+      - role: user
+        content: "好消息，那个内部依赖发了新版本，3.12 的 wheel 有了。我们把仓库升到 Python 3.12，3.10 的 pin 可以删了。"
+      - role: assistant
+        content: "收到，仓库 Python 版本从 3.10 升级到 3.12，原 3.10 锁定解除。"
+    memories:
+      - id: repo-python-version-v2
+        content: "本仓库 Python 版本已升级为 3.12（内部依赖已提供 3.12 wheel，原 3.10 锁定解除）。"
+        memory_type: semantic
+        supersedes: repo-python-version
+question: "这个仓库现在应该用哪个 Python 版本？"
+reference_answer: "现在用 Python 3.12。之前因为内部依赖只有 3.10 的 wheel 而锁定 3.10，该依赖出新版后已升级，3.10 锁定解除。"
+rubric:
+  essential:
+    - "回答当前版本是 Python 3.12"
+    - "说明 3.10 是旧的锁定、已解除"
+  pitfalls:
+    - "回答仍锁定 Python 3.10（旧信息已失效）"
+    - "编造 3.11 或 3.13 等会话未提及的版本"
+memories_expected:
+  - id: repo-python-version-v2
+    content: "本仓库 Python 版本已升级为 3.12（内部依赖已提供 3.12 wheel，原 3.10 锁定解除）。"
+    memory_type: semantic

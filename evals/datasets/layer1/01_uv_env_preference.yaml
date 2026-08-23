@@ -1,0 +1,27 @@
+id: layer1-01
+layer: 1
+description: 测试 agent 能否记住用户声明的 Python 环境管理工具偏好（uv，不用 conda/pip 直装）
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "帮我初始化一个新的 Python 项目。先说明一下：我所有项目都用 uv 管理环境，不要给我 conda 或者 pip install 全局安装的命令。"
+      - role: assistant
+        content: "明白，我会用 uv venv 创建虚拟环境，用 uv pip 安装依赖，不写 conda 或全局 pip 命令。"
+      - role: user
+        content: "对，依赖也写进 pyproject.toml，用 uv sync 装。"
+      - role: assistant
+        content: "好的，依赖声明进 pyproject.toml，用 uv sync 同步环境。"
+question: "如果要在这个机器上给一个新 Python 项目装依赖，应该用什么工具和命令？"
+reference_answer: "用户用 uv 管理 Python 环境：依赖写进 pyproject.toml，用 uv sync（或 uv pip）安装；不要建议 conda 或全局 pip install。"
+rubric:
+  essential:
+    - "明确指出使用 uv 管理环境"
+    - "提到依赖写进 pyproject.toml / 用 uv sync 或 uv pip 安装"
+  pitfalls:
+    - "建议使用 conda 创建环境（会话中明确排除过）"
+    - "建议用 pip install 直接装到系统环境（会话中明确排除过）"
+memories_expected:
+  - id: user-uses-uv-for-python
+    content: "用户所有 Python 项目都用 uv 管理环境，依赖写进 pyproject.toml，用 uv sync / uv pip 安装；明确不要 conda 和全局 pip install。"
+    memory_type: profile

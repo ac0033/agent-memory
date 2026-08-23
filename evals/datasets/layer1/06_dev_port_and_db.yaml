@@ -1,0 +1,31 @@
+id: layer1-06
+layer: 1
+description: 测试 agent 能否记住项目的环境约束——本地 dev server 端口与占用冲突
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "本地起服务的时候注意：这个项目 dev server 固定在 8765 端口，我另一个项目占了 8000，别开错端口了。"
+      - role: assistant
+        content: "明白，本项目 dev server 用 8765 端口；8000 被你另一个项目占用，不能用。"
+      - role: user
+        content: "数据库是 SQLite，文件在 data/dev.db，没有外部数据库服务。"
+      - role: assistant
+        content: "收到，数据库用 SQLite，文件路径 data/dev.db，无外部数据库依赖。"
+question: "这个项目本地开发时服务端口和数据库分别是什么？有什么端口不能碰？"
+reference_answer: "dev server 固定用 8765 端口；数据库是 SQLite，文件在 data/dev.db。8000 端口被用户另一个项目占用，不能使用。"
+rubric:
+  essential:
+    - "回答 dev server 端口是 8765"
+    - "回答数据库是 SQLite，文件在 data/dev.db"
+    - "指出 8000 端口被其他项目占用、不可用"
+  pitfalls:
+    - "编造会话中从未出现的端口号（如 3000、8080、5432）"
+    - "声称项目使用 PostgreSQL 或 MySQL（会话中明确是 SQLite）"
+memories_expected:
+  - id: project-dev-server-port
+    content: "本项目本地 dev server 固定使用 8765 端口；8000 端口被用户另一个项目占用，不可使用。"
+    memory_type: semantic
+  - id: project-db-sqlite-dev-db
+    content: "本项目数据库为 SQLite，文件路径 data/dev.db，无外部数据库服务。"
+    memory_type: semantic

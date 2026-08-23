@@ -1,0 +1,39 @@
+id: layer2-13
+layer: 2
+category: disambiguation
+description: 多对象消歧：两个仓库的分支模型不同（gitflow vs trunk-based）
+sessions:
+  - session_id: s1
+    date: 2026-03-25
+    turns:
+      - role: user
+        content: "两个仓库的分支约定不一样：web-frontend 走 gitflow，功能分支从 develop 切；infra 仓库走 trunk-based，直接在 main 上小步提交，功能分支活不过两天。"
+      - role: assistant
+        content: "明白：web-frontend 用 gitflow（功能分支从 develop 切出）；infra 用 trunk-based（main 上小步提交，分支短寿）。"
+    memories:
+      - id: web-frontend-gitflow
+        content: "web-frontend 仓库采用 gitflow 分支模型，功能分支从 develop 切出。"
+        memory_type: procedural
+      - id: infra-trunk-based
+        content: "infra 仓库采用 trunk-based 开发，直接在 main 上小步提交，功能分支存活不超过两天。"
+        memory_type: procedural
+  - session_id: s2
+    date: 2026-05-30
+    turns:
+      - role: user
+        content: "今天看到有人在 infra 仓库开了个挂了仨星期的长分支，提醒他删了，trunk-based 不是这么玩的。"
+      - role: assistant
+        content: "对，infra 是 trunk-based，长分支违背约定；web-frontend 的 gitflow 才允许长功能分支。"
+    memories: []
+question: "我要在 infra 仓库开发一个大概两周的功能，应该怎么开分支？"
+reference_answer: "infra 仓库是 trunk-based 开发：不开长分支，在 main 上小步提交，功能分支存活不超过两天，两周的功能要拆成小步逐步合入。注意 web-frontend 才是 gitflow，不要套用。"
+rubric:
+  essential:
+    - "回答 infra 是 trunk-based，应在 main 上小步提交"
+    - "指出不应开存活两周的长分支"
+  pitfalls:
+    - "把 web-frontend 的 gitflow 约定套到 infra 仓库（建议从 develop 切功能分支）"
+memories_expected:
+  - id: infra-trunk-based
+    content: "infra 仓库采用 trunk-based 开发，直接在 main 上小步提交，功能分支存活不超过两天。"
+    memory_type: procedural

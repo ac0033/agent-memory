@@ -1,0 +1,40 @@
+id: layer2-05
+layer: 2
+category: temporal
+description: 时序冲突：前端测试框架从 Jest 换到 Vitest
+sessions:
+  - session_id: s1
+    date: 2026-03-15
+    turns:
+      - role: user
+        content: "前端仓库的单元测试用 Jest，配置文件 jest.config.js，覆盖率门槛 80%。"
+      - role: assistant
+        content: "好，前端单测用 Jest，配置在 jest.config.js，覆盖率门槛 80%。"
+    memories:
+      - id: fe-test-jest
+        content: "前端仓库单元测试框架为 Jest（jest.config.js），覆盖率门槛 80%。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-05-28
+    turns:
+      - role: user
+        content: "Jest 跑得太慢了，全量要 8 分钟。已经迁到 Vitest 了，配置在 vitest.config.ts，Jest 依赖已卸载。覆盖率门槛不变。"
+      - role: assistant
+        content: "收到，前端单测从 Jest 迁移到 Vitest（vitest.config.ts），Jest 依赖已卸载，覆盖率门槛仍为 80%。"
+    memories:
+      - id: fe-test-vitest
+        content: "前端仓库单元测试框架已从 Jest 迁移到 Vitest（vitest.config.ts），Jest 依赖已卸载，覆盖率门槛仍为 80%。"
+        memory_type: semantic
+        supersedes: fe-test-jest
+question: "前端仓库现在跑单元测试用什么？配置在哪个文件？"
+reference_answer: "现在用 Vitest，配置在 vitest.config.ts；之前是 Jest（jest.config.js），已迁移并卸载 Jest 依赖。覆盖率门槛仍是 80%。"
+rubric:
+  essential:
+    - "回答当前测试框架是 Vitest，配置文件 vitest.config.ts"
+    - "说明 Jest 已废弃"
+  pitfalls:
+    - "回答用 Jest 或 jest.config.js（旧信息已失效）"
+memories_expected:
+  - id: fe-test-vitest
+    content: "前端仓库单元测试框架已从 Jest 迁移到 Vitest（vitest.config.ts），Jest 依赖已卸载，覆盖率门槛仍为 80%。"
+    memory_type: semantic

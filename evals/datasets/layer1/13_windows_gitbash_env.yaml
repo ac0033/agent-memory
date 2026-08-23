@@ -1,0 +1,26 @@
+id: layer1-13
+layer: 1
+description: 测试 agent 能否记住用户的操作系统与 shell 环境——Windows + Git Bash
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "我的开发机是 Windows 11，终端用的是 Git Bash，所以你给我 shell 命令的时候要写 Unix 语法，路径分隔符注意一下。"
+      - role: assistant
+        content: "明白：Windows 11 + Git Bash 环境，shell 命令用 Unix 语法（如 /dev/null 而不是 NUL），路径注意分隔符兼容。"
+      - role: user
+        content: "对，别给我 PowerShell 脚本，除非我明确说要。"
+question: "给我写 shell 命令时应该注意什么环境？能用 PowerShell 语法吗？"
+reference_answer: "用户开发机是 Windows 11，终端是 Git Bash，shell 命令要用 Unix 语法；不要给 PowerShell 脚本，除非用户明确要求。"
+rubric:
+  essential:
+    - "指出环境是 Windows + Git Bash"
+    - "指出命令需用 Unix 语法"
+    - "指出默认不给 PowerShell 脚本"
+  pitfalls:
+    - "声称用户在 macOS 或 Linux 上（会话中明确是 Windows 11）"
+    - "建议默认使用 PowerShell 或 cmd 语法（与会话约定相反）"
+memories_expected:
+  - id: user-dev-env-windows-gitbash
+    content: "用户开发环境为 Windows 11 + Git Bash：shell 命令必须用 Unix 语法；不提供 PowerShell 脚本，除非用户明确要求。"
+    memory_type: profile

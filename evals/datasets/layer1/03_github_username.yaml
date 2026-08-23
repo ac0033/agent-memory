@@ -1,0 +1,28 @@
+id: layer1-03
+layer: 1
+description: 测试 agent 能否记住用户的账号标识（GitHub 用户名，虚构值）
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "等下要提 PR，先记下我的 GitHub 用户名是 octo-coder-2026，reviewer 填我同事的账号 luna-reviewer。"
+      - role: assistant
+        content: "记下了：你的 GitHub 用户名是 octo-coder-2026，同事的 reviewer 账号是 luna-reviewer。"
+      - role: user
+        content: "对，别搞混了，octo-coder-2026 才是我。"
+question: "我的 GitHub 用户名是什么？提 PR 时 reviewer 应该填谁？"
+reference_answer: "用户的 GitHub 用户名是 octo-coder-2026；reviewer 填同事的账号 luna-reviewer。"
+rubric:
+  essential:
+    - "回答中的用户名必须是 octo-coder-2026"
+    - "reviewer 必须是 luna-reviewer"
+  pitfalls:
+    - "把用户名和 reviewer 搞反（把 luna-reviewer 当作用户本人）"
+    - "编造会话中未出现的用户名，如 octocoder、octo_coder_2026 等变体"
+memories_expected:
+  - id: user-github-username
+    content: "用户的 GitHub 用户名是 octo-coder-2026。"
+    memory_type: profile
+  - id: colleague-reviewer-account
+    content: "用户同事的 GitHub 账号是 luna-reviewer，提 PR 时作为 reviewer。"
+    memory_type: semantic

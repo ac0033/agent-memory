@@ -1,0 +1,53 @@
+id: layer2-01
+layer: 2
+category: temporal
+description: 时序冲突（三 session 反转）：数据库选型 SQLite → PostgreSQL → 又改回 SQLite，正确答案以最后生效为准
+sessions:
+  - session_id: s1
+    date: 2026-05-12
+    turns:
+      - role: user
+        content: "新项目刚起步，数据库先定 SQLite 吧，单机跑，data/app.db，别整复杂了。"
+      - role: assistant
+        content: "好，数据库定为 SQLite，文件 data/app.db，单机部署。"
+    memories:
+      - id: proj-db-choice
+        content: "本项目数据库定为 SQLite，文件路径 data/app.db，单机部署。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-06-03
+    turns:
+      - role: user
+        content: "要上多实例了，SQLite 扛不住并发写，把数据库换成 PostgreSQL，连接走环境变量 DATABASE_URL。"
+      - role: assistant
+        content: "明白，数据库从 SQLite 迁移到 PostgreSQL，连接配置走 DATABASE_URL 环境变量。"
+    memories:
+      - id: proj-db-choice-v2
+        content: "本项目数据库改为 PostgreSQL（多实例并发写需求），连接走 DATABASE_URL 环境变量。"
+        memory_type: semantic
+        supersedes: proj-db-choice
+  - session_id: s3
+    date: 2026-07-20
+    turns:
+      - role: user
+        content: "多实例方案黄了，又回到单机部署。数据库改回 SQLite，还是 data/app.db，PostgreSQL 那套废弃。"
+      - role: assistant
+        content: "收到，数据库改回 SQLite（data/app.db），PostgreSQL 方案废弃。"
+    memories:
+      - id: proj-db-choice-v3
+        content: "本项目数据库最终定为 SQLite（data/app.db）；中间曾因多实例需求改为 PostgreSQL，后随方案取消改回 SQLite。"
+        memory_type: semantic
+        supersedes: proj-db-choice-v2
+question: "这个项目现在的数据库到底用的是什么？"
+reference_answer: "最终定为 SQLite，文件 data/app.db。中间曾改为 PostgreSQL，后来多实例方案取消，又改回 SQLite，以最后一次决定为准。"
+rubric:
+  essential:
+    - "回答当前数据库是 SQLite（data/app.db）"
+    - "体现中间改过 PostgreSQL 但又改回，以最后决定为准"
+  pitfalls:
+    - "回答当前数据库是 PostgreSQL（那是中间态，已被推翻）"
+    - "声称同时使用 SQLite 和 PostgreSQL"
+memories_expected:
+  - id: proj-db-choice-v3
+    content: "本项目数据库最终定为 SQLite（data/app.db）；中间曾因多实例需求改为 PostgreSQL，后随方案取消改回 SQLite。"
+    memory_type: semantic

@@ -1,0 +1,40 @@
+id: layer2-17
+layer: 2
+category: stale
+description: 有效 vs 失效：内部 API v1 已下线，v2 替代，问当前调用方式
+sessions:
+  - session_id: s1
+    date: 2026-03-10
+    turns:
+      - role: user
+        content: "查用户画像走内部 API v1：GET http://api.internal/v1/profile/{uid}，返回是 XML。"
+      - role: assistant
+        content: "记下：用户画像走内部 API v1，GET /v1/profile/{uid}，返回 XML。"
+    memories:
+      - id: profile-api-v1
+        content: "用户画像查询走内部 API v1：GET http://api.internal/v1/profile/{uid}，返回 XML。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-06-28
+    turns:
+      - role: user
+        content: "通知一下：API v1 昨天下线了，画像查询全部走 v2：GET http://api.internal/v2/profiles/{uid}，返回 JSON，v1 再调就是 410。"
+      - role: assistant
+        content: "收到，v1 已下线（调用返回 410），画像查询迁移到 v2：GET /v2/profiles/{uid}，返回 JSON。"
+    memories:
+      - id: profile-api-v2
+        content: "用户画像查询走内部 API v2：GET http://api.internal/v2/profiles/{uid}，返回 JSON；v1 已下线（调用返回 410）。"
+        memory_type: semantic
+        supersedes: profile-api-v1
+question: "现在查用户画像应该调哪个接口？返回什么格式？"
+reference_answer: "现在走 v2 接口：GET http://api.internal/v2/profiles/{uid}，返回 JSON。v1（/v1/profile/{uid}，XML）已下线，再调返回 410。"
+rubric:
+  essential:
+    - "回答使用 v2 接口 /v2/profiles/{uid}，返回 JSON"
+    - "指出 v1 已下线"
+  pitfalls:
+    - "回答继续调 v1 或声称返回 XML（旧接口已下线）"
+memories_expected:
+  - id: profile-api-v2
+    content: "用户画像查询走内部 API v2：GET http://api.internal/v2/profiles/{uid}，返回 JSON；v1 已下线（调用返回 410）。"
+    memory_type: semantic

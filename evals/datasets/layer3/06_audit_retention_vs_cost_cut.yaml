@@ -1,0 +1,46 @@
+id: layer3-06
+layer: 3
+category: hidden_association
+description: 隐藏关联：A 客户合同要求审计日志保留 180 天，而降本方案要把日志保留砍到 30 天
+sessions:
+  - session_id: s1
+    date: 2026-08-06
+    turns:
+      - role: user
+        content: "和 A 客户的合同里有一条硬性要求：审计日志至少保留 180 天，违约要赔。这条法务特意标红了。"
+      - role: assistant
+        content: "记下：A 客户合同要求审计日志至少保留 180 天，违约有赔偿责任。"
+    memories:
+      - id: user-role-compliance-cost
+        content: "用户负责平台的合规事项与成本优化。"
+        memory_type: profile
+      - id: client-a-log-retention
+        content: "A 客户合同硬性要求审计日志至少保留 180 天，违约需赔偿。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-08-18
+    turns:
+      - role: user
+        content: "存储成本太高了，我打算把所有租户的日志保留期统一降到 30 天，一年能省不少钱。"
+      - role: assistant
+        content: "收到，降本方案：所有租户日志保留期统一降到 30 天。"
+    memories:
+      - id: log-retention-cut-plan
+        content: "降本方案：所有租户的日志保留期统一降到 30 天。"
+        memory_type: episodic
+question: "这个日志降本方案可行吗？"
+reference_answer: "方案是把所有租户日志保留期统一降到 30 天。需要主动提示：A 客户的合同硬性要求审计日志至少保留 180 天，统一降到 30 天会对 A 客户违约，方案要么给 A 客户单独保留 180 天，要么不能直接执行。"
+rubric:
+  essential:
+    - "回答方案内容：所有租户日志保留期统一降到 30 天"
+    - "主动提示了隐藏关联：A 客户合同要求审计日志保留 180 天，统一降期会违约，需为 A 客户例外处理"
+  pitfalls:
+    - "只从成本角度肯定方案，完全未提示合同保留期冲突"
+    - "编造合同已到期或可豁免等会话未提及的信息"
+memories_expected:
+  - id: client-a-log-retention
+    content: "A 客户合同硬性要求审计日志至少保留 180 天，违约需赔偿。"
+    memory_type: semantic
+  - id: log-retention-cut-plan
+    content: "降本方案：所有租户的日志保留期统一降到 30 天。"
+    memory_type: episodic

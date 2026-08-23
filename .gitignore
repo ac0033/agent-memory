@@ -1,0 +1,21 @@
+# 虚拟环境与构建产物
+.venv/
+__pycache__/
+*.egg-info/
+*.py[cod]
+dist/
+build/
+
+# 运行时数据：忽略 data/ 下所有内容，但保留目录本身和 .gitkeep 占位
+data/**
+!data/
+!data/**/
+!data/**/.gitkeep
+
+# 工具缓存
+.pytest_cache/
+.ruff_cache/
+
+# 系统文件
+.DS_Store
+Thumbs.db

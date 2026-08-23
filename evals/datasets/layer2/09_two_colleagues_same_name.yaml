@@ -1,0 +1,42 @@
+id: layer2-09
+layer: 2
+category: disambiguation
+description: 多对象消歧：两位同名同事"李伟"，前端与运维，GitLab 账号不同
+sessions:
+  - session_id: s1
+    date: 2026-04-15
+    turns:
+      - role: user
+        content: "团队里有俩李伟，别搞混：前端李伟的 GitLab 账号是 liwei-fe，运维李伟的 GitLab 账号是 liwei-ops。"
+      - role: assistant
+        content: "记下了：前端李伟 = liwei-fe，运维李伟 = liwei-ops。"
+    memories:
+      - id: liwei-frontend-account
+        content: "前端同事李伟的 GitLab 账号是 liwei-fe（团队有两位同名李伟，注意区分）。"
+        memory_type: profile
+      - id: liwei-ops-account
+        content: "运维同事李伟的 GitLab 账号是 liwei-ops（团队有两位同名李伟，注意区分）。"
+        memory_type: profile
+  - session_id: s2
+    date: 2026-06-02
+    turns:
+      - role: user
+        content: "前端 MR 都指派给前端李伟评审，基础设施变更找运维李伟。"
+      - role: assistant
+        content: "明白：前端 MR 评审找 liwei-fe，基础设施变更找 liwei-ops。"
+    memories:
+      - id: review-assignment-liwei
+        content: "前端 MR 评审指派给前端李伟（liwei-fe），基础设施变更找运维李伟（liwei-ops）。"
+        memory_type: procedural
+question: "我要把运维相关的变更发给李伟评审，GitLab 上应该 @ 哪个账号？"
+reference_answer: "运维相关的变更应找运维李伟，GitLab 账号是 liwei-ops。注意区别于前端李伟（liwei-fe），团队里两位李伟同名。"
+rubric:
+  essential:
+    - "回答运维李伟的账号是 liwei-ops"
+    - "体现知道存在两位同名李伟、需要区分"
+  pitfalls:
+    - "回答成 liwei-fe（那是前端李伟的账号）"
+memories_expected:
+  - id: liwei-ops-account
+    content: "运维同事李伟的 GitLab 账号是 liwei-ops（团队有两位同名李伟，注意区分）。"
+    memory_type: profile

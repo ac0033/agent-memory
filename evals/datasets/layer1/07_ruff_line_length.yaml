@@ -1,0 +1,25 @@
+id: layer1-07
+layer: 1
+description: 测试 agent 能否记住项目的代码风格约束——ruff 行宽 100
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "这个项目用 ruff 做 lint 和格式化，line-length 配的是 100，不是默认的 88。你生成的代码不要超过 100 列，也别按 88 去换行。"
+      - role: assistant
+        content: "明白，ruff line-length 为 100，生成代码按 100 列控制，不按默认 88。"
+      - role: user
+        content: "检查命令是 uv run ruff check .，改完代码顺手跑一下。"
+question: "这个项目的 lint 工具和行宽限制是什么？生成的代码应该按多少列控制？"
+reference_answer: "项目用 ruff 做 lint 和格式化，line-length 是 100（不是默认 88）；检查命令是 uv run ruff check .。"
+rubric:
+  essential:
+    - "回答 lint 工具是 ruff"
+    - "回答行宽是 100，且指出不是默认的 88"
+  pitfalls:
+    - "回答行宽是 88（ruff 默认值，但与会话事实相反）"
+    - "编造 black、flake8 等其他工具（会话中只提到 ruff）"
+memories_expected:
+  - id: project-ruff-line-length-100
+    content: "本项目用 ruff 做 lint 和格式化，line-length 配置为 100（非默认 88），检查命令 uv run ruff check .。"
+    memory_type: semantic

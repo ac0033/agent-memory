@@ -1,0 +1,46 @@
+id: layer3-02
+layer: 3
+category: hidden_association
+description: 隐藏关联：新引入的依赖 libfoo 是 GPL-3.0，而团队正准备私有化商业分发
+sessions:
+  - session_id: s1
+    date: 2026-08-05
+    turns:
+      - role: user
+        content: "报表模块我引入了 libfoo 来生成 PDF，注意它是 GPL-3.0 许可证，不是 MIT，当时赶着上线先用了。"
+      - role: assistant
+        content: "明白，报表模块依赖 libfoo（GPL-3.0 许可证）。"
+    memories:
+      - id: user-team-commercial-saas
+        content: "用户所在团队维护一款商业闭源 SaaS 产品，也提供私有化部署交付。"
+        memory_type: profile
+      - id: libfoo-gpl-license
+        content: "报表模块依赖 libfoo，其许可证为 GPL-3.0。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-08-17
+    turns:
+      - role: user
+        content: "好消息，谈下了第一个私有化部署客户，下周开始打包交付，把整套服务打成离线安装包给客户。"
+      - role: assistant
+        content: "收到，下周开始为私有化客户打包整套服务的离线安装包。"
+    memories:
+      - id: private-delivery-plan
+        content: "已谈下首个私有化部署客户，下周开始打包整套服务的离线安装包交付。"
+        memory_type: episodic
+question: "私有化交付的技术准备上有什么要注意的？"
+reference_answer: "打包离线安装包交付时，需要主动提示：产品里依赖的 libfoo 是 GPL-3.0 许可证，把包含 libfoo 的产品以闭源方式商业分发（私有化交付）会与 GPL-3.0 的 copyleft 条款冲突，交付前需要替换依赖或咨询法务。"
+rubric:
+  essential:
+    - "回答私有化交付将打包整套服务的离线安装包"
+    - "主动提示了隐藏关联：libfoo 是 GPL-3.0，与闭源商业分发（私有化交付）存在许可证冲突"
+  pitfalls:
+    - "只谈打包交付安排，完全未提示 GPL 许可证冲突"
+    - "编造许可证信息（如声称 libfoo 是 MIT/Apache）"
+memories_expected:
+  - id: libfoo-gpl-license
+    content: "报表模块依赖 libfoo，其许可证为 GPL-3.0。"
+    memory_type: semantic
+  - id: private-delivery-plan
+    content: "已谈下首个私有化部署客户，下周开始打包整套服务的离线安装包交付。"
+    memory_type: episodic

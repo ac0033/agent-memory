@@ -1,0 +1,46 @@
+id: layer3-08
+layer: 3
+category: hidden_association
+description: 隐藏关联：云平台每月第一个周日 02:00-06:00 维护，而全量备份排在同一时段
+sessions:
+  - session_id: s1
+    date: 2026-08-03
+    turns:
+      - role: user
+        content: "云平台发了例行通知：每月第一个周日凌晨 2 点到 6 点是平台维护窗口，期间云盘和数据库服务可能中断。"
+      - role: assistant
+        content: "记下：云平台每月第一个周日 02:00-06:00 为维护窗口，云盘与数据库服务可能中断。"
+    memories:
+      - id: user-role-data-ops
+        content: "用户负责数据平台的日常运维与备份策略。"
+        memory_type: profile
+      - id: cloud-maintenance-window
+        content: "云平台每月第一个周日 02:00-06:00 为维护窗口，期间云盘和数据库服务可能中断。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-08-18
+    turns:
+      - role: user
+        content: "我把全量备份的定时任务设在每月第一个周日凌晨 3 点，周末夜里业务低峰，对业务影响最小。"
+      - role: assistant
+        content: "收到，全量备份任务定于每月第一个周日 03:00 执行。"
+    memories:
+      - id: backup-cron-schedule
+        content: "全量备份定时任务设在每月第一个周日 03:00 执行。"
+        memory_type: episodic
+question: "备份任务的排期合理吗？"
+reference_answer: "备份排在每月第一个周日 03:00。需要主动提示：云平台每月第一个周日 02:00-06:00 是维护窗口，云盘和数据库服务可能中断，备份时间正好落在维护窗口内，备份很可能失败或产出残缺备份，需要错开该时段。"
+rubric:
+  essential:
+    - "回答备份时间是每月第一个周日 03:00"
+    - "主动提示了隐藏关联：该时段与云平台 02:00-06:00 维护窗口重叠，备份可能失败"
+  pitfalls:
+    - "只肯定低峰排期合理，完全未提示与维护窗口重叠"
+    - "编造维护窗口可跳过等会话未提及的信息"
+memories_expected:
+  - id: cloud-maintenance-window
+    content: "云平台每月第一个周日 02:00-06:00 为维护窗口，期间云盘和数据库服务可能中断。"
+    memory_type: semantic
+  - id: backup-cron-schedule
+    content: "全量备份定时任务设在每月第一个周日 03:00 执行。"
+    memory_type: episodic

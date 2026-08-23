@@ -1,0 +1,40 @@
+id: layer2-19
+layer: 2
+category: stale
+description: 有效 vs 失效：团队站会时间从 10:00 提前到 9:30
+sessions:
+  - session_id: s1
+    date: 2026-03-05
+    turns:
+      - role: user
+        content: "我们组每天站会早上 10:00，会议室 3B，过需求排期都在会上过。"
+      - role: assistant
+        content: "记下：组内站会每天 10:00，会议室 3B。"
+    memories:
+      - id: standup-time-1000
+        content: "团队每日站会时间为早上 10:00，地点会议室 3B。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-06-16
+    turns:
+      - role: user
+        content: "跟另一个组对齐时间，站会改到 9:30 了，还是 3B 会议室，10:00 那个日程邀请作废了。"
+      - role: assistant
+        content: "收到，站会时间改为 9:30，地点不变（3B），原 10:00 日程作废。"
+    memories:
+      - id: standup-time-0930
+        content: "团队每日站会时间已改为早上 9:30（原 10:00 日程作废），地点仍为会议室 3B。"
+        memory_type: semantic
+        supersedes: standup-time-1000
+question: "明天站会几点开？在哪里？"
+reference_answer: "站会现在是早上 9:30，地点仍是会议室 3B。原 10:00 的时间已作废。"
+rubric:
+  essential:
+    - "回答站会时间是 9:30"
+    - "回答地点是会议室 3B"
+  pitfalls:
+    - "回答 10:00（旧时间已作废）"
+memories_expected:
+  - id: standup-time-0930
+    content: "团队每日站会时间已改为早上 9:30（原 10:00 日程作废），地点仍为会议室 3B。"
+    memory_type: semantic

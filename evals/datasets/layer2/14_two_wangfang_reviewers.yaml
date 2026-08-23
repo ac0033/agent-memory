@@ -1,0 +1,39 @@
+id: layer2-14
+layer: 2
+category: disambiguation
+description: 多对象消歧：两位同名"王芳"，分别负责算法与测试，评审分工不同
+sessions:
+  - session_id: s1
+    date: 2026-04-28
+    turns:
+      - role: user
+        content: "评审分工里有两位王芳，别 @ 错：算法组的王芳（账号 wangfang-algo）评审模型相关 MR；测试组的王芳（账号 wangfang-qa）评审测试基建和用例相关 MR。"
+      - role: assistant
+        content: "记下：模型相关 MR 找算法王芳（wangfang-algo），测试基建 MR 找测试王芳（wangfang-qa）。"
+    memories:
+      - id: wangfang-algo-review
+        content: "算法组王芳（账号 wangfang-algo）负责评审模型相关 MR（团队有两位同名王芳）。"
+        memory_type: profile
+      - id: wangfang-qa-review
+        content: "测试组王芳（账号 wangfang-qa）负责评审测试基建与用例相关 MR（团队有两位同名王芳）。"
+        memory_type: profile
+  - session_id: s2
+    date: 2026-06-20
+    turns:
+      - role: user
+        content: "上周那个模型 MR 就 @ 错人了，@ 了测试王芳，白等两天。"
+      - role: assistant
+        content: "确实容易混：模型相关应 @ wangfang-algo，wangfang-qa 只看测试基建。"
+    memories: []
+question: "我写了一个模型训练相关的 MR，应该 @ 哪位王芳的哪个账号评审？"
+reference_answer: "模型相关 MR 应找算法组的王芳，账号 wangfang-algo。测试组的王芳（wangfang-qa）只看测试基建与用例相关 MR，不要 @ 错。"
+rubric:
+  essential:
+    - "回答应 @ wangfang-algo（算法组王芳）"
+    - "体现两位王芳同名、分工不同"
+  pitfalls:
+    - "回答 @ wangfang-qa（测试组王芳不管模型 MR）"
+memories_expected:
+  - id: wangfang-algo-review
+    content: "算法组王芳（账号 wangfang-algo）负责评审模型相关 MR（团队有两位同名王芳）。"
+    memory_type: profile

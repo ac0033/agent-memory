@@ -1,0 +1,46 @@
+id: layer3-01
+layer: 3
+category: hidden_association
+description: 隐藏关联：prod TLS 证书 9 月 15 日到期，而 v2.0 发布排在 9 月 20 日
+sessions:
+  - session_id: s1
+    date: 2026-08-10
+    turns:
+      - role: user
+        content: "顺便记一下，prod 环境的 TLS 证书 2026-09-15 到期，运维那边说到期前一周要提交续期工单，不然走完审批来不及。"
+      - role: assistant
+        content: "已记下：prod TLS 证书 2026-09-15 到期，需提前一周提续期工单。"
+    memories:
+      - id: user-role-release-owner
+        content: "用户是 prod 环境的发布负责人，所有版本发布由用户拍板并跟进。"
+        memory_type: profile
+      - id: prod-tls-cert-expiry
+        content: "prod 环境的 TLS 证书 2026-09-15 到期，续期工单需提前一周提交。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-08-18
+    turns:
+      - role: user
+        content: "v2.0 的排期定了，9 月 20 日全量发布，节前把变更单都备好。"
+      - role: assistant
+        content: "收到，v2.0 定于 2026-09-20 全量发布。"
+    memories:
+      - id: v2-release-date
+        content: "v2.0 定于 2026-09-20 全量发布。"
+        memory_type: episodic
+question: "v2.0 的发布安排上有什么需要注意的？"
+reference_answer: "v2.0 定于 2026-09-20 全量发布。需要主动提示：prod 的 TLS 证书 2026-09-15 到期，发布日在证书失效之后，必须在发布前完成证书续期（续期工单需提前一周提交），否则发布当天服务会因证书过期中断。"
+rubric:
+  essential:
+    - "回答 v2.0 的发布时间是 2026-09-20"
+    - "主动提示了隐藏关联：prod TLS 证书 2026-09-15 到期，发布日在证书失效之后，需先续期证书"
+  pitfalls:
+    - "只复述发布日期，完全未提示证书到期风险"
+    - "编造会话中未提及的事实（如证书已续期、发布已延期）"
+memories_expected:
+  - id: prod-tls-cert-expiry
+    content: "prod 环境的 TLS 证书 2026-09-15 到期，续期工单需提前一周提交。"
+    memory_type: semantic
+  - id: v2-release-date
+    content: "v2.0 定于 2026-09-20 全量发布。"
+    memory_type: episodic

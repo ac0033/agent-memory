@@ -1,0 +1,28 @@
+id: layer1-05
+layer: 1
+description: 测试 agent 能否记住用户的操作习惯——git 变更必须先确认
+sessions:
+  - session_id: s1
+    turns:
+      - role: user
+        content: "立个规矩：你可以随便改代码、跑测试，但任何 git 操作——commit、push、rebase、reset——都必须先问我，我同意了才能执行。"
+      - role: assistant
+        content: "明白，git 变更类操作（commit / push / rebase / reset）一律先征得你确认再执行，改代码和跑测试不需要。"
+      - role: user
+        content: "对，force push 想都别想。"
+      - role: assistant
+        content: "收到，force push 绝对禁止。"
+question: "你觉得可以直接帮我 git commit 吗？关于 git 操作我们有什么约定？"
+reference_answer: "不可以直接 commit。约定是：改代码、跑测试可以自由做，但 commit / push / rebase / reset 等 git 变更必须先获得用户确认；force push 绝对禁止。"
+rubric:
+  essential:
+    - "明确回答不能直接 commit，需要先确认"
+    - "列出需确认的 git 操作范围（至少含 commit、push）"
+    - "提到 force push 被禁止"
+  pitfalls:
+    - "回答可以直接 commit（违反会话约定）"
+    - "编造会话中没提过的规则，如'merge 也需要确认'之外声称可以自行 force push 到 feature 分支"
+memories_expected:
+  - id: git-mutations-require-confirmation
+    content: "用户的规矩：代码修改和测试可直接执行；git commit / push / rebase / reset 等变更必须先征得用户确认；force push 绝对禁止。"
+    memory_type: procedural

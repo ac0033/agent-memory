@@ -1,0 +1,46 @@
+id: layer3-04
+layer: 3
+category: hidden_association
+description: 隐藏关联：DBA 公告 10-01~10-07 数据库变更冻结，而订单服务含 schema 变更的上线定在 10-03
+sessions:
+  - session_id: s1
+    date: 2026-08-15
+    turns:
+      - role: user
+        content: "DBA 团队发了公告：国庆前后 10 月 1 日到 10 月 7 日全公司数据库变更冻结，期间一律不批 schema 变更。"
+      - role: assistant
+        content: "记下：2026-10-01 至 2026-10-07 为数据库变更冻结期，期间不批 schema 变更。"
+    memories:
+      - id: user-role-order-service-owner
+        content: "用户负责订单服务，该服务的上线都伴随数据库变更审批。"
+        memory_type: profile
+      - id: db-change-freeze-window
+        content: "DBA 公告：2026-10-01 至 2026-10-07 全公司数据库变更冻结，期间不批 schema 变更。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-08-19
+    turns:
+      - role: user
+        content: "订单服务新版本要加两张表，我打算 10 月 3 日上线，趁着假期流量低。"
+      - role: assistant
+        content: "收到，订单服务新版本（含新增两张表的 schema 变更）计划 2026-10-03 上线。"
+    memories:
+      - id: order-service-launch-plan
+        content: "订单服务新版本含 schema 变更（新增两张表），计划 2026-10-03 上线。"
+        memory_type: episodic
+question: "订单服务 10 月 3 日的上线计划可行吗？"
+reference_answer: "计划本身已明确：10 月 3 日上线、含新增两张表的 schema 变更。需要主动提示：10 月 1 日至 10 月 7 日是 DBA 公告的数据库变更冻结期，期间不批 schema 变更，10 月 3 日的上线与冻结期冲突，需改期或申请特批。"
+rubric:
+  essential:
+    - "回答上线计划是 2026-10-03 且含 schema 变更"
+    - "主动提示了隐藏关联：10-01 至 10-07 数据库变更冻结，上线日落在冻结期内，需改期或特批"
+  pitfalls:
+    - "只评价假期流量低适合上线，完全未提示变更冻结冲突"
+    - "编造冻结期有豁免政策等会话未提及的信息"
+memories_expected:
+  - id: db-change-freeze-window
+    content: "DBA 公告：2026-10-01 至 2026-10-07 全公司数据库变更冻结，期间不批 schema 变更。"
+    memory_type: semantic
+  - id: order-service-launch-plan
+    content: "订单服务新版本含 schema 变更（新增两张表），计划 2026-10-03 上线。"
+    memory_type: episodic

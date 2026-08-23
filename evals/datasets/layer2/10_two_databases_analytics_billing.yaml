@@ -1,0 +1,43 @@
+id: layer2-10
+layer: 2
+category: disambiguation
+description: 多对象消歧：两套数据库（分析库 ClickHouse vs 账单库 PostgreSQL），连接方式各异
+sessions:
+  - session_id: s1
+    date: 2026-04-22
+    turns:
+      - role: user
+        content: "我们有两套库别搞混：分析库是 ClickHouse，主机 ch.internal:8123，只读账号；账单库是 PostgreSQL，主机 pg-billing.internal:5432，应用有写权限。"
+      - role: assistant
+        content: "记下：分析库 ClickHouse（ch.internal:8123，只读），账单库 PostgreSQL（pg-billing.internal:5432，可写）。"
+    memories:
+      - id: analytics-db-clickhouse
+        content: "分析库为 ClickHouse，主机 ch.internal:8123，应用账号只读。"
+        memory_type: semantic
+      - id: billing-db-postgres
+        content: "账单库为 PostgreSQL，主机 pg-billing.internal:5432，应用账号有写权限。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-06-25
+    turns:
+      - role: user
+        content: "今天在分析库上跑了个大查询把只读账号的并发打满了，以后大查询要加 LIMIT。"
+      - role: assistant
+        content: "收到，分析库大查询需加 LIMIT，避免打满只读账号并发。"
+    memories:
+      - id: analytics-query-limit
+        content: "对分析库（ClickHouse）的大查询必须加 LIMIT，避免打满只读账号并发。"
+        memory_type: procedural
+question: "要往账单里写一条对账记录，应该连哪个库、哪个主机？有什么权限？"
+reference_answer: "账单数据在账单库，是 PostgreSQL，主机 pg-billing.internal:5432，应用账号有写权限。注意不要连到分析库（ClickHouse，ch.internal:8123），那边是只读的。"
+rubric:
+  essential:
+    - "回答账单库是 PostgreSQL，主机 pg-billing.internal:5432"
+    - "回答账单库账号有写权限"
+  pitfalls:
+    - "把分析库 ClickHouse / ch.internal:8123 当成账单库回答"
+    - "声称账单库只读（与分析库属性张冠李戴）"
+memories_expected:
+  - id: billing-db-postgres
+    content: "账单库为 PostgreSQL，主机 pg-billing.internal:5432，应用账号有写权限。"
+    memory_type: semantic

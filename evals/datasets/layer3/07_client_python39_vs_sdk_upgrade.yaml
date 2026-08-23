@@ -1,0 +1,46 @@
+id: layer3-07
+layer: 3
+category: hidden_association
+description: 隐藏关联：最大客户生产环境只支持 Python 3.9，而团队想把 SDK 升到 3.12 语法
+sessions:
+  - session_id: s1
+    date: 2026-08-04
+    turns:
+      - role: user
+        content: "注意，我们最大的客户（贡献四成收入那家）生产环境是老旧的内网系统，只支持 Python 3.9，他们运维明确说两年内不会升级。"
+      - role: assistant
+        content: "记下：最大客户的生产环境只支持 Python 3.9，且两年内不会升级。"
+    memories:
+      - id: user-role-sdk-maintainer
+        content: "用户维护一款交付给多家企业客户部署的 SDK。"
+        memory_type: profile
+      - id: key-client-python-39
+        content: "最大客户的生产环境只支持 Python 3.9，且两年内不会升级。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-08-17
+    turns:
+      - role: user
+        content: "团队想把 SDK 的最低版本提到 Python 3.12，好用 match 语句和新类型标注重构核心模块。"
+      - role: assistant
+        content: "收到，SDK 计划把最低版本提升到 Python 3.12 并用新语法重构核心模块。"
+    memories:
+      - id: sdk-python-upgrade-plan
+        content: "SDK 计划将最低版本提升到 Python 3.12，用 match 语句与新类型标注重构核心模块。"
+        memory_type: episodic
+question: "SDK 升级 Python 3.12 的计划你怎么看？"
+reference_answer: "计划是把 SDK 最低版本提到 Python 3.12 并用新语法重构。需要主动提示：最大客户的生产环境只支持 Python 3.9 且两年内不会升级，升级后该客户将无法部署新版 SDK，直接推进会丢失最大客户，需要保留 3.9 兼容分支或与客户确认。"
+rubric:
+  essential:
+    - "回答升级计划内容：最低版本提到 Python 3.12、新语法重构"
+    - "主动提示了隐藏关联：最大客户生产环境只支持 Python 3.9，升级会导致该客户无法部署"
+  pitfalls:
+    - "只讨论新语法收益，完全未提示大客户环境不兼容"
+    - "编造客户已同意升级等会话未提及的信息"
+memories_expected:
+  - id: key-client-python-39
+    content: "最大客户的生产环境只支持 Python 3.9，且两年内不会升级。"
+    memory_type: semantic
+  - id: sdk-python-upgrade-plan
+    content: "SDK 计划将最低版本提升到 Python 3.12，用 match 语句与新类型标注重构核心模块。"
+    memory_type: episodic
