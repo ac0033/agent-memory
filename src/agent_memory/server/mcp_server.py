@@ -1,6 +1,6 @@
-"""MCP Server（M2/M5）：把记忆内核暴露为七个 MCP tool，stdio 传输。
+"""MCP Server（M2/M5/M7a）：把记忆内核暴露为十一个 MCP tool，stdio 传输。
 
-七个 tool：
+长期记忆 tool（七个）：
 - memory_search：混合检索 + render_recall_block 渲染，scope 过滤在检索层强制
   （只查调用方给的 scope + global，global 由 HybridSearcher 自动并入）。
   M5 复核门：复核队列有积压时按 settings.review_gate 处置——ask 档拦截并等
@@ -14,9 +14,16 @@
 - memory_review_resolve（M5）：人工裁决待办（approve 入库 / discard 丢弃 /
   modify 改文本后入库），裁决后删除队列文件。
 
+工作记忆与统一上下文 tool（M7a，四个）：
+- memory_wm_read / memory_wm_write / memory_wm_clear：工作记忆（操作层，
+  当前任务状态）的读 / 全量写 / 清空。写入只过脱敏，不过评价门、不做对账
+  （评价门的祈使句拦截与 TODO 天然冲突）；
+- memory_context：统一上下文组装——常驻画像块 + 工作记忆块 + 召回块，
+  按框架顺序拼接；复核门语义与 memory_search 一致（blocked 原样透出）。
+
 启动：uv run python -m agent_memory.server.mcp_server
 组件构建在 main() 里完成；MemoryService 是纯 Python 类，测试直接注入
-fake embedder / fake LLM 调用，不走 MCP 传输。
+fake embedder / fake LLM / fake working store 调用，不走 MCP 传输。
 """
 
 import json
@@ -39,9 +46,13 @@ from agent_memory.long_term.ingest.review_queue import (
 from agent_memory.long_term.retrieve.embedder import get_embedder
 from agent_memory.long_term.retrieve.hybrid import HybridSearcher
 from agent_memory.long_term.retrieve.inject import render_recall_block
+from agent_memory.long_term.retrieve.resident import build_system_context
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore, MemoryStoreError
 from agent_memory.models import MemoryEntry, is_valid_scope, normalize_scope
+from agent_memory.working.models import TodoItem, WorkingMemory
+from agent_memory.working.render import is_stale, render_working_memory_block
+from agent_memory.working.store import WorkingMemoryNotFoundError, WorkingMemoryStore
 
 # confidence 的升降阶梯：feedback 沿它走一步
 _CONFIDENCE_LADDER = ["low", "medium", "high"]
@@ -84,7 +95,7 @@ def _pending_from_raw(raw: object, reason: str) -> dict:
 
 
 class MemoryService:
-    """七个 tool 的业务实现。与 MCP 传输解耦，测试直接实例化调用。"""
+    """十一个 tool 的业务实现。与 MCP 传输解耦，测试直接实例化调用。"""
 
     def __init__(
         self,
@@ -93,12 +104,15 @@ class MemoryService:
         index: IndexDB,
         embedder,
         llm: LLMClient | None = None,
+        working_store: WorkingMemoryStore | None = None,
     ):
         self.settings = settings
         self.store = store
         self.index = index
         self.embedder = embedder
         self.llm = llm
+        # 工作记忆存储缺省按 settings.data_dir 自建；测试可注入以隔离
+        self.working_store = working_store or WorkingMemoryStore(settings.data_dir)
         self.searcher = HybridSearcher(store, index, embedder, settings)
 
     # ---- memory_search ----
@@ -426,14 +440,172 @@ class MemoryService:
             "file": queue_file,
         }
 
+    # ---- memory_wm_read / memory_wm_write / memory_wm_clear（M7a 工作记忆） ----
+
+    def _normalize_valid_scope(self, scope: str) -> str:
+        """scope 归一化 + 校验（与 search 同口径）：非法当场报错，绝不静默。"""
+        scope = normalize_scope(scope)
+        if not is_valid_scope(scope):
+            raise ValueError(
+                "scope 非法：必须匹配 global | repo:<slug> | agent:<name>"
+                f"（slug 为小写字母/数字/连字符），收到: {scope!r}"
+            )
+        return scope
+
+    def wm_read(self, scope: str, current_turn: int | None = None) -> dict[str, Any]:
+        """读取一个 scope 的工作记忆并渲染注入块。不存在时 exists=false（不是错误）。
+
+        stale_wm：传了 current_turn 时按水位判断新鲜度（current_turn > turn_watermark
+        说明工作记忆可能滞后，调用方可据此决定要不要先 wm_write 刷新）。
+        """
+        scope = self._normalize_valid_scope(scope)
+        wm = self.working_store.read(scope)
+        if wm is None:
+            return {
+                "status": "ok",
+                "exists": False,
+                "block": "",
+                "working_memory": None,
+                "stale_wm": False,
+                "turn_watermark": 0,
+            }
+        block = render_working_memory_block(wm, self.settings.working_memory_budget_chars)
+        stale = is_stale(wm, current_turn) if current_turn is not None else False
+        return {
+            "status": "ok",
+            "exists": True,
+            "block": block,
+            "working_memory": wm.model_dump(mode="json"),
+            "stale_wm": stale,
+            "turn_watermark": wm.turn_watermark,
+        }
+
+    def wm_write(
+        self,
+        scope: str,
+        goal: str | None = None,
+        decisions: list[str] | None = None,
+        variables: dict[str, str] | None = None,
+        todos: list[dict | str] | None = None,
+        notes: list[str] | None = None,
+        turn_watermark: int | None = None,
+    ) -> dict[str, Any]:
+        """全量替换写入工作记忆（不是合并：未传的字段就是空）。
+
+        所有文本字段逐个过脱敏（redact）；不过评价门、不做对账——工作记忆是
+        操作层，TODO 天然是祈使句，过不了评价门。todos 兼容两种形式：
+        [{"content": ..., "status": ...}, ...] 或纯字符串列表（按 pending）。
+        turn_watermark 未传则保留旧值（新建为 0）。
+        """
+        scope = self._normalize_valid_scope(scope)
+        redacted_fields = 0
+
+        def _redact(text: str) -> str:
+            nonlocal redacted_fields
+            redacted, hits = redact(text)
+            if hits:
+                redacted_fields += 1
+            return redacted
+
+        old = self.working_store.read(scope)
+        todo_items: list[TodoItem] = []
+        for item in todos or []:
+            if isinstance(item, str):
+                todo_items.append(TodoItem(content=_redact(item)))
+            elif isinstance(item, dict):
+                data = {**item, "content": _redact(str(item.get("content", "")))}
+                todo_items.append(TodoItem.model_validate(data))
+            else:
+                raise ValueError(
+                    "todos 元素必须是字符串或 {content, status} 字典，"
+                    f"收到: {type(item).__name__}"
+                )
+        wm = WorkingMemory(
+            scope=scope,
+            goal=_redact(goal) if goal else "",
+            decisions=[_redact(d) for d in decisions or []],
+            variables={_redact(k): _redact(v) for k, v in (variables or {}).items()},
+            todos=todo_items,
+            notes=[_redact(n) for n in notes or []],
+            turn_watermark=(
+                turn_watermark
+                if turn_watermark is not None
+                else (old.turn_watermark if old is not None else 0)
+            ),
+        )
+        saved = self.working_store.write(wm)
+        return {"status": "ok", "version": saved.version, "redacted_fields": redacted_fields}
+
+    def wm_clear(self, scope: str) -> dict[str, Any]:
+        """清空一个 scope 的工作记忆。本就不存在时返回 already empty 而不报错
+        （清空是幂等意图，不属于数据损坏）。"""
+        scope = self._normalize_valid_scope(scope)
+        try:
+            self.working_store.delete(scope)
+        except WorkingMemoryNotFoundError:
+            return {"status": "ok", "note": "already empty"}
+        return {"status": "ok"}
+
+    # ---- memory_context（M7a 统一上下文组装） ----
+
+    def context(
+        self,
+        scope: str,
+        query: str | None = None,
+        k: int = 5,
+        current_turn: int | None = None,
+        acknowledge_pending: bool = False,
+    ) -> dict[str, Any]:
+        """统一组装注入上下文，按框架顺序拼三个分节：
+
+        1. 常驻画像块（当前 scope + global 的 profile 记忆）；
+        2. 工作记忆块（当前 scope 的任务状态，预算 working_memory_budget_chars）；
+        3. 召回块（query 给了才检索；复核门语义与 memory_search 一致——
+           复核队列积压被拦截时整个 context 原样透出 blocked）。
+        """
+        scope = self._normalize_valid_scope(scope)
+        profile = build_system_context(scope, store=self.store, settings=self.settings)
+        wm = self.working_store.read(scope)
+        wm_block = (
+            render_working_memory_block(wm, self.settings.working_memory_budget_chars)
+            if wm is not None
+            else ""
+        )
+        stale = (
+            is_stale(wm, current_turn)
+            if wm is not None and current_turn is not None
+            else False
+        )
+        pending_count = len(list_review_queue(self.settings.data_dir))
+        recall_block = ""
+        if query is not None:
+            result = self.search(query, scope=scope, k=k, acknowledge_pending=acknowledge_pending)
+            if result["status"] == "blocked":
+                # 复核门语义不变：blocked 原样透出，不返回任何记忆内容
+                return result
+            recall_block = result["block"]
+            pending_count = result["pending_review_count"]
+        block = "\n\n".join(s for s in (profile, wm_block, recall_block) if s)
+        return {
+            "status": "ok",
+            "block": block,
+            "sections": {
+                "profile": profile,
+                "working_memory": wm_block,
+                "recall": recall_block,
+            },
+            "stale_wm": stale,
+            "pending_review_count": pending_count,
+        }
+
 
 def build_server(service: MemoryService):
-    """把 MemoryService 注册成 MCP server 的七个 tool。"""
+    """把 MemoryService 注册成 MCP server 的十一个 tool。"""
     from mcp.server.mcpserver import MCPServer
 
     server = MCPServer(
         "agent-memory",
-        description="本地长期记忆：检索 / 写入 / 反馈 / 更新 / 遗忘 / 人工复核",
+        description="本地记忆服务：长期记忆（检索/写入/反馈/复核）+ 工作记忆 + 上下文组装",
     )
 
     @server.tool(
@@ -516,6 +688,79 @@ def build_server(service: MemoryService):
         queue_file: str, action: str, new_content: str | None = None
     ) -> dict:
         return service.review_resolve(queue_file, action, new_content)
+
+    @server.tool(
+        name="memory_wm_read",
+        description=(
+            "读取一个 scope 的工作记忆（当前任务状态：目标/待办/决策/变量/备注），"
+            "返回渲染好的注入块与结构化字段。scope 自动归一化，非法当场报错。"
+            "传 current_turn 时返回 stale_wm 表示工作记忆是否可能滞后"
+            "（当前轮次超过已更新到的轮次水位），滞后可考虑 wm_write 刷新"
+        ),
+    )
+    def memory_wm_read(scope: str, current_turn: int | None = None) -> dict:
+        return service.wm_read(scope, current_turn=current_turn)
+
+    @server.tool(
+        name="memory_wm_write",
+        description=(
+            "写入工作记忆（当前任务状态）。注意是全量替换而非合并：未传的字段"
+            "会被置空，只想改一个字段也要把其余字段原样带上。所有文本过脱敏；"
+            "不过评价门——待办事项天然是祈使句，属于正常内容。todos 可传"
+            " [{content, status}, ...]（status 为 pending/done）或纯字符串列表"
+            "（按 pending）。turn_watermark 传当前对话轮次；未传保留旧值"
+        ),
+    )
+    def memory_wm_write(
+        scope: str,
+        goal: str | None = None,
+        decisions: list[str] | None = None,
+        variables: dict[str, str] | None = None,
+        todos: list[dict | str] | None = None,
+        notes: list[str] | None = None,
+        turn_watermark: int | None = None,
+    ) -> dict:
+        return service.wm_write(
+            scope,
+            goal=goal,
+            decisions=decisions,
+            variables=variables,
+            todos=todos,
+            notes=notes,
+            turn_watermark=turn_watermark,
+        )
+
+    @server.tool(
+        name="memory_wm_clear",
+        description="清空一个 scope 的工作记忆；本就不存在时返回 already empty，不算错误",
+    )
+    def memory_wm_clear(scope: str) -> dict:
+        return service.wm_clear(scope)
+
+    @server.tool(
+        name="memory_context",
+        description=(
+            "统一组装注入上下文：常驻画像块（长期用户画像）+ 工作记忆块"
+            "（当前任务状态）+ 召回块（传 query 才检索历史记忆），按此顺序拼接。"
+            "复核队列有积压时按 review_gate 配置处置：返回 status=blocked 表示"
+            "被复核门拦截，需先向用户确认（用户同意后以 acknowledge_pending=true"
+            "重试，或先用 memory_review_list / memory_review_resolve 处理待办）"
+        ),
+    )
+    def memory_context(
+        scope: str,
+        query: str | None = None,
+        k: int = 5,
+        current_turn: int | None = None,
+        acknowledge_pending: bool = False,
+    ) -> dict:
+        return service.context(
+            scope,
+            query=query,
+            k=k,
+            current_turn=current_turn,
+            acknowledge_pending=acknowledge_pending,
+        )
 
     return server
 

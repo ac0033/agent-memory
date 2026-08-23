@@ -33,6 +33,8 @@ class TestDefaults:
         # M5 人工复核交互
         assert s.review_gate == "ask"
         assert s.review_turn_interval == 3
+        # M7a 工作记忆
+        assert s.working_memory_budget_chars == 1000
         # M6 HTTP 常驻服务
         assert s.http_host == "127.0.0.1"
         assert s.http_port == 8765
@@ -119,6 +121,10 @@ class TestEnvOverrides:
         assert s.http_host == "0.0.0.0"
         assert s.http_port == 9000
 
+    def test_working_memory_overrides(self):
+        s = get_settings(env={"AGENT_MEMORY_WORKING_MEMORY_BUDGET_CHARS": "600"})
+        assert s.working_memory_budget_chars == 600
+
     def test_unrelated_env_vars_ignored(self):
         s = get_settings(env={"AGENT_MEMORY_UNKNOWN_THING": "x", "PATH": "/usr/bin"})
         assert s == Settings()
@@ -149,3 +155,8 @@ class TestFailClosed:
     def test_invalid_http_port(self):
         with pytest.raises(ValidationError):
             get_settings(env={"AGENT_MEMORY_HTTP_PORT": "70000"})
+
+    @pytest.mark.parametrize("bad", ["0", "-5", "abc"])
+    def test_invalid_working_memory_budget_chars(self, bad):
+        with pytest.raises(ValidationError):
+            get_settings(env={"AGENT_MEMORY_WORKING_MEMORY_BUDGET_CHARS": bad})

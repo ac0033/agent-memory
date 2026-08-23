@@ -209,7 +209,7 @@ def test_forget_deletes(service):
         service.forget("port-entry")  # 再删一次 fail-closed
 
 
-def test_build_server_registers_seven_tools(service):
+def test_build_server_registers_all_tools(service):
     server = build_server(service)
     names = {t.name for t in server._tool_manager._tools.values()} if hasattr(
         server, "_tool_manager"
@@ -225,6 +225,10 @@ def test_build_server_registers_seven_tools(service):
             "memory_forget",
             "memory_review_list",
             "memory_review_resolve",
+            "memory_wm_read",
+            "memory_wm_write",
+            "memory_wm_clear",
+            "memory_context",
         } <= names
 
 
@@ -407,3 +411,155 @@ def test_add_with_explicit_scope_no_reminder(service):
         scope="repo:trading-api",
     )
     assert report2["scope_reminder"] is None
+
+
+# ---------------------------------------------------------------- M7a 工作记忆
+
+
+def test_wm_write_and_read_roundtrip(service):
+    out = service.wm_write(
+        "repo:demo",
+        goal="完成 M7a",
+        decisions=["工作记忆全量替换"],
+        variables={"预算": "1000"},
+        todos=[{"content": "补测试", "status": "pending"}, "跑验收"],
+        notes=["文档后补"],
+        turn_watermark=3,
+    )
+    assert out["status"] == "ok"
+    assert out["version"] == 1
+    assert out["redacted_fields"] == 0
+
+    read = service.wm_read("repo:demo", current_turn=3)
+    assert read["exists"] is True
+    assert read["stale_wm"] is False  # 轮次等于水位不算滞后
+    assert read["turn_watermark"] == 3
+    wm = read["working_memory"]
+    assert wm["goal"] == "完成 M7a"
+    assert wm["todos"][0] == {"content": "补测试", "status": "pending"}
+    assert wm["todos"][1]["content"] == "跑验收"  # 纯字符串按 pending
+    assert wm["todos"][1]["status"] == "pending"
+    assert "## 工作记忆（当前任务状态）" in read["block"]
+    # 再读一次：轮次超过水位则 stale
+    assert service.wm_read("repo:demo", current_turn=5)["stale_wm"] is True
+
+
+def test_wm_read_missing_scope(service):
+    out = service.wm_read("repo:nothing")
+    assert out["exists"] is False
+    assert out["block"] == ""
+    assert out["stale_wm"] is False
+    assert out["working_memory"] is None
+
+
+def test_wm_write_redacts(service):
+    out = service.wm_write(
+        "global",
+        goal="排查密钥泄露，联系 admin@example.com",
+        todos=["api_key=abcdef1234567890 先撤销"],
+    )
+    assert out["redacted_fields"] == 2  # goal 的 email + todo 的 api_key
+    read = service.wm_read("global")
+    assert "admin@example.com" not in read["working_memory"]["goal"]
+    assert "[REDACTED:email]" in read["working_memory"]["goal"]
+    assert "[REDACTED:api_key]" in read["working_memory"]["todos"][0]["content"]
+
+
+def test_wm_write_full_replace_semantics(service):
+    service.wm_write("global", goal="第一版", decisions=["决策甲"], notes=["备注甲"])
+    out = service.wm_write("global", goal="第二版")  # 未传字段 = 置空，不是合并
+    assert out["version"] == 2
+    wm = service.wm_read("global")["working_memory"]
+    assert wm["goal"] == "第二版"
+    assert wm["decisions"] == [] and wm["notes"] == [] and wm["todos"] == []
+
+
+def test_wm_write_keeps_watermark_when_not_given(service):
+    service.wm_write("global", goal="v1", turn_watermark=7)
+    service.wm_write("global", goal="v2")
+    assert service.wm_read("global")["turn_watermark"] == 7
+
+
+def test_wm_invalid_scope_fails_loudly(service):
+    with pytest.raises(ValueError, match="scope"):
+        service.wm_read("not a scope")
+    with pytest.raises(ValueError, match="scope"):
+        service.wm_write("not a scope", goal="x")
+    with pytest.raises(ValueError, match="scope"):
+        service.wm_clear("not a scope")
+
+
+def test_wm_clear_idempotent(service):
+    service.wm_write("global", goal="x")
+    assert service.wm_clear("global")["status"] == "ok"
+    assert service.wm_read("global")["exists"] is False
+    # 本就不存在：幂等意图，返回 already empty 而不是报错
+    out = service.wm_clear("global")
+    assert out["status"] == "ok"
+    assert out["note"] == "already empty"
+
+
+# ---------------------------------------------------------------- M7a 统一上下文组装
+
+
+def _prepare_three_layers(service):
+    """造齐三个分节的数据：profile 常驻层 + 工作记忆 + 可召回条目。"""
+    service.add(
+        content="用户偏好使用中文交流沟通。",
+        entry_id="lang-pref",
+        scope="global",
+        memory_type="profile",
+    )
+    service.wm_write("global", goal="组装上下文", turn_watermark=2)
+    _add_direct(service)  # port-entry，含"端口"关键词供召回
+
+
+def test_context_assembles_in_order(service):
+    _prepare_three_layers(service)
+    out = service.context("global", query="端口是多少", current_turn=2)
+    assert out["status"] == "ok"
+    sections = out["sections"]
+    assert "## 长期记忆（用户画像）" in sections["profile"]
+    assert "## 工作记忆（当前任务状态）" in sections["working_memory"]
+    assert "<recalled_memories>" in sections["recall"]
+    # block = 三个非空分节按框架顺序拼接：profile > 工作记忆 > 召回
+    block = out["block"]
+    assert block.index("## 长期记忆（用户画像）") < block.index("## 工作记忆（当前任务状态）")
+    assert block.index("## 工作记忆（当前任务状态）") < block.index("<recalled_memories>")
+    assert out["stale_wm"] is False
+    assert service.context("global", query="端口是多少", current_turn=9)["stale_wm"] is True
+
+
+def test_context_without_query_skips_recall(service):
+    _prepare_three_layers(service)
+    out = service.context("global")
+    assert out["sections"]["recall"] == ""
+    assert "<recalled_memories>" not in out["block"]
+    assert out["sections"]["profile"] and out["sections"]["working_memory"]
+
+
+def test_context_empty_memory_empty_block(service):
+    out = service.context("global", query="端口是多少")
+    assert out["status"] == "ok"
+    assert out["block"] == ""
+    assert out["pending_review_count"] == 0
+
+
+def test_context_passes_through_gate_blocked(service):
+    _prepare_three_layers(service)
+    _queue_low_entry(service)  # 制造复核积压（默认 review_gate=ask）
+    out = service.context("global", query="端口是多少")
+    # 复核门语义与 memory_search 一致：blocked 原样透出，不返回任何记忆内容
+    assert out["status"] == "blocked"
+    assert out["gate"] == "ask"
+    assert "sections" not in out
+    # 用户确认后放行
+    out2 = service.context("global", query="端口是多少", acknowledge_pending=True)
+    assert out2["status"] == "ok"
+    assert out2["pending_review_count"] == 1
+
+
+def test_wm_scope_normalized(service):
+    """scope 与检索同口径归一化：下划线写法落到连字符命名空间。"""
+    service.wm_write("repo:llm_wiki", goal="x")
+    assert service.wm_read("repo:llm-wiki")["exists"] is True

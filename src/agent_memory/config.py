@@ -58,6 +58,9 @@ class Settings(BaseModel):
     # 强制记忆更新的对话轮数间隔（hook 计数用）：每 N 轮注入一次蒸馏指令
     review_turn_interval: int = Field(default=3, gt=0)
 
+    # 工作记忆（M7a）：注入上下文的工作记忆块字符预算（操作层，不占召回预算）
+    working_memory_budget_chars: int = Field(default=1000, gt=0)
+
     # HTTP 常驻服务（M6）：streamable-http 传输的监听地址。
     # 默认只绑回环地址——本机部署天然免鉴权；要开放给局域网再显式改 host 并加认证
     http_host: str = "127.0.0.1"
@@ -85,6 +88,7 @@ _ENV_KEYS: dict[str, str] = {
     "evolve_retention_query_count": "AGENT_MEMORY_EVOLVE_RETENTION_QUERY_COUNT",
     "review_gate": "AGENT_MEMORY_REVIEW_GATE",
     "review_turn_interval": "AGENT_MEMORY_REVIEW_TURN_INTERVAL",
+    "working_memory_budget_chars": "AGENT_MEMORY_WORKING_MEMORY_BUDGET_CHARS",
     "http_host": "AGENT_MEMORY_HTTP_HOST",
     "http_port": "AGENT_MEMORY_HTTP_PORT",
 }
