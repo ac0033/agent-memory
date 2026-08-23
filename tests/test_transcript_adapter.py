@@ -332,6 +332,19 @@ def test_detect_adapter_unknown_filename_raises(tmp_path):
         detect_adapter(path)
 
 
+def test_detect_adapter_new_runtimes(tmp_path):
+    """五种新宿主的自动识别规则（按路径特征命中，顺序无关）。"""
+    cases = {
+        "codex": "sessions/2026/08/01/rollout-2026-08-01T02-31-56-abc.jsonl",
+        "opencode": ".local/share/opencode/opencode.db",
+        "pi": ".pi/agent/sessions/--D--proj--/2026-07-21T15-32-35-634Z_abc.jsonl",
+        "deepseek-harness": ".dsh/sessions/--D-proj--/session-x/session.jsonl.zstd",
+        "claude-code": ".claude/projects/-proj/964aa807-99e0-46c8-a293-a9aed7702390.jsonl",
+    }
+    for expected, rel in cases.items():
+        assert detect_adapter(tmp_path / rel).name == expected
+
+
 # ---------------------------------------------------------------- 文件不存在
 
 

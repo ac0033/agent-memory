@@ -17,6 +17,7 @@ dependencies = [
     "langgraph-checkpoint>=4.2.0",
     "langchain>=1.0",
     "langchain-openai>=1.5.2",
+    "zstandard>=0.25.0",
 ]
 
 [dependency-groups]
