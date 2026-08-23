@@ -31,12 +31,12 @@ from datetime import datetime
 from pathlib import Path
 
 from agent_memory.config import Settings
-from agent_memory.ingest.review_queue import write_review_queue
 from agent_memory.llm import LLMClient, LLMError
+from agent_memory.long_term.ingest.review_queue import write_review_queue
+from agent_memory.long_term.retrieve.hybrid import HybridSearcher
+from agent_memory.long_term.store.index_db import IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.models import MemoryEntry
-from agent_memory.retrieve.hybrid import HybridSearcher
-from agent_memory.store.index_db import IndexDB
-from agent_memory.store.markdown_store import MarkdownStore
 
 # 传播近邻的检索条数与稠密距离阈值（与 reconcile 的近邻标准一致：
 # cosine 距离 ≤ 0.35 才算语义近邻，值得花一次 LLM 判定）

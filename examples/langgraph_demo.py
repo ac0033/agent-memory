@@ -26,13 +26,13 @@ from pathlib import Path
 # 允许直接以脚本方式运行（uv run python examples/langgraph_demo.py）
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from agent_memory.adapters.langgraph.store import AgentMemoryStore  # noqa: E402
-from agent_memory.adapters.langgraph.tools import build_memory_tools  # noqa: E402
 from agent_memory.config import get_settings  # noqa: E402
-from agent_memory.retrieve.embedder import get_embedder  # noqa: E402
-from agent_memory.retrieve.resident import build_system_context  # noqa: E402
-from agent_memory.store.index_db import IndexDB  # noqa: E402
-from agent_memory.store.markdown_store import MarkdownStore  # noqa: E402
+from agent_memory.long_term.adapters.langgraph.store import AgentMemoryStore  # noqa: E402
+from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools  # noqa: E402
+from agent_memory.long_term.retrieve.embedder import get_embedder  # noqa: E402
+from agent_memory.long_term.retrieve.resident import build_system_context  # noqa: E402
+from agent_memory.long_term.store.index_db import IndexDB  # noqa: E402
+from agent_memory.long_term.store.markdown_store import MarkdownStore  # noqa: E402
 
 _BASE_PROMPT = (
     "你是用户的编程助手，接入了长期记忆库，有两个工具：\n"

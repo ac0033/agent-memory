@@ -10,9 +10,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agent_memory.ingest.distill import MIN_CONTENT_CHARS
-from agent_memory.ingest.redact import redact
-from agent_memory.ingest.review_queue import (  # noqa: F401  (re-export，兼容既有调用方)
+from agent_memory.long_term.ingest.distill import MIN_CONTENT_CHARS
+from agent_memory.long_term.ingest.redact import redact
+from agent_memory.long_term.ingest.review_queue import (  # noqa: F401  (re-export，兼容既有调用方)
     write_review_queue,
     write_review_queue_raw,
 )

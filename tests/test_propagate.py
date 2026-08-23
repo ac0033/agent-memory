@@ -11,14 +11,14 @@ import pytest
 import yaml
 
 from agent_memory.config import Settings
-from agent_memory.ingest.propagate import (
+from agent_memory.llm import LLMError
+from agent_memory.long_term.ingest.propagate import (
     judge_propagation,
     judge_validity,
     propagate_change,
 )
-from agent_memory.llm import LLMError
-from agent_memory.store.index_db import IndexDB
-from agent_memory.store.markdown_store import MarkdownStore
+from agent_memory.long_term.store.index_db import IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 
 
 class VerdictLLM:

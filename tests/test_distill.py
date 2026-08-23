@@ -4,8 +4,8 @@ import json
 
 import yaml
 
-from agent_memory.ingest.distill import distill_memories, format_conversation
 from agent_memory.llm import LLMClient
+from agent_memory.long_term.ingest.distill import distill_memories, format_conversation
 
 CONVERSATION = [
     {"role": "user", "content": "这个项目 dev server 固定用 8765 端口。"},

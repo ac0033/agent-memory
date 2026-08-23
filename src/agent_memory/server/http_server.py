@@ -23,10 +23,10 @@ from starlette.responses import PlainTextResponse
 
 from agent_memory.config import Settings, get_settings
 from agent_memory.llm import LLMClient, LLMError, OpenAILLMClient
-from agent_memory.retrieve.embedder import get_embedder
+from agent_memory.long_term.retrieve.embedder import get_embedder
+from agent_memory.long_term.store.index_db import IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.server.mcp_server import MemoryService, build_server
-from agent_memory.store.index_db import IndexDB
-from agent_memory.store.markdown_store import MarkdownStore
 
 # 仓库内 Skill 文件的位置：src/agent_memory/server/http_server.py -> 仓库根
 _SKILL_MD_PATH = Path(__file__).resolve().parents[3] / "skills" / "agent-memory" / "SKILL.md"

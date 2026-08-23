@@ -198,9 +198,9 @@ uv run python evals/runners/e2e_eval.py --layers 2 --llm-judge --no-cache # 禁�
 自写的 LangGraph agent 有三种接法，可叠加使用：
 
 ```python
-from agent_memory.adapters.langgraph.store import AgentMemoryStore
-from agent_memory.adapters.langgraph.tools import build_memory_tools
-from agent_memory.retrieve.resident import build_system_context
+from agent_memory.long_term.adapters.langgraph.store import AgentMemoryStore
+from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
+from agent_memory.long_term.retrieve.resident import build_system_context
 from langgraph.prebuilt import create_react_agent
 
 # 1) BaseStore：namespace 约定 ("memories", <scope>)，put/search/delete 直接映射到记忆内核
@@ -264,7 +264,7 @@ uv run agent-memory evolve --scope repo:my-repo
 
 触发条件（满足任一，阈值用 `AGENT_MEMORY_EVOLVE_*` 环境变量覆盖）：距上次整理超 7 天（`EVOLVE_INTERVAL_DAYS`）、新增条目超 50（`EVOLVE_NEW_ENTRIES_THRESHOLD`）、复核队列积压超 10（`EVOLVE_REVIEW_BACKLOG_THRESHOLD`）。
 
-整理产出的是**提案**（`data/review_queue/evolution/<timestamp>/proposal.yaml`），不是直接改写：三档验证（boundary / retention / safety）任一不过即否决，提案留档交人工；全过才晋升——晋升前对记忆层做快照（`data/snapshots/<timestamp>/`），晋升后写审计日志（`data/logs/evolution_audit.jsonl`）。回滚用 `agent_memory.evolve.apply.rollback(snapshot_id, settings, embedder)` 从快照恢复记忆层并重建索引。
+整理产出的是**提案**（`data/review_queue/evolution/<timestamp>/proposal.yaml`），不是直接改写：三档验证（boundary / retention / safety）任一不过即否决，提案留档交人工；全过才晋升——晋升前对记忆层做快照（`data/snapshots/<timestamp>/`），晋升后写审计日志（`data/logs/evolution_audit.jsonl`）。回滚用 `agent_memory.long_term.evolve.apply.rollback(snapshot_id, settings, embedder)` 从快照恢复记忆层并重建索引。
 
 ## M5 用法
 

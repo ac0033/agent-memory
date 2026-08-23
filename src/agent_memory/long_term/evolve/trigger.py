@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from agent_memory.config import Settings
-from agent_memory.store.markdown_store import MarkdownStore
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 
 
 @dataclass

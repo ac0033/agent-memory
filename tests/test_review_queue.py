@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent_memory.ingest.review_queue import (
+from agent_memory.long_term.ingest.review_queue import (
     delete_review_item,
     list_review_queue,
     load_review_item,

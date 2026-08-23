@@ -22,14 +22,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent_memory.config import Settings, get_settings
-from agent_memory.ingest.gate import write_review_queue
-from agent_memory.ingest.propagate import PropagationReport, propagate_change
 from agent_memory.llm import LLMClient, LLMError
+from agent_memory.long_term.ingest.gate import write_review_queue
+from agent_memory.long_term.ingest.propagate import PropagationReport, propagate_change
+from agent_memory.long_term.retrieve.embedder import get_embedder
+from agent_memory.long_term.retrieve.hybrid import HybridSearcher
+from agent_memory.long_term.store.index_db import IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore, MemoryStoreError
 from agent_memory.models import MemoryEntry
-from agent_memory.retrieve.embedder import get_embedder
-from agent_memory.retrieve.hybrid import HybridSearcher
-from agent_memory.store.index_db import IndexDB
-from agent_memory.store.markdown_store import MarkdownStore, MemoryStoreError
 
 # 语义近邻阈值：cosine 距离 ≤ 0.35（相似度 ≥ 0.65）才算"近邻"，需要 LLM 介入判决策
 NEIGHBOR_MAX_DISTANCE = 0.35

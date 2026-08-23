@@ -6,7 +6,7 @@ HF_ENDPOINT=https://hf-mirror.com 走镜像。
 
 import pytest
 
-from agent_memory.retrieve.embedder import Embedder
+from agent_memory.long_term.retrieve.embedder import Embedder
 
 pytestmark = pytest.mark.slow
 

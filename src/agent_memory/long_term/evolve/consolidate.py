@@ -26,8 +26,10 @@ from pathlib import Path
 import yaml
 
 from agent_memory.config import Settings
-from agent_memory.ingest.propagate import judge_validity
 from agent_memory.llm import LLMClient, LLMError
+from agent_memory.long_term.ingest.propagate import judge_validity
+from agent_memory.long_term.store.index_db import IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.models import (
     Confidence,
     EvolutionChange,
@@ -36,8 +38,6 @@ from agent_memory.models import (
     MemoryEntry,
     normalize_entry_id,
 )
-from agent_memory.store.index_db import IndexDB
-from agent_memory.store.markdown_store import MarkdownStore
 
 # 合并判定的近邻检索条数（同 scope 内找重复对）
 _MERGE_NEIGHBOR_K = 10

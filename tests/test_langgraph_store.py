@@ -8,14 +8,14 @@ import asyncio
 
 import pytest
 
-from agent_memory.adapters.langgraph.store import (
+from agent_memory.config import Settings
+from agent_memory.long_term.adapters.langgraph.store import (
     AgentMemoryStore,
     namespace_to_scope,
     scope_to_namespace,
 )
-from agent_memory.config import Settings
-from agent_memory.store.index_db import IndexDB
-from agent_memory.store.markdown_store import MarkdownStore
+from agent_memory.long_term.store.index_db import IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 
 NS_GLOBAL = ("memories", "global")
 NS_REPO = ("memories", "repo:myproj")

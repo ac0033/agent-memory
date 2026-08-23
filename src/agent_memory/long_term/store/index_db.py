@@ -14,8 +14,8 @@ from pathlib import Path
 
 import sqlite_vec
 
+from agent_memory.long_term.store.markdown_store import entry_from_markdown
 from agent_memory.models import MemoryEntry
-from agent_memory.store.markdown_store import entry_from_markdown
 
 # bge-m3 的向量维度
 EMBEDDING_DIM = 1024

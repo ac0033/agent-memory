@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent_memory.ingest.redact import redact
+from agent_memory.long_term.ingest.redact import redact
 
 PEM = """-----BEGIN RSA PRIVATE KEY-----
 MIIEpAIBAAKCAQEA7\n+bWovpJ5Rfakekeymaterial

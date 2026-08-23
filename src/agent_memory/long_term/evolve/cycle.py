@@ -18,15 +18,15 @@ from datetime import datetime
 from pathlib import Path
 
 from agent_memory.config import Settings
-from agent_memory.evolve.apply import ApplyReport, apply_proposal
-from agent_memory.evolve.consolidate import build_proposal, save_proposal
-from agent_memory.evolve.trigger import collect_store_stats, should_run
-from agent_memory.evolve.verify import VerifyReport, verify_proposal
 from agent_memory.llm import LLMClient
+from agent_memory.long_term.evolve.apply import ApplyReport, apply_proposal
+from agent_memory.long_term.evolve.consolidate import build_proposal, save_proposal
+from agent_memory.long_term.evolve.trigger import collect_store_stats, should_run
+from agent_memory.long_term.evolve.verify import VerifyReport, verify_proposal
+from agent_memory.long_term.retrieve.embedder import get_embedder
+from agent_memory.long_term.store.index_db import IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.models import EvolutionProposal
-from agent_memory.retrieve.embedder import get_embedder
-from agent_memory.store.index_db import IndexDB
-from agent_memory.store.markdown_store import MarkdownStore
 
 _STATE_DIR = "state"
 _STATE_FILE = "evolution_state.json"

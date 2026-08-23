@@ -4,9 +4,9 @@ from datetime import date
 
 import pytest
 
+from agent_memory.long_term.store.index_db import IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.models import MemoryEntry
-from agent_memory.store.index_db import IndexDB
-from agent_memory.store.markdown_store import MarkdownStore
 
 
 def make_entry(

@@ -20,9 +20,9 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from agent_memory.ingest.redact import redact
-from agent_memory.ingest.review_queue import write_review_queue_raw
 from agent_memory.llm import LLMClient
+from agent_memory.long_term.ingest.redact import redact
+from agent_memory.long_term.ingest.review_queue import write_review_queue_raw
 from agent_memory.models import (
     DETAIL_MAX_CHARS,
     EvidenceRef,

@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from agent_memory.retrieve.hybrid import (
+from agent_memory.long_term.retrieve.hybrid import (
     DECAY_FLOOR,
     RRF_K,
     HybridSearcher,

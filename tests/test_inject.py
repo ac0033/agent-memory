@@ -1,7 +1,7 @@
 """inject.py 测试：预算截断、XML 转义、护栏前缀、空结果。"""
 
-from agent_memory.retrieve.hybrid import SearchResult
-from agent_memory.retrieve.inject import render_recall_block
+from agent_memory.long_term.retrieve.hybrid import SearchResult
+from agent_memory.long_term.retrieve.inject import render_recall_block
 
 
 def _result(entry, score=1.0):

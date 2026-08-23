@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta
 
 from agent_memory.config import Settings
-from agent_memory.evolve.trigger import StoreStats, collect_store_stats, should_run
+from agent_memory.long_term.evolve.trigger import StoreStats, collect_store_stats, should_run
 
 NOW = datetime(2026, 8, 20, 12, 0, 0)
 

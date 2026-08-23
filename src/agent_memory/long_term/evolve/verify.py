@@ -23,12 +23,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agent_memory.config import Settings
-from agent_memory.evolve.apply import ApplyReport, _apply_changes
 from agent_memory.llm import LLMClient, LLMError
+from agent_memory.long_term.evolve.apply import ApplyReport, _apply_changes
+from agent_memory.long_term.retrieve.hybrid import HybridSearcher
+from agent_memory.long_term.store.index_db import IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.models import EvolutionProposal
-from agent_memory.retrieve.hybrid import HybridSearcher
-from agent_memory.store.index_db import IndexDB
-from agent_memory.store.markdown_store import MarkdownStore
 
 # safety 相关记忆的内容判定（schema 引入 tags 字段后改为判 tag）
 SAFETY_PATTERN = re.compile(r"安全|safety", re.IGNORECASE)

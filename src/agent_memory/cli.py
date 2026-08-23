@@ -14,16 +14,16 @@ from pathlib import Path
 import typer
 
 from agent_memory.config import Settings, get_settings
-from agent_memory.ingest.distill import distill_memories, parse_conversation_json
-from agent_memory.ingest.gate import gate_candidates
-from agent_memory.ingest.reconcile import reconcile
-from agent_memory.ingest.redact import redact
 from agent_memory.llm import LLMError, OpenAILLMClient
+from agent_memory.long_term.ingest.distill import distill_memories, parse_conversation_json
+from agent_memory.long_term.ingest.gate import gate_candidates
+from agent_memory.long_term.ingest.reconcile import reconcile
+from agent_memory.long_term.ingest.redact import redact
+from agent_memory.long_term.retrieve.embedder import get_embedder
+from agent_memory.long_term.retrieve.hybrid import HybridSearcher
+from agent_memory.long_term.store.index_db import IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore, MemoryStoreError
 from agent_memory.models import MemoryEntry
-from agent_memory.retrieve.embedder import get_embedder
-from agent_memory.retrieve.hybrid import HybridSearcher
-from agent_memory.store.index_db import IndexDB
-from agent_memory.store.markdown_store import MarkdownStore, MemoryStoreError
 
 app = typer.Typer(help="agent-memory：本地长期记忆基础设施 CLI", no_args_is_help=True)
 
@@ -179,7 +179,7 @@ def evolve(
     scope: str | None = typer.Option(None, "--scope", help="只整理某个 scope（默认全库）"),
 ):
     """睡眠学习循环：触发 → 整合 → 验证 → 修剪。提案三档验证全过才晋升。"""
-    from agent_memory.evolve.cycle import run_evolution_cycle
+    from agent_memory.long_term.evolve.cycle import run_evolution_cycle
 
     settings = get_settings()
     try:

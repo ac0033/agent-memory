@@ -85,7 +85,7 @@ class TestSmoke:
 
     def test_add_with_detail(self, tmp_path):
         """--detail 写入 Enhanced-Notes 段落，落库后可读回。"""
-        from agent_memory.store.markdown_store import MarkdownStore
+        from agent_memory.long_term.store.markdown_store import MarkdownStore
 
         r = runner.invoke(
             app,
@@ -103,8 +103,8 @@ class TestSmoke:
         """evolve --dry-run：产出提案、打印摘要，不改记忆层（fake LLM，不打真实 API）。"""
         from datetime import datetime
 
-        import agent_memory.evolve.cycle as cycle_mod
-        from agent_memory.evolve.cycle import CycleReport
+        import agent_memory.long_term.evolve.cycle as cycle_mod
+        from agent_memory.long_term.evolve.cycle import CycleReport
         from agent_memory.models import EvolutionProposal
 
         class _FakeLLM:

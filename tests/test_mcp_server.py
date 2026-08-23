@@ -26,8 +26,8 @@ class FakeLLM:
 
 @pytest.fixture
 def service(tmp_path, fake_embedder):
-    from agent_memory.store.index_db import IndexDB
-    from agent_memory.store.markdown_store import MarkdownStore
+    from agent_memory.long_term.store.index_db import IndexDB
+    from agent_memory.long_term.store.markdown_store import MarkdownStore
 
     settings = Settings(data_dir=tmp_path)
     store = MarkdownStore(tmp_path)
@@ -118,8 +118,8 @@ def test_add_conversation_rejects_invalid_json_string(service):
 
 def test_add_conversation_without_llm_fails_closed(tmp_path, fake_embedder):
     from agent_memory.llm import LLMError
-    from agent_memory.store.index_db import IndexDB
-    from agent_memory.store.markdown_store import MarkdownStore
+    from agent_memory.long_term.store.index_db import IndexDB
+    from agent_memory.long_term.store.markdown_store import MarkdownStore
 
     settings = Settings(data_dir=tmp_path)
     svc = MemoryService(
@@ -232,8 +232,8 @@ def test_build_server_registers_seven_tools(service):
 
 
 def _make_service(tmp_path, fake_embedder, review_gate="ask"):
-    from agent_memory.store.index_db import IndexDB
-    from agent_memory.store.markdown_store import MarkdownStore
+    from agent_memory.long_term.store.index_db import IndexDB
+    from agent_memory.long_term.store.markdown_store import MarkdownStore
 
     settings = Settings(data_dir=tmp_path, review_gate=review_gate)
     index = IndexDB(tmp_path / "index.db")
@@ -364,7 +364,7 @@ def test_review_resolve_discard(service):
 
 
 def test_review_resolve_raw_record_cannot_approve(tmp_path, fake_embedder):
-    from agent_memory.ingest.review_queue import write_review_queue_raw
+    from agent_memory.long_term.ingest.review_queue import write_review_queue_raw
 
     svc, index = _make_service(tmp_path, fake_embedder)
     try:

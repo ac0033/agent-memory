@@ -2,7 +2,7 @@
 
 import yaml
 
-from agent_memory.ingest.gate import gate_candidates, is_instructional
+from agent_memory.long_term.ingest.gate import gate_candidates, is_instructional
 
 
 def test_normal_entry_passes(entry_factory, tmp_path):

@@ -9,10 +9,10 @@ import json
 import pytest
 
 from agent_memory.config import Settings
+from agent_memory.long_term.store.index_db import IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.server.http_server import build_bootstrap_text, build_http_server
 from agent_memory.server.mcp_server import MemoryService
-from agent_memory.store.index_db import IndexDB
-from agent_memory.store.markdown_store import MarkdownStore
 
 
 class FakeLLM:
@@ -138,7 +138,7 @@ def test_mcp_handshake_and_tool_call_over_http(client):
 
 def test_mcp_search_gate_blocks_over_http(client, http_app, tmp_path, entry_factory):
     """复核门在 HTTP 传输下同样生效（队列有积压时 search 返回 blocked）。"""
-    from agent_memory.ingest.review_queue import write_review_queue
+    from agent_memory.long_term.ingest.review_queue import write_review_queue
 
     write_review_queue(
         [entry_factory(entry_id="low-x", confidence="low")], tmp_path, reason="测试"

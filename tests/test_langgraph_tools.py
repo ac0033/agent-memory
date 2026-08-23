@@ -2,10 +2,10 @@
 
 import pytest
 
-from agent_memory.adapters.langgraph.tools import build_memory_tools
 from agent_memory.config import Settings
-from agent_memory.store.index_db import IndexDB
-from agent_memory.store.markdown_store import MarkdownStore
+from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
+from agent_memory.long_term.store.index_db import IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 
 
 @pytest.fixture

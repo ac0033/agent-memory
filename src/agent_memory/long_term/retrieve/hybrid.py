@@ -14,9 +14,9 @@ from dataclasses import dataclass
 from datetime import date
 
 from agent_memory.config import Settings, get_settings
+from agent_memory.long_term.store.index_db import IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.models import MemoryEntry
-from agent_memory.store.index_db import IndexDB
-from agent_memory.store.markdown_store import MarkdownStore
 
 # 两路召回各自取的候选数，之后 RRF 融合
 CANDIDATE_TOP_N = 20

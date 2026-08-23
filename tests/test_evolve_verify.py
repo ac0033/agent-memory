@@ -5,15 +5,15 @@ from datetime import datetime
 import pytest
 
 from agent_memory.config import Settings
-from agent_memory.evolve.verify import TierResult, VerifyReport, verify_proposal
 from agent_memory.llm import LLMError
+from agent_memory.long_term.evolve.verify import TierResult, VerifyReport, verify_proposal
+from agent_memory.long_term.store.index_db import IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.models import (
     EvolutionChange,
     EvolutionProposal,
     FalsifiableContract,
 )
-from agent_memory.store.index_db import IndexDB
-from agent_memory.store.markdown_store import MarkdownStore
 
 NOW = datetime(2026, 8, 20, 12, 0, 0)
 

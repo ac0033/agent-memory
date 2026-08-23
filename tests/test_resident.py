@@ -3,7 +3,7 @@
 import pytest
 
 from agent_memory.config import Settings
-from agent_memory.retrieve.resident import build_system_context, render_profile_block
+from agent_memory.long_term.retrieve.resident import build_system_context, render_profile_block
 
 
 def test_empty_when_no_profile(store):

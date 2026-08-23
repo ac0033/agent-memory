@@ -19,11 +19,11 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from agent_memory.config import Settings  # noqa: E402
+from agent_memory.long_term.retrieve.embedder import get_embedder  # noqa: E402
+from agent_memory.long_term.retrieve.hybrid import HybridSearcher  # noqa: E402
+from agent_memory.long_term.store.index_db import IndexDB  # noqa: E402
+from agent_memory.long_term.store.markdown_store import MarkdownStore  # noqa: E402
 from agent_memory.models import MemoryEntry  # noqa: E402
-from agent_memory.retrieve.embedder import get_embedder  # noqa: E402
-from agent_memory.retrieve.hybrid import HybridSearcher  # noqa: E402
-from agent_memory.store.index_db import IndexDB  # noqa: E402
-from agent_memory.store.markdown_store import MarkdownStore  # noqa: E402
 
 DATASET_DIR = Path(__file__).resolve().parent.parent / "datasets" / "layer1"
 TOP_K = 5

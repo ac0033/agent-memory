@@ -2,8 +2,8 @@
 
 import pytest
 
-from agent_memory.store.index_db import EMBEDDING_DIM, IndexDB
-from agent_memory.store.markdown_store import MarkdownStore
+from agent_memory.long_term.store.index_db import EMBEDDING_DIM, IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 
 
 def _vec(dim_one: int) -> list[float]:

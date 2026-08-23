@@ -4,13 +4,13 @@ from datetime import date
 
 import pytest
 
-from agent_memory.models import EvidenceRef
-from agent_memory.store.markdown_store import (
+from agent_memory.long_term.store.markdown_store import (
     MemoryNotFoundError,
     MemoryStoreError,
     dirname_to_scope,
     scope_to_dirname,
 )
+from agent_memory.models import EvidenceRef
 
 
 class TestScopeDirnameMapping:

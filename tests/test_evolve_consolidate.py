@@ -10,11 +10,11 @@ import pytest
 import yaml
 
 from agent_memory.config import Settings
-from agent_memory.evolve.consolidate import build_proposal, save_proposal
 from agent_memory.llm import LLMError
+from agent_memory.long_term.evolve.consolidate import build_proposal, save_proposal
+from agent_memory.long_term.store.index_db import IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.models import EvidenceRef
-from agent_memory.store.index_db import IndexDB
-from agent_memory.store.markdown_store import MarkdownStore
 
 NOW = datetime(2026, 8, 20, 12, 0, 0)
 OLD_DATE = (NOW - timedelta(days=120)).date()

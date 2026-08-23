@@ -7,9 +7,9 @@
 import pytest
 import yaml
 
-from agent_memory.ingest.reconcile import reconcile
 from agent_memory.llm import LLMError
-from agent_memory.store.markdown_store import MarkdownStore
+from agent_memory.long_term.ingest.reconcile import reconcile
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 
 
 class DecideLLM:
@@ -37,7 +37,7 @@ def components(tmp_path, fake_embedder):
 
     store = MarkdownStore(tmp_path)
     index_path = tmp_path / "index.db"
-    from agent_memory.store.index_db import IndexDB
+    from agent_memory.long_term.store.index_db import IndexDB
 
     index = IndexDB(index_path)
     settings = Settings(data_dir=tmp_path)
