@@ -29,9 +29,10 @@ _INSTRUCTION = """[agent-memory 强制记忆更新]
 已到每 {interval} 轮一次的强制记忆更新点。请立刻执行：
 1. 把最近 {interval} 轮对话（含刚结束的这轮）整理成 conversation JSON——
    每轮材料 = 用户的原始消息 + 紧邻其前的你的回复；
-2. 顺手用 memory_wm_write 同步当前任务状态——它是全量替换而非合并，
-   写时带上完整状态（目标/待办/决策/变量/备注），并把 turn_watermark
-   更新为当前轮数；
+2. 顺手用 memory_wm_write 同步工作记忆——逐项检查目标/待办/决策/变量/
+   备注是否仍然准确（刚完成的待办标 done、被推翻的决策删除、变量更新为
+   当前值），不是只追加新状态；它是全量替换而非合并，写时带上检查后的
+   完整状态，并把 turn_watermark 更新为当前轮数；
 3. 调 memory_add（conversation_json 模式）走蒸馏管线——conversation_json
    推荐传 JSON 字符串（把数组序列化后再传；直接传数组服务端也会兼容）。
    只沉淀用户明确确认
