@@ -6,6 +6,8 @@
 - **MCP server**：任何支持 MCP 的客户端（见 `agent_memory/server/`，M2+ 实现）；
 - **Skill**：以 Skill 形式挂载到支持 Skill 的 agent（见 `skills/agent-memory/`，M3 实现）。
 
+接入步骤与各宿主适配器支持情况见 **[docs/agent-integration.md](docs/agent-integration.md)**（含宿主 runtime 职责清单）。
+
 ## 当前状态：M7（完成）
 
 M0 只交付项目骨架与核心 schema：
