@@ -1,4 +1,4 @@
-"""MCP Server（M2/M5/M7a）：把记忆内核暴露为十一个 MCP tool，stdio 传输。
+"""MCP Server（M2/M5/M7a/M7b）：把记忆内核暴露为十二个 MCP tool，stdio 传输。
 
 长期记忆 tool（七个）：
 - memory_search：混合检索 + render_recall_block 渲染，scope 过滤在检索层强制
@@ -21,6 +21,11 @@
 - memory_context：统一上下文组装——常驻画像块 + 工作记忆块 + 召回块，
   按框架顺序拼接；复核门语义与 memory_search 一致（blocked 原样透出）。
 
+短期记忆 tool（M7b，一个）：
+- memory_transcript_read：把 agent 会话日志（如 kimi-code 的 wire.jsonl）
+  解析成干净轮次序列（user/assistant/tool），纯读不写；since_turn 配合
+  工作记忆水位做新鲜度补偿的增量读取（只返回水位之后的轮次）。
+
 启动：uv run python -m agent_memory.server.mcp_server
 组件构建在 main() 里完成；MemoryService 是纯 Python 类，测试直接注入
 fake embedder / fake LLM / fake working store 调用，不走 MCP 传输。
@@ -30,6 +35,7 @@ import json
 import sys
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 from agent_memory.config import Settings, get_settings
@@ -50,6 +56,7 @@ from agent_memory.long_term.retrieve.resident import build_system_context
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore, MemoryStoreError
 from agent_memory.models import MemoryEntry, is_valid_scope, normalize_scope
+from agent_memory.short_term.adapter import detect_adapter, get_adapter
 from agent_memory.working.models import TodoItem, WorkingMemory
 from agent_memory.working.render import is_stale, render_working_memory_block
 from agent_memory.working.store import WorkingMemoryNotFoundError, WorkingMemoryStore
@@ -95,7 +102,7 @@ def _pending_from_raw(raw: object, reason: str) -> dict:
 
 
 class MemoryService:
-    """十一个 tool 的业务实现。与 MCP 传输解耦，测试直接实例化调用。"""
+    """十二个 tool 的业务实现。与 MCP 传输解耦，测试直接实例化调用。"""
 
     def __init__(
         self,
@@ -598,9 +605,37 @@ class MemoryService:
             "pending_review_count": pending_count,
         }
 
+    # ---- memory_transcript_read（M7b 短期记忆 transcript 读取） ----
+
+    def transcript_read(
+        self,
+        log_path: str,
+        adapter: str | None = None,
+        since_turn: int | None = None,
+    ) -> dict[str, Any]:
+        """把 agent 会话日志解析成干净轮次序列（user/assistant/tool），纯读不写。
+
+        adapter 缺省按文件名自动识别（detect_adapter），识别不了或显式传错
+        名字都会 fail-closed 报错并列出可用适配器；日志不存在抛
+        FileNotFoundError。since_turn 是新鲜度补偿的增量语义：给了就只返回
+        turn_index > since_turn 的轮次（"水位之后"的新内容），配合
+        memory_wm_read 的 turn_watermark 使用。
+        """
+        path = Path(log_path)
+        ad = detect_adapter(path) if adapter is None else get_adapter(adapter)
+        turns = ad.parse(path)
+        if since_turn is not None:
+            turns = [t for t in turns if t.turn_index > since_turn]
+        return {
+            "status": "ok",
+            "adapter": ad.name,
+            "turn_count": len(turns),
+            "turns": [t.model_dump() for t in turns],
+        }
+
 
 def build_server(service: MemoryService):
-    """把 MemoryService 注册成 MCP server 的十一个 tool。"""
+    """把 MemoryService 注册成 MCP server 的十二个 tool。"""
     from mcp.server.mcpserver import MCPServer
 
     server = MCPServer(
@@ -761,6 +796,22 @@ def build_server(service: MemoryService):
             current_turn=current_turn,
             acknowledge_pending=acknowledge_pending,
         )
+
+    @server.tool(
+        name="memory_transcript_read",
+        description=(
+            "读取 agent 会话日志（如 kimi-code 的 wire.jsonl），解析成干净的"
+            "轮次序列（user/assistant/tool，含轮次编号与时间戳）。纯读不写。"
+            "配合工作记忆水位做新鲜度补偿：传 since_turn=<memory_wm_read 返回的"
+            " turn_watermark> 只返回水位之后的新轮次，据此判断要不要 wm_write"
+            " 刷新工作记忆。adapter 缺省按日志文件名自动识别，识别不了需显式"
+            "指定（可用列表见报错信息）；日志不存在会报错"
+        ),
+    )
+    def memory_transcript_read(
+        log_path: str, adapter: str | None = None, since_turn: int | None = None
+    ) -> dict:
+        return service.transcript_read(log_path, adapter=adapter, since_turn=since_turn)
 
     return server
 

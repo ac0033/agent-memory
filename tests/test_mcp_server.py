@@ -229,6 +229,7 @@ def test_build_server_registers_all_tools(service):
             "memory_wm_write",
             "memory_wm_clear",
             "memory_context",
+            "memory_transcript_read",
         } <= names
 
 
@@ -563,3 +564,92 @@ def test_wm_scope_normalized(service):
     """scope 与检索同口径归一化：下划线写法落到连字符命名空间。"""
     service.wm_write("repo:llm_wiki", goal="x")
     assert service.wm_read("repo:llm-wiki")["exists"] is True
+
+
+# ---------------------------------------------------------------- M7b 短期记忆 transcript 读取
+
+
+def _write_wire(tmp_path, records, name="wire.jsonl"):
+    """造一个小型 wire.jsonl（格式细节见 tests/test_transcript_adapter.py）。"""
+    path = tmp_path / name
+    path.write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _wire_records():
+    return [
+        {"type": "metadata", "protocol_version": "1.5"},
+        {
+            "type": "context.append_message",
+            "message": {"role": "user", "content": [{"type": "text", "text": "第一轮"}]},
+        },
+        {
+            "type": "context.append_loop_event",
+            "event": {
+                "type": "content.part",
+                "turnId": "0",
+                "part": {"type": "text", "text": "回复一"},
+            },
+        },
+        {"type": "turn.ended", "turnId": 0},
+        {
+            "type": "context.append_message",
+            "message": {"role": "user", "content": [{"type": "text", "text": "第二轮"}]},
+        },
+        {
+            "type": "context.append_loop_event",
+            "event": {
+                "type": "content.part",
+                "turnId": "1",
+                "part": {"type": "text", "text": "回复二"},
+            },
+        },
+    ]
+
+
+def test_transcript_read_auto_detect(service, tmp_path):
+    path = _write_wire(tmp_path, _wire_records())
+    out = service.transcript_read(str(path))
+    assert out["status"] == "ok"
+    assert out["adapter"] == "kimi-code-wire"
+    assert out["turn_count"] == 4
+    assert [(t["role"], t["turn_index"]) for t in out["turns"]] == [
+        ("user", 0),
+        ("assistant", 0),
+        ("user", 1),
+        ("assistant", 1),
+    ]
+
+
+def test_transcript_read_since_turn_incremental(service, tmp_path):
+    """since_turn 是"水位之后"的增量语义：只返回 turn_index > since_turn 的轮次。"""
+    path = _write_wire(tmp_path, _wire_records())
+    out = service.transcript_read(str(path), since_turn=0)
+    assert out["turn_count"] == 2
+    assert [(t["role"], t["turn_index"]) for t in out["turns"]] == [
+        ("user", 1),
+        ("assistant", 1),
+    ]
+    out = service.transcript_read(str(path), since_turn=1)
+    assert out["turn_count"] == 0
+
+
+def test_transcript_read_explicit_adapter(service, tmp_path):
+    """文件名识别不了时显式指定 adapter 仍可解析。"""
+    path = _write_wire(tmp_path, _wire_records(), name="session.log")
+    out = service.transcript_read(str(path), adapter="kimi-code-wire")
+    assert out["status"] == "ok"
+    assert out["turn_count"] == 4
+
+
+def test_transcript_read_fail_closed(service, tmp_path):
+    path = _write_wire(tmp_path, _wire_records(), name="session.log")
+    with pytest.raises(ValueError, match="显式指定 adapter"):
+        service.transcript_read(str(path))  # 文件名识别不了且不指定 adapter
+    with pytest.raises(ValueError, match="未知的 transcript 适配器"):
+        service.transcript_read(str(path), adapter="not-exist")
+    with pytest.raises(FileNotFoundError):
+        service.transcript_read(str(tmp_path / "wire.jsonl"))

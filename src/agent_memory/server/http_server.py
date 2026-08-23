@@ -2,7 +2,7 @@
 
 与 stdio 入口（server/mcp_server.py 的 main）的区别：stdio 由宿主把 server 拉成
 子进程、随会话生灭；本模块是一个长期运行的 HTTP 服务，任何能发 HTTP 请求的
-agent 宿主都能接入——注册一个 URL 即得全部十一个 tool。
+agent 宿主都能接入——注册一个 URL 即得全部十三个 tool。
 
 路由：
 - /mcp       —— MCP 协议端点（streamable-http，由 MCPServer 提供）；
@@ -42,10 +42,11 @@ def build_bootstrap_text(host: str, port: int) -> str:
 1. 把这个 MCP server 注册进你的宿主（配置名叫 agent-memory）：
    {base}/mcp
    注册方式因宿主而异（Kimi Code 改 mcp.json，Claude Code 改 mcpServers 配置，
-   其他宿主同理），传输类型是 streamable-http / HTTP。注册后你会获得十一个
+   其他宿主同理），传输类型是 streamable-http / HTTP。注册后你会获得十三个
    tool：memory_search / memory_add / memory_feedback / memory_update /
    memory_forget / memory_review_list / memory_review_resolve /
-   memory_wm_read / memory_wm_write / memory_wm_clear / memory_context。
+   memory_wm_read / memory_wm_write / memory_wm_clear / memory_context /
+   memory_transcript_read / memory_session_end。
 
 2. 读取使用规范并遵循它（特别是记忆作用域的选择规则与人工复核交互流程）：
    {base}/SKILL.md
@@ -58,7 +59,7 @@ memory_add 返回的 pending_review 非空时要逐条向用户报告并请其�
 
 
 def build_http_server(service: MemoryService, host: str, port: int):
-    """在十一个 tool 的 MCP server 上叠加 /SKILL.md 与 /bootstrap 静态路由。"""
+    """在十三个 tool 的 MCP server 上叠加 /SKILL.md 与 /bootstrap 静态路由。"""
 
     server = build_server(service)
 
