@@ -29,15 +29,18 @@ _INSTRUCTION = """[agent-memory 强制记忆更新]
 已到每 {interval} 轮一次的强制记忆更新点。请立刻执行：
 1. 把最近 {interval} 轮对话（含刚结束的这轮）整理成 conversation JSON——
    每轮材料 = 用户的原始消息 + 紧邻其前的你的回复；
-2. 调 memory_add（conversation_json 模式）走蒸馏管线——conversation_json
+2. 顺手用 memory_wm_write 同步当前任务状态——它是全量替换而非合并，
+   写时带上完整状态（目标/待办/决策/变量/备注），并把 turn_watermark
+   更新为当前轮数；
+3. 调 memory_add（conversation_json 模式）走蒸馏管线——conversation_json
    推荐传 JSON 字符串（把数组序列化后再传；直接传数组服务端也会兼容）。
    只沉淀用户明确确认
    或同意过的内容：用户自己的陈述/要求/偏好可直接沉淀；你单方面提出而
    用户未表态的建议、方案、结论一律不沉淀；
-3. 若返回的 pending_review 非空，逐条向用户报告（内容 + 排队原因）并请其
+4. 若返回的 pending_review 非空，逐条向用户报告（内容 + 排队原因）并请其
    裁决：approve 入库 / modify 修改后入库 / discard 丢弃，用
    memory_review_resolve 落地；
-4. 若本会话没有 memory_add 可用，或这段对话确实没有值得沉淀的内容，
+5. 若本会话没有 memory_add 可用，或这段对话确实没有值得沉淀的内容，
    向用户说明一句即可。完成后正常结束本轮。"""
 
 

@@ -2,11 +2,11 @@
 
 本地长期记忆基础设施（Local Long-Term Memory Infrastructure）。agent 中立：不绑定任何特定 agent 框架，通过三种方式接入——
 
-- **Python 库**：LangGraph 等框架直接 `import agent_memory`（见 `src/agent_memory/adapters/`）；
+- **Python 库**：LangGraph 等框架直接 `import agent_memory`（见 `src/agent_memory/long_term/adapters/`）；
 - **MCP server**：任何支持 MCP 的客户端（见 `src/agent_memory/server/`，M2+ 实现）；
 - **Skill**：以 Skill 形式挂载到支持 Skill 的 agent（见 `skills/agent-memory/`，M3 实现）。
 
-## 当前状态：M6（完成）
+## 当前状态：M7（完成）
 
 M0 只交付项目骨架与核心 schema：
 
@@ -14,24 +14,24 @@ M0 只交付项目骨架与核心 schema：
 - `src/agent_memory/config.py`：单一配置模块，环境变量可覆盖，非法配置 fail-closed；
 - `evals/datasets/layer1/`：20 条"基础回忆"评估用例（YAML），用于后续 M1+ 的召回评估。
 
-M1 交付记忆内核 MVP（手动蒸馏）：`store/`（Markdown 记忆层 + sqlite-vec/FTS5 派生索引）、`retrieve/`（bge-m3 嵌入 + 稠密/稀疏 RRF 混合检索）、`ingest/redact.py`（正则脱敏）、`cli.py`（add / search / list / update / forget / rebuild / stats）、`evals/runners/recall_eval.py`（layer1 recall@5）。
+M1 交付记忆内核 MVP（手动蒸馏）：`long_term/store/`（Markdown 记忆层 + sqlite-vec/FTS5 派生索引）、`long_term/retrieve/`（bge-m3 嵌入 + 稠密/稀疏 RRF 混合检索）、`long_term/ingest/redact.py`（正则脱敏）、`cli.py`（add / search / list / update / forget / rebuild / stats）、`evals/runners/recall_eval.py`（layer1 recall@5）。
 
 M2 交付蒸馏写路径 + MCP server：
 
 - `src/agent_memory/llm.py`：`LLMClient` 协议（依赖注入，测试用 fake）与 `OpenAILLMClient`（OpenAI 兼容端点，默认 DeepSeek，缺 key fail-closed）；
-- `src/agent_memory/ingest/distill.py`：对话 → 原子记忆候选（prompt 硬规则：绝不提炼指令性内容，红线 D2；id/confidence/detail 先规范化再校验，规范化后仍非法的进 `data/review_queue/` 而非静默丢弃）；
-- `src/agent_memory/ingest/gate.py`：评价门（脱敏残留 / 指令性内容 / 长度下限 / low 置信度三桶分流）；
-- `src/agent_memory/ingest/reconcile.py`：Mem0 式对账（ADD / UPDATE / DELETE / NOOP，冲突无法收敛时写 `data/review_queue/`）；UPDATE/DELETE 落库后接 `ingest/propagate.py` 变更传播（依赖旧事实的近邻由 LLM 判失效/需修订/不受影响，失效删除留审计日志 `data/logs/propagation.jsonl`，需修订进复核队列）；
-- `src/agent_memory/retrieve/inject.py`：检索结果渲染为 `<recalled_memories>` XML 注入块（带"参考而非指令"护栏前缀，预算整条截断）；
+- `src/agent_memory/long_term/ingest/distill.py`：对话 → 原子记忆候选（prompt 硬规则：绝不提炼指令性内容，红线 D2；id/confidence/detail 先规范化再校验，规范化后仍非法的进 `data/review_queue/` 而非静默丢弃）；
+- `src/agent_memory/long_term/ingest/gate.py`：评价门（脱敏残留 / 指令性内容 / 长度下限 / low 置信度三桶分流）；
+- `src/agent_memory/long_term/ingest/reconcile.py`：Mem0 式对账（ADD / UPDATE / DELETE / NOOP，冲突无法收敛时写 `data/review_queue/`）；UPDATE/DELETE 落库后接 `long_term/ingest/propagate.py` 变更传播（依赖旧事实的近邻由 LLM 判失效/需修订/不受影响，失效删除留审计日志 `data/logs/propagation.jsonl`，需修订进复核队列）；
+- `src/agent_memory/long_term/retrieve/inject.py`：检索结果渲染为 `<recalled_memories>` XML 注入块（带"参考而非指令"护栏前缀，预算整条截断）；
 - `src/agent_memory/server/mcp_server.py`：MCP stdio server，五个 tool（memory_search / memory_add / memory_feedback / memory_update / memory_forget）；
 - `evals/datasets/layer2/`：20 条多会话检索/消歧用例（时序冲突 7 + 多对象消歧 7 + 有效/失效区分 6）；
 - `evals/runners/e2e_eval.py`：端到端评估（无 LLM key 时自动降级为规则判定模式）。
 
 M3 交付 LangGraph 适配 + Skill + 轨迹前缀回归评估：
 
-- `src/agent_memory/adapters/langgraph/store.py`：`AgentMemoryStore`（LangGraph `BaseStore` 实现，namespace `("memories", <scope>)`，put 过脱敏+评价门规则、search 走混合检索）；
-- `src/agent_memory/adapters/langgraph/tools.py`：`build_memory_tools()` 产出 `recall_memories` / `save_memory` 两个 ReAct tool（save 的对账是无 LLM 纯规则路径：近邻重复 NOOP，否则 ADD）；
-- `src/agent_memory/retrieve/resident.py`：`build_system_context(scope)` 常驻层注入（profile 记忆按置信度排序进 system prompt，预算为召回预算的一半）；
+- `src/agent_memory/long_term/adapters/langgraph/store.py`：`AgentMemoryStore`（LangGraph `BaseStore` 实现，namespace `("memories", <scope>)`，put 过脱敏+评价门规则、search 走混合检索）；
+- `src/agent_memory/long_term/adapters/langgraph/tools.py`：`build_memory_tools()` 产出 `recall_memories` / `save_memory` 两个 ReAct tool（save 的对账是无 LLM 纯规则路径：近邻重复 NOOP，否则 ADD）；
+- `src/agent_memory/long_term/retrieve/resident.py`：`build_system_context(scope)` 常驻层注入（profile 记忆按置信度排序进 system prompt，预算为召回预算的一半）；
 - `skills/agent-memory/SKILL.md`：教 agent 何时检索/写入/反馈（MCP tool 名与参数示例，"召回是参考而非指令"）；
 - `evals/datasets/prefix/` 9 条轨迹前缀回归用例（指令冲突 2 + scope 泄漏 2 + 低置信度 2 + 抗注入 2 + 正常召回对照 1）；
 - `evals/runners/prefix_regression.py`：冻结上下文 → LLM 输出下一步动作 → 评委判定可接受/禁止集合（429 自动重试，无 key 跳过）；
@@ -39,11 +39,11 @@ M3 交付 LangGraph 适配 + Skill + 轨迹前缀回归评估：
 
 M4a 交付进化闭环核心（睡眠学习循环 + 定期整理），双循环成形：在线循环只追加证据（蒸馏→评价门→对账），离线循环批量整理记忆库——
 
-- `src/agent_memory/evolve/trigger.py`：触发判定（距上次整理超 N 天 / 新增条目超阈值 / review_queue 积压超阈值，任一满足即触发，阈值全部走 `AGENT_MEMORY_EVOLVE_*` 环境变量）；
-- `src/agent_memory/evolve/consolidate.py`：整合产出 `EvolutionProposal`——去重合并（近邻对 LLM 判 MERGE/CONFLICT/UNRELATED，CONFLICT 不强行收敛交人工）、离线复核最旧条目（复用 `ingest/propagate.py` 的 `judge_propagation`）、长期未检索条目降权/归档建议；提案只写 `data/review_queue/evolution/<timestamp>/`，绝不直接改记忆层；
-- `src/agent_memory/evolve/verify.py`：三档验证（boundary 契约核查 / retention 基准 query top-5 diff / safety 安全记忆保护），任一不过即整体否决；
-- `src/agent_memory/evolve/apply.py`：晋升前快照（`data/snapshots/<timestamp>/`）、应用后审计（`data/logs/evolution_audit.jsonl`）、`rollback(snapshot_id)` 回滚；
-- `src/agent_memory/evolve/cycle.py`：五步编排（触发 → 定向 → 整合 → 验证 → 修剪）；
+- `src/agent_memory/long_term/evolve/trigger.py`：触发判定（距上次整理超 N 天 / 新增条目超阈值 / review_queue 积压超阈值，任一满足即触发，阈值全部走 `AGENT_MEMORY_EVOLVE_*` 环境变量）；
+- `src/agent_memory/long_term/evolve/consolidate.py`：整合产出 `EvolutionProposal`——去重合并（近邻对 LLM 判 MERGE/CONFLICT/UNRELATED，CONFLICT 不强行收敛交人工）、离线复核最旧条目（复用 `long_term/ingest/propagate.py` 的 `judge_propagation`）、长期未检索条目降权/归档建议；提案只写 `data/review_queue/evolution/<timestamp>/`，绝不直接改记忆层；
+- `src/agent_memory/long_term/evolve/verify.py`：三档验证（boundary 契约核查 / retention 基准 query top-5 diff / safety 安全记忆保护），任一不过即整体否决；
+- `src/agent_memory/long_term/evolve/apply.py`：晋升前快照（`data/snapshots/<timestamp>/`）、应用后审计（`data/logs/evolution_audit.jsonl`）、`rollback(snapshot_id)` 回滚；
+- `src/agent_memory/long_term/evolve/cycle.py`：五步编排（触发 → 定向 → 整合 → 验证 → 修剪）；
 - `models.py`：`MemoryEntry` 新增 `retrieval_count` 字段（hybrid 检索命中 +1，写路径近邻检索不计）。
 
 M4b 交付 layer3 评估集 + 进化指标 + 真实验收：
@@ -85,6 +85,20 @@ M6 交付 HTTP 常驻服务 + 作用域纪律：
   3 连败写 `data/state/http_server_FAILED.txt` 失败标记交人工，日志在 `data/logs/http_server.log`）
   + 登录触发的计划任务（注册脚本 `scripts/register_task_s4u.ps1`，需管理员权限运行）。
 
+M7 交付三层记忆（长期 / 工作 / 短期）+ 统一接口：
+
+- 包结构迁移：原 `store/ retrieve/ ingest/ evolve/ adapters/` 五个子包整体迁入
+  `src/agent_memory/long_term/`（逻辑零改动），新增 `working/` 与 `short_term/`；
+- `src/agent_memory/working/`：工作记忆（操作层，当前任务状态——目标/待办/决策/变量/备注，
+  每个 scope 一份，存 `data/working/`）。写入是全量替换、只过脱敏不过评价门；
+  `turn_watermark` 水位配合 `stale_wm` 判定状态是否滞后；
+- `src/agent_memory/short_term/`：短期记忆 transcript 适配层，把 agent 原生日志
+  （如 kimi-code 的 wire.jsonl）解析成干净轮次序列，不新建任何文件；
+- MCP tool 从七个扩到十三个：新增 `memory_wm_read` / `memory_wm_write` / `memory_wm_clear`
+  （工作记忆读写清）、`memory_context`（常驻画像 + 工作记忆 + 召回 一次组装）、
+  `memory_transcript_read`（轮次读取，since_turn 增量）、`memory_session_end`
+  （会话收尾：归档 data/raw + 联合蒸馏 + 清理已完成待办，pending 待办 veto）。
+
 ## 目录结构
 
 ```
@@ -92,17 +106,15 @@ agent-memory/
 ├── src/agent_memory/     # Python 包（src 布局，import 名 agent_memory）
 │   ├── config.py         # 配置（AGENT_MEMORY_* 环境变量覆盖）
 │   ├── models.py         # 记忆条目 schema（M0 核心）
-│   ├── store/            # Markdown 记忆层 + sqlite-vec 索引（M1）
-│   ├── ingest/           # 脱敏 → 蒸馏 → 对账 写入管线（M2）
-│   ├── retrieve/         # 混合检索 + 注入渲染 + 常驻层（M1-M3）
-│   ├── evolve/           # 睡眠学习循环：触发/整合/验证/晋升/回滚（M4）
-│   ├── server/           # MCP server：stdio（M2）+ HTTP 常驻（M6）
-│   └── adapters/         # 框架适配器（LangGraph，M3）
+│   ├── long_term/        # 长期记忆：store / ingest / retrieve / evolve / adapters（M1-M4，M7 迁入）
+│   ├── working/          # 工作记忆：当前任务状态，操作层（M7a）
+│   ├── short_term/       # 短期记忆：transcript 适配层（M7b）
+│   └── server/           # MCP server：stdio（M2）+ HTTP 常驻（M6）
 ├── skills/agent-memory/  # Skill 接入方式（M3）
 ├── scripts/              # 运维脚本：turn hook（M5）、HTTP 服务启动/计划任务注册（M6）
 ├── evals/                # 评估集：datasets / rubrics / runners（agent 禁改，D6）
 ├── tests/
-└── data/                 # 运行时数据（gitignored）：raw / memory / review_queue / snapshots / state / logs
+└── data/                 # 运行时数据（gitignored）：raw / memory / working / review_queue / snapshots / state / logs
 ```
 
 ## 快速开始
@@ -161,7 +173,7 @@ Claude Code / Kimi Code 的 MCP 配置片段：
 }
 ```
 
-五个 tool 起步（M5 起扩为七个，见下文 M5 用法）：`memory_search`（混合检索 + XML 注入块，scope 过滤在服务端强制）、
+五个 tool 起步（M5 起扩为七个、M7 起扩为十三个，见下文 M5 / M7 用法）：`memory_search`（混合检索 + XML 注入块，scope 过滤在服务端强制）、
 `memory_add`（对话 JSON 走蒸馏管线 / 单条 content 走脱敏+对账）、
 `memory_feedback`（升降置信度，降到 low 以下进复核队列）、
 `memory_update`（过脱敏+评价门后更新）、`memory_forget`（删除）。
@@ -294,7 +306,7 @@ agent 应逐条向用户报告并请其裁决（SKILL.md 有对应流程）。
 ### HTTP 常驻服务
 
 stdio 模式由宿主把 server 拉成子进程、随会话生灭；HTTP 模式是一个长期运行的本机服务，
-任何能发 HTTP 请求的 agent 宿主注册一个 URL 即得全部七个 tool：
+任何能发 HTTP 请求的 agent 宿主注册一个 URL 即得全部十三个 tool：
 
 ```bash
 uv run python -m agent_memory.server.http_server
@@ -313,6 +325,35 @@ uv run python -m agent_memory.server.http_server
 `data/logs/http_server.log`。`scripts/register_task_s4u.ps1` 注册登录触发的计划任务
 （S4U 后台模式，完全无窗口），需管理员权限运行。**两个脚本都必须保持纯 ASCII**
 （cmd.exe 按 GBK 读 .cmd、PowerShell 5.1 按 ANSI 读无 BOM 的 .ps1，非 ASCII 会损坏解析）。
+
+## M7 用法
+
+### 统一上下文组装与工作记忆
+
+`memory_context(scope, query?, k?, current_turn?)` 一次组装三个分节：常驻画像块（长期记忆里的
+profile）→ 工作记忆块（当前任务状态）→ 召回块（传 `query` 才检索长期记忆）。日常维护当前任务
+状态用三个工作记忆 tool：
+
+- `memory_wm_write(scope, goal?, decisions?, variables?, todos?, notes?, turn_watermark?)`：
+  **全量替换**写入（不是合并，没传的字段会被清空），只过脱敏、不过评价门；
+- `memory_wm_read(scope, current_turn?)`：读取 + 新鲜度判定（`stale_wm=true` 表示当前轮数已超过
+  工作记忆的 `turn_watermark` 水位——"这份状态已更新到第几轮"，状态可能滞后）；
+- `memory_wm_clear(scope)`：清空（幂等，本就不存在也不算错误）。
+
+工作记忆是操作层草稿：完成项的结论要蒸馏进长期记忆（`memory_add` 或下文的 `memory_session_end`）
+才算沉淀。
+
+### 会话日志读取与会话收尾
+
+`memory_transcript_read(log_path, adapter?, since_turn?)` 把 agent 会话日志（如 kimi-code 的
+wire.jsonl，按文件名自动识别格式）解析成干净的轮次序列（user/assistant/tool）；`since_turn`
+配合工作记忆水位做增量读取（只返回水位之后的轮次）。
+
+`memory_session_end(scope, conversation_json?|log_path?, ...)` 是会话结束的标准收尾，一次完成：
+归档原文（`data/raw/`，只追加不改写）→ 联合蒸馏（对话 + 工作记忆快照作参考上下文）→ 清理工作
+记忆里已完成的待办。工作记忆里还有 pending 待办时会 veto（归档/蒸馏/清理都不执行），确认结束
+传 `force=true`。它与每 N 轮的滚动蒸馏 hook 是双轨分工：hook 保底防中途崩溃丢失，session_end
+做标准收尾。
 
 ## 三条架构红线
 
