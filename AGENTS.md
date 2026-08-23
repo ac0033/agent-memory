@@ -17,7 +17,7 @@
 ## 工程约定
 
 - **环境管理**：一律用 uv（`uv sync` 装环境、`uv run pytest` 跑测试、`uv run ruff check .` 跑 lint）；不安装系统级 Python 之外的任何东西。
-- **改 schema 必须同步改测试**：`src/agent_memory/models.py`、`src/agent_memory/config.py` 的字段或校验规则变更时，必须同步更新 `tests/` 中对应测试，且 `uv run pytest` 全绿才算完成。
+- **改 schema 必须同步改测试**：`agent_memory/models.py`、`agent_memory/config.py` 的字段或校验规则变更时，必须同步更新 `tests/` 中对应测试，且 `uv run pytest` 全绿才算完成。
 - **fail-closed**：配置非法、校验失败、证据缺失时直接报错，不做静默降级；宁可拒绝服务也不产出不可信结果。
 
 ## 当前里程碑状态（M7 完成）
@@ -87,7 +87,7 @@
   - 计划任务 `AgentMemoryHttpServer`：登录时触发（AtLogOn，**S4U 后台模式**——完全无窗口；S4U 注册需管理员权限，注册脚本 `scripts/register_task_s4u.ps1` 需提权运行且**必须纯 ASCII**——PowerShell 5.1 按 ANSI 读无 BOM 的 .ps1，非 ASCII 会损坏解析），失败重试设置仅作兜底（真实重试在脚本内）；
   - 实测验证：3 连败→写 flag 放弃、崩溃→自动重试→服务恢复且 flag 自动清除，两条路径均端到端通过；运维注意：`schtasks /end` 只杀 cmd 包装进程，python 孙进程会成孤儿残留并继续占用端口（S4U 会话的进程普通 shell 无权 taskkill，需管理员终端 `taskkill /PID <pid> /F` 后再 `schtasks /run`）。
 - M7 已实现（三层记忆：长期 / 工作 / 短期 + 统一接口）：
-  - 包结构迁移：原 `store/ retrieve/ ingest/ evolve/ adapters/` 五个子包整体迁入 `src/agent_memory/long_term/`（逻辑零改动，import 全仓库更新）；新增 `working/`（工作记忆）与 `short_term/`（transcript 适配层）；`config.py`/`llm.py`/`models.py`/`server/`/`cli.py` 位置不变；
+  - 包结构迁移：原 `store/ retrieve/ ingest/ evolve/ adapters/` 五个子包整体迁入 `agent_memory/long_term/`（逻辑零改动，import 全仓库更新）；新增 `working/`（工作记忆）与 `short_term/`（transcript 适配层）；`config.py`/`llm.py`/`models.py`/`server/`/`cli.py` 位置不变；
   - M7a 工作记忆（操作层，当前任务状态）：`working/models.py`（`WorkingMemory`/`TodoItem`：goal、decisions、variables、todos(pending|done)、notes、turn_watermark、version、updated_at）；`working/store.py`（存 `data/working/<scope目录名>.md`，frontmatter 全量 dump 是唯一事实来源、正文仅供人翻看，全量替换语义、version 自增，scope 目录名映射复用长期记忆层的 scope_to_dirname）；`working/render.py`（注入块渲染，护栏行"参考而非指令"写死在渲染层，预算 `working_memory_budget_chars` 默认 1000、`AGENT_MEMORY_WORKING_MEMORY_BUDGET_CHARS` 覆盖，超预算整条丢弃）。关键取舍：工作记忆是操作层草稿——写入只过脱敏，不过评价门、不做对账（TODO 天然是祈使句，过不了评价门），不进向量索引、不进进化循环；`turn_watermark` 记"本份状态已更新到第几轮"，`is_stale` 判定 current_turn > watermark 即可能滞后；
   - M7b 短期记忆（transcript 适配层，不新建任何文件，载体是宿主原生日志）：`short_term/adapter.py`——`Turn`（turn_index/role/tool_name/content/ts）、`TranscriptAdapter` Protocol、`KimiCodeWireAdapter`（解析 kimi-code wire.jsonl：`context.append_message` 取 user 且归"即将到来的那一轮"——用户消息本身不带 turnId；`loop_event` 的 `content.part` type=text 聚合为 assistant、think 跳过；`tool.call`/`tool.result` 按 toolCallId 配对，output 截断 2000 字符；坏行跳过，文件不存在 fail-closed）、`ADAPTERS` 注册表、`detect_adapter`（文件名 wire.jsonl 自动命中，识别不了要求显式指定，不瞎猜）；
   - `server/mcp_server.py`：tool 从七个扩到十三个——`memory_wm_read`（读 + 渲染块 + stale_wm 判定）/ `memory_wm_write`（全量替换非合并，todos 兼容纯字符串列表按 pending）/ `memory_wm_clear`（幂等，不存在返回 already empty）/ `memory_context`（统一组装：常驻画像块 → 工作记忆块 → 召回块，复核门 blocked 原样透出，返回 {status, block, sections, stale_wm, pending_review_count}）/ `memory_transcript_read`（干净轮次序列，`since_turn` 增量语义=只返回水位之后的轮次）/ `memory_session_end`（会话收尾编排，顺序固定：pending todo veto（force=true 放行）→ 归档 `data/raw/<source>/<session_id>.jsonl` 只追加不改写 → 联合蒸馏（工作记忆快照渲染后作 extra_context 注入 distill user prompt，蒸馏七条硬规则未动；log_path 路径剔除 tool 轮次与空内容轮）→ 清理 done todo（pending 保留，全空时 wm_hint 提示可 wm_clear、不自动清）；llm 缺失降级 `archived_only` 且不动工作记忆）；

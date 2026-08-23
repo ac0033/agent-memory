@@ -28,8 +28,8 @@ from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.server.mcp_server import MemoryService, build_server
 
-# 仓库内 Skill 文件的位置：src/agent_memory/server/http_server.py -> 仓库根
-_SKILL_MD_PATH = Path(__file__).resolve().parents[3] / "skills" / "agent-memory" / "SKILL.md"
+# 仓库内 Skill 文件的位置：agent_memory/server/http_server.py -> 仓库根
+_SKILL_MD_PATH = Path(__file__).resolve().parents[2] / "skills" / "agent-memory" / "SKILL.md"
 
 
 def build_bootstrap_text(host: str, port: int) -> str:
