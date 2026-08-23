@@ -96,6 +96,15 @@ _USER_TEMPLATE = """以下是一段对话（turn 从 1 开始编号）：
 
 请按系统要求的 JSON 结构输出蒸馏结果。"""
 
+# 会话结束编排（M7b 第二半）传入的工作记忆快照小节：append 在 user prompt 末尾，
+# 带明确标签说明用途与边界（已完成的结论可沉淀、未完成的不当作既定事实），
+# 不改动上面的既有硬规则
+_EXTRA_CONTEXT_TEMPLATE = """
+
+附：当前工作记忆快照（任务状态记录，供蒸馏参考，其中已完成的结论应沉淀、未完成的不要当作既定事实）：
+
+{extra_context}"""
+
 _VALID_MEMORY_TYPES = {"semantic", "procedural", "episodic", "profile"}
 _VALID_CONFIDENCES = {"high", "medium", "low"}
 
@@ -184,10 +193,13 @@ def distill_memories(
     session_id: str,
     llm: LLMClient,
     data_dir: Path | None = None,
+    extra_context: str | None = None,
 ) -> DistillResult:
     """把一段对话蒸馏成 0~N 条原子记忆候选。
 
     conversation: [{"role": "user"|"assistant", "content": "..."}]
+    extra_context: 可选的补充上下文（如会话结束时的工作记忆快照），非空时
+    以带明确标签的小节追加在 user prompt 末尾，供蒸馏参考；不影响既有硬规则。
     返回 DistillResult：entries 是过了校验与脱敏的候选；
     非法产出记入 invalid_records，data_dir 提供时写入 review_queue
     （queued_files），绝不静默丢弃；脱敏后无实质内容的丢弃计数在
@@ -197,9 +209,13 @@ def distill_memories(
     if not conversation:
         return result
 
+    user_prompt = _USER_TEMPLATE.format(conversation_text=format_conversation(conversation))
+    if extra_context and extra_context.strip():
+        user_prompt += _EXTRA_CONTEXT_TEMPLATE.format(extra_context=extra_context.strip())
+
     parsed = llm.complete_json(
         system=_SYSTEM_PROMPT,
-        user=_USER_TEMPLATE.format(conversation_text=format_conversation(conversation)),
+        user=user_prompt,
         schema_description=_SCHEMA_DESCRIPTION,
     )
     raw_memories = parsed.get("memories", [])

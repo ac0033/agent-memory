@@ -1,4 +1,4 @@
-"""MCP Server（M2/M5/M7a/M7b）：把记忆内核暴露为十二个 MCP tool，stdio 传输。
+"""MCP Server（M2/M5/M7a/M7b）：把记忆内核暴露为十三个 MCP tool，stdio 传输。
 
 长期记忆 tool（七个）：
 - memory_search：混合检索 + render_recall_block 渲染，scope 过滤在检索层强制
@@ -21,10 +21,13 @@
 - memory_context：统一上下文组装——常驻画像块 + 工作记忆块 + 召回块，
   按框架顺序拼接；复核门语义与 memory_search 一致（blocked 原样透出）。
 
-短期记忆 tool（M7b，一个）：
+短期记忆 tool（M7b，两个）：
 - memory_transcript_read：把 agent 会话日志（如 kimi-code 的 wire.jsonl）
   解析成干净轮次序列（user/assistant/tool），纯读不写；since_turn 配合
-  工作记忆水位做新鲜度补偿的增量读取（只返回水位之后的轮次）。
+  工作记忆水位做新鲜度补偿的增量读取（只返回水位之后的轮次）；
+- memory_session_end：会话结束收尾编排——归档原文（data/raw，只追加不改写）
+  + 联合蒸馏（对话 + 工作记忆快照作参考上下文）+ 已完成 TODO 清理；
+  工作记忆有未完成任务时 veto 不视为结束（确认结束传 force=true）。
 
 启动：uv run python -m agent_memory.server.mcp_server
 组件构建在 main() 里完成；MemoryService 是纯 Python 类，测试直接注入
@@ -64,6 +67,10 @@ from agent_memory.working.store import WorkingMemoryNotFoundError, WorkingMemory
 # confidence 的升降阶梯：feedback 沿它走一步
 _CONFIDENCE_LADDER = ["low", "medium", "high"]
 
+# session_end 把工作记忆快照渲染给蒸馏当参考上下文的预算：蒸馏材料不进注入层，
+# 给宽松预算（注入层 working_memory_budget_chars 的数倍），避免快照被预算挤丢
+_SESSION_END_WM_SNAPSHOT_BUDGET_CHARS = 4000
+
 
 @dataclass
 class AddReport:
@@ -102,7 +109,7 @@ def _pending_from_raw(raw: object, reason: str) -> dict:
 
 
 class MemoryService:
-    """十二个 tool 的业务实现。与 MCP 传输解耦，测试直接实例化调用。"""
+    """十三个 tool 的业务实现。与 MCP 传输解耦，测试直接实例化调用。"""
 
     def __init__(
         self,
@@ -238,7 +245,12 @@ class MemoryService:
         return asdict(report)
 
     def _add_conversation(
-        self, conversation_json: str, scope: str, source: str, session_id: str | None
+        self,
+        conversation_json: str,
+        scope: str,
+        source: str,
+        session_id: str | None,
+        extra_context: str | None = None,
     ) -> AddReport:
         if self.llm is None:
             raise LLMError(
@@ -250,6 +262,7 @@ class MemoryService:
         distill_result = distill_memories(
             conversation, scope, source, session_id, self.llm,
             data_dir=self.settings.data_dir,
+            extra_context=extra_context,
         )
         gate_result = gate_candidates(distill_result.entries, self.settings.data_dir)
         report = reconcile(
@@ -633,9 +646,159 @@ class MemoryService:
             "turns": [t.model_dump() for t in turns],
         }
 
+    # ---- memory_session_end（M7b 会话结束编排） ----
+
+    def session_end(
+        self,
+        scope: str,
+        conversation_json: str | list | None = None,
+        log_path: str | None = None,
+        adapter: str | None = None,
+        source: str = "mcp",
+        session_id: str | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """会话结束收尾：归档原文 + 联合蒸馏 + 已完成 TODO 清理（顺序固定）。
+
+        判定"会话是否结束"的三条规则里，前两条（人工明确结束、十分钟无活动）
+        由宿主决定何时调用本工具；这里只强制执行第三条——未完成任务否决：
+        工作记忆里有 pending todo 且 force=False 时返回 status=vetoed，
+        归档/蒸馏/清理一律不执行；确认结束传 force=true 放行。
+
+        材料二选一：conversation_json（[{role, content}, ...]，agent 中立推荐，
+        兼容原生数组输入，与 memory_add 同样容错）优先；否则 log_path
+        （走 detect_adapter/get_adapter 解析成轮次）。都没有报 ValueError。
+
+        归档：原文原样追加到 data/raw/<source>/<session_id>.jsonl（每行一个
+        JSON；conversation_json 路径写原始对话条目，log_path 路径写 Turn dump）
+        ——D1 只追加不改写，同 session_id 调两次是追加不是覆盖。
+
+        蒸馏：仅 user/assistant 轮次（adapter 路径的 tool 轮次剔除——
+        蒸馏输入校验只认非空 content 的 role/content 对话，tool 轮次的机器
+        输出不属对话正文）；工作记忆快照渲染成参考小节随 extra_context 传入。
+        未配置 LLM 时跳过蒸馏与清理，返回 status=archived_only（归档已完成）。
+
+        清理（仅当蒸馏真的执行了）：工作记忆里 status=done 的 todo 移除
+        （结论已蒸馏沉淀），pending 保留，其余字段原样；有变动才写回。
+        清理后整个工作记忆全空时在 wm_hint 里提示可 memory_wm_clear
+        （不自动清，留给人/调用方决定）。
+        """
+        scope = self._normalize_valid_scope(scope)
+
+        # 1. 未完成任务否决（三条结束判定规则里服务侧强制执行的一条）
+        wm = self.working_store.read(scope)
+        pending_todos = [t for t in wm.todos if t.status == "pending"] if wm else []
+        if pending_todos and not force:
+            return {
+                "status": "vetoed",
+                "pending_todos": [t.content for t in pending_todos],
+                "message": (
+                    f"工作记忆里还有 {len(pending_todos)} 条未完成任务，会话不视为结束；"
+                    "确认要结束请以 force=true 重试（未完成任务会保留在工作记忆中）"
+                ),
+            }
+
+        # 2. 取对话材料（conversation_json 优先）；归档内容同时在此定型
+        archive_records: list[dict]
+        if isinstance(conversation_json, list):
+            # 与 memory_add 同款容错：原生数组代为序列化；空数组按未提供处理
+            conversation_json = (
+                json.dumps(conversation_json, ensure_ascii=False) if conversation_json else None
+            )
+        elif conversation_json is not None and not isinstance(conversation_json, str):
+            raise ValueError(
+                "conversation_json 格式错误：请传 [{role, content}, ...] 的 JSON "
+                f"字符串（或等价的数组），收到的是 {type(conversation_json).__name__}"
+            )
+        if conversation_json:
+            # 先解析校验（非法对话不归档——不把垃圾写进 data/raw）
+            conversation = parse_conversation_json(conversation_json)
+            archive_records = conversation
+            distill_input = conversation_json
+        elif log_path:
+            path = Path(log_path)
+            ad = detect_adapter(path) if adapter is None else get_adapter(adapter)
+            turns = ad.parse(path)
+            archive_records = [t.model_dump(mode="json") for t in turns]
+            # 蒸馏只用 user/assistant 正文轮次：tool 轮次剔除（机器输出非对话
+            # 正文）；空内容的轮次（如只发了工具调用的 assistant 轮）同样剔除，
+            # 否则会触发 parse_conversation_json 的非空 content 校验
+            conversation = [
+                {"role": t.role, "content": t.content}
+                for t in turns
+                if t.role in ("user", "assistant") and t.content.strip()
+            ]
+            distill_input = json.dumps(conversation, ensure_ascii=False)
+        else:
+            raise ValueError(
+                "session_end 需要对话材料：conversation_json（[{role, content}, ...]"
+                " 的 JSON 字符串或数组，agent 中立推荐）或 log_path（agent 会话日志"
+                " 路径，走日志适配器解析）二选一"
+            )
+        session_id = session_id or f"session-{datetime.now():%Y%m%dT%H%M%S}"
+
+        # 3. 归档：data/raw/<source>/<session_id>.jsonl，只追加不改写（D1）
+        archive_path = self.settings.data_dir / "raw" / source / f"{session_id}.jsonl"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        with archive_path.open("a", encoding="utf-8") as f:
+            for record in archive_records:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        # 4. 蒸馏：无 LLM 时只归档，工作记忆保持原样
+        if self.llm is None:
+            return {
+                "status": "archived_only",
+                "session_id": session_id,
+                "archive_path": str(archive_path),
+                "warning": (
+                    "归档已完成，但未配置 LLM（AGENT_MEMORY_LLM_API_KEY），无法蒸馏，"
+                    "工作记忆保持原样（已完成的 TODO 未清理）"
+                ),
+            }
+
+        # 工作记忆快照作为蒸馏的参考上下文（宽松预算：蒸馏材料不进注入层，
+        # 不受 working_memory_budget_chars 限制）
+        extra_context = (
+            render_working_memory_block(wm, _SESSION_END_WM_SNAPSHOT_BUDGET_CHARS)
+            if wm is not None
+            else None
+        ) or None
+        report = self._add_conversation(
+            distill_input, scope, source, session_id, extra_context=extra_context
+        )
+
+        # 5. 清理已完成 TODO（结论已蒸馏沉淀；pending 保留，其余字段原样）
+        todos_cleared = 0
+        todos_kept = 0
+        wm_hint = None
+        if wm is not None:
+            kept = [t for t in wm.todos if t.status == "pending"]
+            todos_cleared = len(wm.todos) - len(kept)
+            todos_kept = len(kept)
+            if todos_cleared:
+                wm = self.working_store.write(wm.model_copy(update={"todos": kept}))
+            if (
+                not wm.goal and not wm.decisions and not wm.variables
+                and not wm.todos and not wm.notes
+            ):
+                wm_hint = "工作记忆已全空，可用 memory_wm_clear 清空（本次不自动清理）"
+
+        result: dict[str, Any] = {
+            "status": "ok",
+            "session_id": session_id,
+            "archive_path": str(archive_path),
+            "distill": asdict(report),
+            "todos_cleared": todos_cleared,
+            "todos_kept": todos_kept,
+            "pending_review": report.pending_review,
+        }
+        if wm_hint:
+            result["wm_hint"] = wm_hint
+        return result
+
 
 def build_server(service: MemoryService):
-    """把 MemoryService 注册成 MCP server 的十二个 tool。"""
+    """把 MemoryService 注册成 MCP server 的十三个 tool。"""
     from mcp.server.mcpserver import MCPServer
 
     server = MCPServer(
@@ -812,6 +975,38 @@ def build_server(service: MemoryService):
         log_path: str, adapter: str | None = None, since_turn: int | None = None
     ) -> dict:
         return service.transcript_read(log_path, adapter=adapter, since_turn=since_turn)
+
+    @server.tool(
+        name="memory_session_end",
+        description=(
+            "会话结束收尾编排：归档原文（data/raw，只追加不改写）+ 联合蒸馏"
+            "（对话提炼长期记忆，工作记忆快照作参考上下文，冲突会更新旧条目）"
+            " + 清理工作记忆里已完成的待办。工作记忆有未完成任务时会 veto"
+            "（status=vetoed，归档/蒸馏/清理都不执行），确认结束请以 force=true"
+            " 重试。对话材料二选一：conversation_json（[{role, content}, ...]"
+            " 的 JSON 字符串或数组，agent 中立推荐，优先使用）或 log_path"
+            "（agent 会话日志路径，走日志适配器解析，adapter 可缺省按文件名"
+            " 自动识别）。未配置 LLM 时只归档不蒸馏（status=archived_only）"
+        ),
+    )
+    def memory_session_end(
+        scope: str,
+        conversation_json: str | list | None = None,
+        log_path: str | None = None,
+        adapter: str | None = None,
+        source: str = "mcp",
+        session_id: str | None = None,
+        force: bool = False,
+    ) -> dict:
+        return service.session_end(
+            scope,
+            conversation_json=conversation_json,
+            log_path=log_path,
+            adapter=adapter,
+            source=source,
+            session_id=session_id,
+            force=force,
+        )
 
     return server
 
