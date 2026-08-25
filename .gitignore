@@ -19,3 +19,12 @@ data/**
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 兜底：任何密钥文件都不入库
+.env
+.env.*
+!.env.example
+
+# 本机部署脚本（含个人路径，仅作者本机使用，不随仓库发布）
+scripts/start_http_server.cmd
+scripts/register_task_s4u.ps1
