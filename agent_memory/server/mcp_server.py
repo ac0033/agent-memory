@@ -6,7 +6,7 @@
   M5 复核门：复核队列有积压时按 settings.review_gate 处置——ask 档拦截并等
   用户确认（acknowledge_pending=true 放行），strict 档一律拒读，off 不拦；
 - memory_add：conversation_json 走 归档→蒸馏→评价门→对账 全管线；distilled_json
-  走宿主蒸馏（M9，候选照常过 校验/脱敏/评价门/对账，无服务端 LLM 也能用）；
+  走宿主蒸馏（M9，已有 raw 证据才自动对账，否则转人工复核）；
   单条 content 走 脱敏→评价门→对账。返回各阶段报告 + pending_review 待复核
   明细（M5）。失败语义（M8）：评价门拒绝是确定性拦截（报错含命中片段，
   原样重试无效；force_review=true 转人工复核）；LLM 失败是临时性故障
@@ -288,7 +288,8 @@ class MemoryService:
 
         distilled_json 是宿主蒸馏模式（M9）：宿主 agent 自己完成蒸馏后，把
         {"memories": [...]} 的 JSON 字符串提交进来，候选照常过 校验/规范化→
-        脱敏→评价门→对账；服务端无 LLM 也能用（对账有近邻时转人工复核）。
+        脱敏→评价门；source/session_id 和 evidence_turns 能指向已有 raw 证据时
+        才进入对账，否则转人工复核。
 
         scope 应显式选择（M6 作用域纪律）：global 放跨项目通用知识，repo:<项目名>
         放项目相关，agent:<名字> 放 agent 自身相关。缺省回落 global 并附提醒。
@@ -429,8 +430,8 @@ class MemoryService:
         """宿主蒸馏模式（M9）：宿主 agent 自己蒸馏，服务端只对候选过门。
 
         与服务端蒸馏共用 build_entries_from_distilled（校验/规范化→脱敏），
-        之后照常过评价门。该模式没有服务端归档的原始对话，候选缺少可核查证据，
-        因此一律进入人工复核，确认后才进入正式记忆层。
+        之后照常过评价门。source/session_id 指向服务端已有 raw 归档且
+        evidence_turns 有效的候选可进入对账；没有可核查证据的候选进入人工复核。
         """
         try:
             parsed = json.loads(distilled_json)
@@ -445,10 +446,37 @@ class MemoryService:
                 'distilled_json 必须是 {"memories": [...]} 的 JSON object 字符串，'
                 f"收到的是 {type(parsed).__name__}"
             )
-        session_id = session_id or f"session-{datetime.now():%Y%m%dT%H%M%S}"
+        source = _validate_archive_segment(source, "source")
+        session_id = _validate_archive_segment(
+            session_id or f"session-{datetime.now():%Y%m%dT%H%M%S}", "session_id"
+        )
+        archive_file = self.settings.data_dir / "raw" / source / f"{session_id}.jsonl"
+        archived_turns: int | None = None
+        valid_evidence_lines: set[int] | None = None
+        with interprocess_lock(self.settings.data_dir / "state" / "raw_archive.lock"):
+            if archive_file.exists():
+                lines = archive_file.read_text(encoding="utf-8").splitlines()
+                valid_evidence_lines = set()
+                for line_number, line in enumerate(lines, start=1):
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        raise ValueError(
+                            f"raw 证据文件第 {line_number} 行不是合法 JSON：{archive_file}"
+                        ) from exc
+                    if (
+                        isinstance(record, dict)
+                        and record.get("role") in {"user", "assistant"}
+                        and isinstance(record.get("content"), str)
+                        and record["content"].strip()
+                    ):
+                        valid_evidence_lines.add(line_number)
+                archived_turns = len(lines)
         distill_result = build_entries_from_distilled(
-            parsed, scope, source, session_id, n_turns=None,
+            parsed, scope, source, session_id, n_turns=archived_turns,
             data_dir=self.settings.data_dir,
+            strict_evidence=archived_turns is not None,
+            valid_evidence_lines=valid_evidence_lines,
         )
         gate_result = gate_candidates(distill_result.entries, self.settings.data_dir)
         unverified = [entry for entry in gate_result.passed if not entry.evidence]
@@ -549,8 +577,9 @@ class MemoryService:
             "编号的文本；2. 以 system_prompt 为指令、schema_description 为输出结构，"
             "在你自己的上下文里完成蒸馏（只沉淀用户明确确认过的内容）；3. 把产出的 "
             '{"memories": [...]} 以 JSON 字符串传给 memory_add 的 distilled_json '
-            "参数提交。服务端会对候选做校验/规范化→脱敏→评价门；由于没有由"
-            "服务端归档的原始对话证据，候选会进入人工复核，确认后才正式入库。"
+            "参数提交。服务端会对候选做校验/规范化→脱敏→评价门；请传入已有"
+            "raw 归档的 source/session_id，并让 evidence_turns 指向其中的有效对话行。"
+            "缺少可核查证据的候选会进入人工复核。"
         )
         return protocol
 
@@ -696,16 +725,17 @@ class MemoryService:
     def update(self, memory_id: str, new_content: str) -> dict[str, Any]:
         """更新记忆正文：先脱敏，再过评价门（指令性/残留/长度规则同样适用）。"""
         validate_entry_id(memory_id)
-        entry = self.store.get(memory_id)
-        redacted, _hits = redact(new_content)
-        candidate = MemoryEntry.model_validate(
-            entry.model_dump(mode="python") | {"content": redacted}
-        )
-        gate_result = gate_candidates([candidate])  # 不落盘，纯校验
-        if gate_result.rejected:
-            _, reason = gate_result.rejected[0]
-            raise ValueError(f"评价门拒绝更新：{reason}")
-        updated = self.writer.update(candidate)
+        with interprocess_lock(self.writer.lock_path):
+            entry = self.store.get(memory_id)
+            redacted, _hits = redact(new_content)
+            candidate = MemoryEntry.model_validate(
+                entry.model_dump(mode="python") | {"content": redacted}
+            )
+            gate_result = gate_candidates([candidate])  # 不落盘，纯校验
+            if gate_result.rejected:
+                _, reason = gate_result.rejected[0]
+                raise ValueError(f"评价门拒绝更新：{reason}")
+            updated = self.writer.update(candidate, expected=entry)
         return {"action": "updated", "id": memory_id, "version": updated.version}
 
     # ---- memory_forget ----
@@ -735,7 +765,11 @@ class MemoryService:
         """
         if action not in {"approve", "modify", "discard"}:
             raise ValueError(f"非法 action {action!r}，只支持 approve / modify / discard")
-        with review_queue_lock(self.settings.data_dir):
+        # 全局锁序固定为 memory_write → review_queue；feedback 在低置信度分支
+        # 也按此顺序获取，避免两个路径互相等待。
+        with interprocess_lock(self.writer.lock_path), review_queue_lock(
+            self.settings.data_dir
+        ):
             if action == "discard":
                 delete_review_item(self.settings.data_dir, queue_file)
                 return {"action": "discarded", "file": queue_file}

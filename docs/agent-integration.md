@@ -75,7 +75,7 @@ from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
 
 ### 无 API key 的宿主：宿主蒸馏
 
-订阅制 agent（登录即用、没有 API key）配不了服务端 LLM，对话蒸馏改由宿主自己做：`memory_distill_prompt` 拿协议 → 宿主在自己的上下文里蒸馏 → `memory_add(distilled_json=...)` 提交。服务端对候选照常过校验/脱敏/评价门；由于服务端没有对应原始证据，候选统一进入人工复核，确认后才写入正式记忆层。
+订阅制 agent（登录即用、没有 API key）配不了服务端 LLM，对话蒸馏改由宿主自己做：`memory_distill_prompt` 拿协议 → 宿主在自己的上下文里蒸馏 → `memory_add(distilled_json=...)` 提交。服务端对候选照常过校验/脱敏/评价门；传入已有 raw 归档的 `source` / `session_id` 且 `evidence_turns` 指向有效对话行时进入自动对账，缺少可核查证据时进入人工复核。
 
 ### 会话开头注入工作记忆（可选但推荐）
 

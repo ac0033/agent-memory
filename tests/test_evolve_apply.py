@@ -1,6 +1,7 @@
 """apply.py 测试：快照 → 晋升 → 审计日志，以及 rollback 回滚。"""
 
 import json
+import multiprocessing
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -21,6 +22,43 @@ from agent_memory.models import (
 )
 
 NOW = datetime(2026, 8, 20, 12, 0, 0)
+
+
+def _crash_mid_evolution(data_dir):
+    import os
+
+    store = MarkdownStore(data_dir)
+    index = IndexDB(data_dir / "index.db")
+    original_delete = MemoryWriter.delete
+
+    def crash_on_second(self, entry_id, **kwargs):
+        if entry_id == "second":
+            os._exit(78)
+        return original_delete(self, entry_id, **kwargs)
+
+    MemoryWriter.delete = crash_on_second
+    proposal = _proposal([
+        EvolutionChange(
+            kind="invalidate",
+            target_ids=["first", "second"],
+            reason="失效",
+            contract=_contract(),
+        )
+    ])
+    apply_proposal(
+        proposal,
+        store,
+        index,
+        UnitEmbedderForProcess(),
+        Settings(data_dir=data_dir),
+        verify_report=_passing_verify(),
+        now=NOW,
+    )
+
+
+class UnitEmbedderForProcess:
+    def embed_texts(self, texts):
+        return [[1.0] + [0.0] * 1023 for _ in texts]
 
 
 @pytest.fixture
@@ -237,6 +275,31 @@ class TestApply:
                 )
             pending.result(timeout=10)
         assert {entry.id for entry in store.list()} == {"before", "concurrent"}
+
+    def test_process_crash_rolls_back_whole_evolution(
+        self, tmp_path, entry_factory
+    ):
+        index = IndexDB(tmp_path / "index.db")
+        writer = MemoryWriter(MarkdownStore(tmp_path), index, UnitEmbedderForProcess())
+        writer.create(entry_factory(entry_id="first", content="第一条原始事实。"))
+        writer.create(entry_factory(entry_id="second", content="第二条原始事实。"))
+        index.close()
+
+        process = multiprocessing.get_context("spawn").Process(
+            target=_crash_mid_evolution, args=(tmp_path,)
+        )
+        process.start()
+        process.join(20)
+        assert process.exitcode == 78
+
+        recovered_index = IndexDB(tmp_path / "index.db")
+        recovered = MemoryWriter(
+            MarkdownStore(tmp_path), recovered_index, UnitEmbedderForProcess()
+        )
+        assert {entry.id for entry in recovered.store.list()} == {"first", "second"}
+        assert recovered.check_consistency().consistent
+        assert not recovered.evolution_journal_path.exists()
+        recovered_index.close()
 
 
 class TestRollback:

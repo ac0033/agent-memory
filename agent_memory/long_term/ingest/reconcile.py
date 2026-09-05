@@ -187,23 +187,25 @@ class _Reconciler:
         """新条目 version 继承旧条目 +1、supersedes 指旧 id；旧条目删除。"""
         if candidate.id == old.id:
             # id 相同走 store.update（自动 version+1、刷新 last_verified）
-            self.writer.update(candidate.model_copy(update={"supersedes": None}))
+            self.writer.update(
+                candidate.model_copy(update={"supersedes": None}), expected=old
+            )
             return candidate.id, old.id
         new_entry = candidate.model_copy(
             update={"version": old.version + 1, "supersedes": old.id}
         )
-        self.writer.replace(old.id, new_entry)
+        self.writer.replace(old.id, new_entry, expected=old)
         return new_entry.id, old.id
 
     def apply_delete(self, candidate: MemoryEntry, old: MemoryEntry, add_new: bool) -> None:
         if add_new:
-            self.writer.replace(old.id, candidate)
+            self.writer.replace(old.id, candidate, expected=old)
         else:
-            self.writer.delete(old.id)
+            self.writer.delete(old.id, expected=old)
 
     def apply_noop(self, old: MemoryEntry) -> None:
         """重复信息：只刷新旧条目的 last_verified（store.update 会顺带 version+1）。"""
-        self.writer.update(old)
+        self.writer.update(old, expected=old)
 
     def propagate(
         self, old: MemoryEntry, new: MemoryEntry | None, exclude_ids: set[str]

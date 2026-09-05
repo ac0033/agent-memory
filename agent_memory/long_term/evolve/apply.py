@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from agent_memory.config import Settings
-from agent_memory.io_utils import interprocess_lock
+from agent_memory.io_utils import atomic_write_text, interprocess_lock
 from agent_memory.long_term.store.coordinator import MemoryWriter
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore
@@ -60,7 +60,8 @@ def _apply_changes(
     report: ApplyReport,
 ) -> None:
     """逐条应用变更。conflict / revise 跳过（人工裁决项）。"""
-    writer = MemoryWriter(store, index, embedder)
+    # apply_proposal owns the outer durable evolution transaction and recovery marker.
+    writer = MemoryWriter(store, index, embedder, recover=False)
     for change in changes:
         if change.kind in {"conflict", "revise"}:
             report.skipped.append((change.kind, change.target_ids, "人工裁决项，不自动应用"))
@@ -116,40 +117,62 @@ def apply_proposal(
     # concurrently committed memory.
     with interprocess_lock(store.lock_path):
         snapshot_id, snapshot_path = snapshot_memory(settings.data_dir, now)
+        evolution_journal = (
+            Path(settings.data_dir) / "state" / "evolution_apply_journal.json"
+        )
+        atomic_write_text(
+            evolution_journal,
+            json.dumps(
+                {
+                    "version": 1,
+                    "proposal_id": proposal.id,
+                    "snapshot_id": snapshot_id,
+                    "started_at": now.isoformat(timespec="seconds"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
         report = ApplyReport(snapshot_id=snapshot_id)
         try:
             _apply_changes(proposal.changes, store, index, embedder, report)
+            logs_dir = Path(settings.data_dir) / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            audit_path = logs_dir / AUDIT_LOG_NAME
+            record = {
+                "event": "evolution_applied",
+                "proposal_id": proposal.id,
+                "applied_at": now.isoformat(timespec="seconds"),
+                "snapshot_id": snapshot_id,
+                "snapshot_path": str(snapshot_path),
+                "verify": verify_report.to_dict(),
+                "changes_applied": [
+                    {"kind": kind, "target_ids": ids} for kind, ids in report.applied
+                ],
+                "changes_skipped": [
+                    {"kind": kind, "target_ids": ids, "reason": reason}
+                    for kind, ids, reason in report.skipped
+                ],
+            }
+            with interprocess_lock(
+                Path(settings.data_dir) / "state" / "evolution_audit.lock"
+            ):
+                with audit_path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
         except Exception:
             # snapshot 是可信根，只读复制回正式层；不改写快照本身。
             if store.memory_dir.exists():
                 shutil.rmtree(store.memory_dir)
             shutil.copytree(snapshot_path, store.memory_dir)
             index.rebuild_from_markdown(store.memory_dir, embedder)
+            (Path(settings.data_dir) / "state" / "memory_write_journal.json").unlink(
+                missing_ok=True
+            )
+            evolution_journal.unlink(missing_ok=True)
             raise
-
-        logs_dir = Path(settings.data_dir) / "logs"
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        audit_path = logs_dir / AUDIT_LOG_NAME
-        record = {
-            "event": "evolution_applied",
-            "proposal_id": proposal.id,
-            "applied_at": now.isoformat(timespec="seconds"),
-            "snapshot_id": snapshot_id,
-            "snapshot_path": str(snapshot_path),
-            "verify": verify_report.to_dict(),
-            "changes_applied": [
-                {"kind": kind, "target_ids": ids} for kind, ids in report.applied
-            ],
-            "changes_skipped": [
-                {"kind": kind, "target_ids": ids, "reason": reason}
-                for kind, ids, reason in report.skipped
-            ],
-        }
-        with interprocess_lock(Path(settings.data_dir) / "state" / "evolution_audit.lock"):
-            with audit_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
+        evolution_journal.unlink()
         report.audit_path = audit_path
         return report
 

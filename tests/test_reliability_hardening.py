@@ -2,6 +2,8 @@
 
 import json
 import multiprocessing
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
@@ -89,6 +91,24 @@ def _process_crash_after_markdown_update(data_dir):
 
     index.upsert = terminate_after_markdown
     writer.update(current.model_copy(update={"content": "正文已经更新为崩溃后的新事实。"}))
+
+
+def _process_crash_mid_replace(data_dir):
+    import os
+
+    index = IndexDB(data_dir / "index.db")
+    writer = MemoryWriter(MarkdownStore(data_dir), index, UnitEmbedder())
+    old = writer.store.get("replace-old")
+    new = old.model_copy(update={"id": "replace-new", "supersedes": old.id})
+    original_delete = writer.store.delete
+
+    def terminate_before_old_delete(entry_id):
+        if entry_id == old.id:
+            os._exit(74)
+        return original_delete(entry_id)
+
+    writer.store.delete = terminate_before_old_delete
+    writer.replace(old.id, new)
 
 
 def _seed(writer, entry):
@@ -283,6 +303,21 @@ def test_deep_consistency_detects_stale_content_and_vector(
     index.close()
 
 
+def test_deep_consistency_detects_actual_meta_drift(
+    tmp_path, entry_factory, fake_embedder
+):
+    index = IndexDB(tmp_path / "index.db")
+    writer = MemoryWriter(MarkdownStore(tmp_path), index, fake_embedder)
+    writer.create(entry_factory(entry_id="meta-drift", scope="global"))
+    index.conn.execute(
+        "UPDATE memories_meta SET scope = ? WHERE id = ?",
+        ("repo:other", "meta-drift"),
+    )
+    index.conn.commit()
+    assert writer.check_consistency().mismatched == ("meta-drift",)
+    index.close()
+
+
 def test_consistency_detects_orphan_fts_row(tmp_path, fake_embedder):
     store = MarkdownStore(tmp_path)
     index = IndexDB(tmp_path / "index.db")
@@ -315,10 +350,31 @@ def test_interrupted_process_is_recovered_from_durable_journal(tmp_path, entry_f
 
     recovered_index = IndexDB(tmp_path / "index.db")
     recovered = MemoryWriter(MarkdownStore(tmp_path), recovered_index, UnitEmbedder())
-    assert recovered.store.get("crash-target").content == "正文已经更新为崩溃后的新事实。"
+    assert recovered.store.get("crash-target").content == "正文仍然是崩溃前的旧事实。"
     assert recovered.check_consistency().consistent
     assert not (tmp_path / "state" / "memory_write_journal.json").exists()
     assert (tmp_path / "logs" / "memory_recovery.jsonl").exists()
+    recovered_index.close()
+
+
+def test_interrupted_replace_rolls_back_both_markdown_sides(tmp_path, entry_factory):
+    index = IndexDB(tmp_path / "index.db")
+    writer = MemoryWriter(MarkdownStore(tmp_path), index, UnitEmbedder())
+    writer.create(entry_factory(entry_id="replace-old", content="替换前的正式事实。"))
+    index.close()
+
+    process = multiprocessing.get_context("spawn").Process(
+        target=_process_crash_mid_replace, args=(tmp_path,)
+    )
+    process.start()
+    process.join(20)
+    assert process.exitcode == 74
+
+    recovered_index = IndexDB(tmp_path / "index.db")
+    recovered = MemoryWriter(MarkdownStore(tmp_path), recovered_index, UnitEmbedder())
+    assert {entry.id for entry in recovered.store.list()} == {"replace-old"}
+    assert recovered.check_consistency().consistent
+    assert not recovered.journal_path.exists()
     recovered_index.close()
 
 
@@ -392,6 +448,21 @@ def test_retrieval_count_increments_are_not_lost(tmp_path, entry_factory):
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(lambda _i: store.increment_retrieval_count("counted"), range(40)))
     assert store.get("counted").retrieval_count == 40
+
+
+def test_semantic_update_preserves_newer_retrieval_count(
+    tmp_path, entry_factory, fake_embedder
+):
+    store = MarkdownStore(tmp_path)
+    index = IndexDB(tmp_path / "index.db")
+    writer = MemoryWriter(store, index, fake_embedder)
+    old = writer.create(entry_factory(entry_id="count-and-update"))
+    store.increment_retrieval_count(old.id)
+    writer.update(
+        old.model_copy(update={"content": "用户确认正文已经更新。"}), expected=old
+    )
+    assert store.get(old.id).retrieval_count == 1
+    index.close()
 
 
 def test_review_item_can_only_be_resolved_once(
@@ -482,6 +553,74 @@ def test_feedback_never_reverts_concurrent_content_update(
     index.close()
 
 
+def test_memory_update_holds_write_lock_while_merging_current_entry(
+    tmp_path, entry_factory, fake_embedder, monkeypatch
+):
+    index = IndexDB(tmp_path / "index.db")
+    service = MemoryService(
+        Settings(data_dir=tmp_path), MarkdownStore(tmp_path), index, fake_embedder
+    )
+    service.writer.create(
+        entry_factory(entry_id="update-race", content="用户确认这是旧正文。")
+    )
+    read_done = threading.Event()
+    release_read = threading.Event()
+    original_get = service.store.get
+
+    def delayed_get(entry_id):
+        entry = original_get(entry_id)
+        if threading.current_thread().name == "content-update":
+            read_done.set()
+            assert release_read.wait(10)
+        return entry
+
+    def update_content():
+        threading.current_thread().name = "content-update"
+        return service.update("update-race", "用户确认这是新的正文。")
+
+    monkeypatch.setattr(service.store, "get", delayed_get)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        update_future = pool.submit(update_content)
+        assert read_done.wait(10)
+        feedback_future = pool.submit(service.feedback, "update-race", False)
+        time.sleep(0.1)
+        assert not feedback_future.done()
+        release_read.set()
+        update_future.result(timeout=10)
+        feedback_future.result(timeout=10)
+    final = service.store.get("update-race")
+    assert final.content == "用户确认这是新的正文。"
+    assert final.confidence == "medium"
+    index.close()
+
+
+def test_feedback_and_review_resolution_share_lock_order(
+    tmp_path, entry_factory, fake_embedder
+):
+    index = IndexDB(tmp_path / "index.db")
+    service = MemoryService(
+        Settings(data_dir=tmp_path), MarkdownStore(tmp_path), index, fake_embedder
+    )
+    service.writer.create(
+        entry_factory(entry_id="feedback-low", confidence="low")
+    )
+    queue_file = write_review_queue(
+        [entry_factory(entry_id="review-other", confidence="low")], tmp_path, "test"
+    )[0].name
+    barrier = threading.Barrier(2)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        feedback_future = pool.submit(
+            lambda: (barrier.wait(), service.feedback("feedback-low", False))
+        )
+        review_future = pool.submit(
+            lambda: (barrier.wait(), service.review_resolve(queue_file, "approve"))
+        )
+        feedback_future.result(timeout=10)
+        review_future.result(timeout=10)
+    assert service.store.get("review-other") is not None
+    index.close()
+
+
 def test_same_batch_stale_update_is_queued_instead_of_crashing(
     tmp_path, entry_factory, fake_embedder
 ):
@@ -545,6 +684,45 @@ def test_llm_decision_cannot_overwrite_newer_target_version(tmp_path, entry_fact
         report = future.result()
     assert report.queued[0][0].id == "candidate"
     assert store.get("cas-target").content == "用户刚确认目标已有更新版本。"
+    index.close()
+
+
+def test_llm_cas_is_rechecked_inside_writer_lock(
+    tmp_path, entry_factory, fake_embedder, monkeypatch
+):
+    store = MarkdownStore(tmp_path)
+    index = IndexDB(tmp_path / "index.db")
+    other_writer = MemoryWriter(store, index, fake_embedder)
+    other_writer.create(
+        entry_factory(entry_id="old-port", content="本项目端口当前固定为 8765。")
+    )
+    original_replace = MemoryWriter.replace
+    injected = False
+
+    def interleave(self, old_id, new_entry, **kwargs):
+        nonlocal injected
+        if new_entry.id == "new-port" and not injected:
+            injected = True
+            current = store.get(old_id)
+            other_writer.update(
+                current.model_copy(update={"content": "端口刚被并发改为 9000。"})
+            )
+        return original_replace(self, old_id, new_entry, **kwargs)
+
+    monkeypatch.setattr(MemoryWriter, "replace", interleave)
+    report = reconcile(
+        [entry_factory(entry_id="new-port", content="本项目端口当前固定为 8766。")],
+        store,
+        index,
+        ScriptedLLM([
+            {"action": "UPDATE", "target_id": "old-port", "reason": "端口变更"}
+        ]),
+        embedder=fake_embedder,
+        settings=Settings(data_dir=tmp_path),
+    )
+    assert report.updated == []
+    assert report.queued[0][0].id == "new-port"
+    assert store.get("old-port").content == "端口刚被并发改为 9000。"
     index.close()
 
 

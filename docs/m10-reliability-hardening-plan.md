@@ -65,7 +65,7 @@ Ruff clean。新增修复不得删测试、降低门槛或依赖付费外部服�
 | P04 | source/session_id 路径穿越 | 仅安全段名且归档始终位于 raw | `../` 与绝对路径测试 | 已解决 |
 | P05 | LangGraph namespace 串 scope | get/delete 必须匹配目标 scope | 跨 namespace 读删测试 | 已解决 |
 | P06 | detail 未过门/未脱敏 | content 与 detail 使用相同安全入口 | 注入 detail、secret detail 测试 | 已解决 |
-| P07 | boundary 字符串 false 误判 | LLM JSON schema 在调用边界拒绝错误类型 | apply 已拒绝错误类型；verify 入口最小补丁待 D6 授权 | 部分解决 |
+| P07 | boundary 字符串 false 误判 | LLM JSON schema 在调用边界拒绝错误类型 | 直接 verify 入口最小补丁待 D6 授权 | 未解决 |
 | P08 | context 无 query 绕复核门 | context 任意调用均执行复核门 | ask/strict 无 query 测试 | 已解决 |
 | P09 | 传播队列未进入 pending_review | 所有本次新增待办均返回 | propagation pending 测试 | 已解决 |
 | P10 | scope 候选被全库挤占 | 候选获取在 scope 内完成或扩大到完整过滤 | >80 外 scope 测试 | 已解决 |
@@ -96,16 +96,25 @@ Ruff clean。新增修复不得删测试、降低门槛或依赖付费外部服�
 | R15 | 日志 tool 轮次使 evidence 行号错位 | 蒸馏轮次显式映射到 raw JSONL 行 | tool 夹层日志测试 | 已解决 |
 | R16 | 传播删除完成审计失败造成无记录丢失 | 恢复被删条目并转人工复核 | completion audit OSError 测试 | 已解决 |
 | R17 | LangGraph 写工具缺 subagent 约束/蒸馏协议 | 10 个写工具均声明主 agent 限制并补齐协议工具 | tool 描述与调用测试 | 已解决 |
+| R18 | replace 进程中断后同时保留新旧事实 | journal 保存事务前镜像，恢复时回滚整个操作 | replace 中途 `os._exit` 测试 | 已解决 |
+| R19 | evolution 进程中断留下部分变更 | 整批应用持久标记 + 整理前快照恢复 | 第二条变更前 `os._exit` 测试 | 已解决 |
+| R20 | CAS 检查与写锁之间仍有竞态 | 期望版本比较下沉到协调写入器锁内 | 检查后并发更新测试 | 已解决 |
+| R21 | memory_update 覆盖并发 confidence | 锁内读取、合并、校验和更新 | update/feedback 确定性交错测试 | 已解决 |
+| R22 | feedback 与 review_resolve 锁序相反 | 统一按 memory_write → review_queue 获取 | 双线程完成时限测试 | 已解决 |
+| R23 | 真实 BGE 批量浮点差异误报损坏 | 校验持久向量自身哈希，不重新批量嵌入比较 | 真实 BGE 三项慢测试 | 已解决 |
+| R24 | 深检查信任 hash 而漏实际 meta 漂移 | 逐字段比较实际 meta 与 Markdown | scope 隔离篡改测试 | 已解决 |
+| R25 | 有既存 raw 证据的宿主候选也被降级 | 校验证据文件与行范围后进入正常对账 | 有效/越界 evidence 测试 | 已解决 |
 
 ## 4. 完成记录
 
 实现集中在协调写入器、跨进程文件锁、严格输入/LLM 边界、保守对账、工作记忆
 版本控制和接入层语义对齐。新增 `memory_consistency_check` 作为只读漂移探针。
 
-最终验证：常规套件 717 passed / 2 deselected；真实 BGE-M3 慢测试 2 passed；
+最终验证：常规套件 726 passed / 3 deselected；真实 BGE-M3 慢测试 3 passed；
 `uv run ruff check .` 干净。慢测试原先在同一 Windows 进程连续创建两份 Torch
 模型时稳定触发原生 access violation，改为模块级复用一份模型后整套通过。D6
 清单中的 `evals/`、阈值、`verify.py` 判定逻辑、历史日志和快照均未修改。
-`apply_proposal` 已在可信根外严格拒绝伪造报告及字符串布尔值，因此错误报告不能
-触发正式层变更；`verify_proposal` 自身仍可把自定义 LLM 返回的字符串 `"false"`
-呈现为通过，最小修复需要在该可信根入口套用既有 `ValidatingLLMClient`。
+`apply_proposal` 已在可信根外拒绝伪造对象和字段类型直接错误的报告；但
+`verify_proposal` 会先把自定义 LLM 返回的字符串 `"false"` 转成布尔 `True`，形成
+结构合法的错误报告，随后仍可触发正式层变更。最小修复需要在该可信根入口套用
+既有 `ValidatingLLMClient`。

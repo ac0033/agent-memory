@@ -140,8 +140,9 @@ def get_distill_protocol() -> dict:
 
     订阅制 agent（登录即用、无 API key）的宿主本身就是大模型：它拿到这份协议后
     在自己的上下文里完成蒸馏，再把产出的 JSON 通过 memory_add(distilled_json=...)
-    提交回服务端。服务端仍执行校验/规范化→脱敏→评价门；由于这条路径没有由
-    服务端归档的原始对话证据，通过评价门的候选也要进入人工复核后才能入库。
+    提交回服务端。服务端仍执行校验/规范化→脱敏→评价门；候选只有在
+    source/session_id 与 evidence_turns 指向已有 raw 对话证据时才自动对账，
+    否则进入人工复核。
     """
     return {
         "system_prompt": _SYSTEM_PROMPT,
@@ -157,6 +158,8 @@ def _build_entry(
     raw: dict, scope: str, source: str, session_id: str, n_turns: int | None,
     result: DistillResult, evidence_line_offset: int = 0,
     evidence_line_map: list[int] | None = None,
+    strict_evidence: bool = False,
+    valid_evidence_lines: set[int] | None = None,
 ) -> MemoryEntry:
     """把一条蒸馏 JSON 记录构造为 MemoryEntry（可能抛 ValidationError）。
 
@@ -172,8 +175,26 @@ def _build_entry(
     """
     if not isinstance(raw, dict):
         raise ValueError(f"单条蒸馏输出必须是 JSON object，收到: {type(raw).__name__}")
-    evidence_turns = raw.get("evidence_turns") or [1, n_turns or 1]
+    evidence_turns = raw.get("evidence_turns")
+    if strict_evidence and (
+        not isinstance(evidence_turns, list)
+        or len(evidence_turns) != 2
+        or not all(type(value) is int for value in evidence_turns)
+    ):
+        raise ValueError("宿主蒸馏必须提供两个整数的 evidence_turns")
+    evidence_turns = evidence_turns or [1, n_turns or 1]
     start, end = int(evidence_turns[0]), int(evidence_turns[-1])
+    if strict_evidence and (
+        n_turns is None
+        or start < 1
+        or end < start
+        or end > n_turns
+        or (
+            valid_evidence_lines is not None
+            and any(line not in valid_evidence_lines for line in range(start, end + 1))
+        )
+    ):
+        raise ValueError("evidence_turns 未指向该 source/session 的有效对话证据")
     start = max(1, start)
     if n_turns is not None:
         start = min(start, n_turns)
@@ -287,6 +308,8 @@ def build_entries_from_distilled(
     result: DistillResult | None = None,
     evidence_line_offset: int = 0,
     evidence_line_map: list[int] | None = None,
+    strict_evidence: bool = False,
+    valid_evidence_lines: set[int] | None = None,
 ) -> DistillResult:
     """把蒸馏产出的 JSON（{"memories": [...]}）加工成候选条目（M9 抽出共用）。
 
@@ -319,7 +342,7 @@ def build_entries_from_distilled(
         try:
             entry = _build_entry(
                 raw, scope, source, session_id, n_turns, result, evidence_line_offset,
-                evidence_line_map,
+                evidence_line_map, strict_evidence, valid_evidence_lines,
             )
         except (ValidationError, ValueError, TypeError, IndexError, KeyError) as e:
             # 规范化后仍不合法：不丢弃，进复核队列（保留原始记录与失败原因）

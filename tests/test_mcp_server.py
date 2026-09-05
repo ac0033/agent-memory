@@ -805,6 +805,65 @@ def test_add_distilled_works_without_llm(service):
         service.store.get("tz-note")
 
 
+def test_add_distilled_uses_existing_raw_evidence(service):
+    service._archive_raw(
+        [{"role": "user", "content": "用户确认数据库使用 SQLite。"}],
+        "host",
+        "existing-session",
+    )
+    distilled = json.dumps(
+        {
+            "memories": [
+                {
+                    "id": "verified-host-fact",
+                    "content": "用户确认数据库使用 SQLite。",
+                    "evidence_turns": [1, 1],
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+    report = service.add(
+        distilled_json=distilled,
+        scope="global",
+        source="host",
+        session_id="existing-session",
+    )
+    assert report["reconcile"]["add"] == 1
+    entry = service.store.get("verified-host-fact")
+    assert entry.evidence[0].line_range == (1, 1)
+    assert entry.evidence[0].source == "host"
+
+
+def test_add_distilled_rejects_invalid_range_in_existing_raw(service):
+    service._archive_raw(
+        [{"role": "user", "content": "用户确认数据库使用 SQLite。"}],
+        "host",
+        "existing-session",
+    )
+    report = service.add(
+        distilled_json=json.dumps(
+            {
+                "memories": [
+                    {
+                        "id": "invalid-host-evidence",
+                        "content": "用户确认数据库使用 SQLite。",
+                        "evidence_turns": [999, 999],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        scope="global",
+        source="host",
+        session_id="existing-session",
+    )
+    assert report["reconcile"]["add"] == 0
+    assert report["pending_review"][0]["id"] == "invalid-host-evidence"
+    with pytest.raises(KeyError):
+        service.store.get("invalid-host-evidence")
+
+
 def test_add_distilled_rejects_invalid_json(service):
     with pytest.raises(ValueError, match="distilled_json 不是合法 JSON"):
         service.add(distilled_json="这不是 JSON")

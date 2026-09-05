@@ -369,7 +369,8 @@ wire.jsonl，按文件名自动识别格式）解析成干净的轮次序列（u
 1. `memory_distill_prompt()` 拿蒸馏协议（system prompt + 输出 JSON schema + 对话渲染格式）；
 2. 宿主在自己的上下文里按协议蒸馏，产出 `{"memories": [...]}`；
 3. `memory_add(distilled_json=...)` 提交——候选照常过服务端的校验/规范化→脱敏→评价门；
-   因服务端没有对应原始证据，候选进入人工复核，确认后才写入正式记忆层。
+   传入已有 raw 归档的 `source` / `session_id`，并用 `evidence_turns` 指向有效对话行，
+   候选才进入自动对账；缺少可核查证据时进入人工复核。
 
 单条 `content` 写入在无服务端 LLM 时对账走规则降级：无近邻直接 ADD，有近邻进人工复核队列
 （关系判断必须靠 LLM，fail-safe 不猜）。`memory_add` 的对话模式在无 LLM 时返回 `archived_only`，warning 里会指引

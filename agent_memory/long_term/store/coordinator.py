@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -37,14 +38,20 @@ class ConsistencyReport:
 
 
 class MemoryWriter:
-    def __init__(self, store: MarkdownStore, index: IndexDB, embedder):
+    def __init__(
+        self, store: MarkdownStore, index: IndexDB, embedder, *, recover: bool = True
+    ):
         self.store = store
         self.index = index
         self.embedder = embedder
         self.lock_path = store.data_dir / "state" / "memory_write.lock"
         self.journal_path = store.data_dir / "state" / "memory_write_journal.json"
+        self.evolution_journal_path = (
+            store.data_dir / "state" / "evolution_apply_journal.json"
+        )
         self.recovery_log = store.data_dir / "logs" / "memory_recovery.jsonl"
-        self.recover_pending()
+        if recover:
+            self.recover_pending()
 
     @staticmethod
     def _validated(entry: MemoryEntry) -> MemoryEntry:
@@ -71,7 +78,13 @@ class MemoryWriter:
         except KeyError:
             pass
 
-    def _begin(self, operation: str, entry_ids: list[str]) -> dict:
+    def _begin(
+        self,
+        operation: str,
+        *,
+        before: list[MemoryEntry] | None = None,
+        created_ids: list[str] | None = None,
+    ) -> dict:
         if self.journal_path.exists():
             raise CoordinatedWriteError(
                 f"存在未恢复的写入日志：{self.journal_path}，拒绝开始新写入"
@@ -80,7 +93,8 @@ class MemoryWriter:
             "version": 1,
             "transaction_id": uuid.uuid4().hex,
             "operation": operation,
-            "entry_ids": entry_ids,
+            "before": [entry.model_dump(mode="json") for entry in before or []],
+            "created_ids": created_ids or [],
             "started_at": datetime.now().isoformat(timespec="seconds"),
         }
         atomic_write_text(
@@ -92,9 +106,60 @@ class MemoryWriter:
     def _clear_journal(self) -> None:
         self.journal_path.unlink(missing_ok=True)
 
+    def _append_recovery(self, event: str, **details) -> None:
+        self.recovery_log.parent.mkdir(parents=True, exist_ok=True)
+        recovery = {
+            "event": event,
+            "recovered_at": datetime.now().isoformat(timespec="seconds"),
+            **details,
+        }
+        with self.recovery_log.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(recovery, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def _recover_evolution(self) -> bool:
+        if not self.evolution_journal_path.exists():
+            return False
+        try:
+            record = json.loads(self.evolution_journal_path.read_text(encoding="utf-8"))
+            if not isinstance(record, dict):
+                raise ValueError("evolution journal must be an object")
+            snapshot_id = record.get("snapshot_id")
+            if record.get("version") != 1 or not isinstance(snapshot_id, str):
+                raise ValueError("evolution journal schema invalid")
+            snapshot_path = self.store.data_dir / "snapshots" / snapshot_id / "memory"
+            expected_parent = (self.store.data_dir / "snapshots").resolve()
+            if snapshot_path.resolve().parent.parent != expected_parent:
+                raise ValueError("evolution snapshot path escapes snapshots directory")
+            if not snapshot_path.is_dir():
+                raise FileNotFoundError(f"evolution snapshot missing: {snapshot_path}")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise CoordinatedWriteError(
+                f"进化恢复日志损坏，拒绝自动恢复：{self.evolution_journal_path}: {exc}"
+            ) from exc
+        if self.store.memory_dir.exists():
+            shutil.rmtree(self.store.memory_dir)
+        shutil.copytree(snapshot_path, self.store.memory_dir)
+        rebuilt = self.index.rebuild_from_markdown(self.store.memory_dir, self.embedder)
+        report = self.check_consistency()
+        if not report.consistent:
+            raise CoordinatedWriteError(
+                f"进化恢复后仍不一致：markdown_only={report.markdown_only}, "
+                f"index_only={report.index_only}, mismatched={report.mismatched}"
+            )
+        self._append_recovery(
+            "evolution_apply_recovered", rebuilt_entries=rebuilt, journal=record
+        )
+        self.journal_path.unlink(missing_ok=True)
+        self.evolution_journal_path.unlink()
+        return True
+
     def recover_pending(self) -> bool:
         """Replay an interrupted write by rebuilding the derived index from Markdown."""
         with interprocess_lock(self.lock_path):
+            if self._recover_evolution():
+                return True
             if not self.journal_path.exists():
                 return False
             try:
@@ -104,13 +169,25 @@ class MemoryWriter:
                     or record.get("version") != 1
                     or not isinstance(record.get("transaction_id"), str)
                     or not isinstance(record.get("operation"), str)
-                    or not isinstance(record.get("entry_ids"), list)
+                    or not isinstance(record.get("before"), list)
+                    or not isinstance(record.get("created_ids"), list)
                 ):
                     raise ValueError("journal schema invalid")
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 raise CoordinatedWriteError(
                     f"写入恢复日志损坏，拒绝自动恢复：{self.journal_path}: {exc}"
                 ) from exc
+            try:
+                before = [MemoryEntry.model_validate(item) for item in record["before"]]
+                created_ids = [validate_entry_id(item) for item in record["created_ids"]]
+            except (TypeError, ValueError) as exc:
+                raise CoordinatedWriteError(
+                    f"写入恢复日志内容非法，拒绝自动恢复：{self.journal_path}: {exc}"
+                ) from exc
+            for entry_id in created_ids:
+                self._delete_store_if_present(entry_id)
+            for entry in before:
+                self.store.restore(entry)
             rebuilt = self.index.rebuild_from_markdown(self.store.memory_dir, self.embedder)
             report = self.check_consistency()
             if not report.consistent:
@@ -118,17 +195,9 @@ class MemoryWriter:
                     f"写入恢复后仍不一致：markdown_only={report.markdown_only}, "
                     f"index_only={report.index_only}, mismatched={report.mismatched}"
                 )
-            self.recovery_log.parent.mkdir(parents=True, exist_ok=True)
-            recovery = {
-                "event": "memory_write_recovered",
-                "recovered_at": datetime.now().isoformat(timespec="seconds"),
-                "rebuilt_entries": rebuilt,
-                "journal": record,
-            }
-            with self.recovery_log.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(recovery, ensure_ascii=False) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
+            self._append_recovery(
+                "memory_write_recovered", rebuilt_entries=rebuilt, journal=record
+            )
             self._clear_journal()
             return True
 
@@ -138,19 +207,19 @@ class MemoryWriter:
         index_ids = set(self.index.list_ids())
         shared = sorted(memory_ids & index_ids)
         records = self.index.integrity_records()
-        vectors = (
-            self.embedder.embed_texts([entries[entry_id].index_text for entry_id in shared])
-            if shared else []
-        )
         mismatched: list[str] = []
-        for entry_id, vector in zip(shared, vectors, strict=True):
+        for entry_id in shared:
             entry = entries[entry_id]
             record = records.get(entry_id, {})
             if (
-                record.get("content_hash") != self.index.entry_hash(entry)
+                record.get("scope") != entry.scope
+                or record.get("memory_type") != entry.memory_type
+                or record.get("confidence") != entry.confidence
+                or record.get("last_verified") != entry.last_verified.isoformat()
+                or record.get("created_at") != entry.created_at.isoformat()
+                or record.get("content_hash") != self.index.entry_hash(entry)
                 or record.get("fts_hash")
                 != hashlib.sha256(entry.index_text.encode("utf-8")).hexdigest()
-                or record.get("vector_hash") != self.index.vector_hash(vector)
                 or record.get("stored_vector_hash") != record.get("vector_hash")
             ):
                 mismatched.append(entry_id)
@@ -170,7 +239,7 @@ class MemoryWriter:
                 pass
             else:
                 raise ValueError(f"id {entry.id!r} 已存在，拒绝覆盖")
-            self._begin("create", [entry.id])
+            self._begin("create", created_ids=[entry.id])
             try:
                 self.store.create(entry)
                 self.index.upsert(entry, vector)
@@ -191,14 +260,34 @@ class MemoryWriter:
             self._clear_journal()
         return entry
 
-    def update(self, entry: MemoryEntry) -> MemoryEntry:
+    @staticmethod
+    def _assert_expected(current: MemoryEntry, expected: MemoryEntry | None) -> None:
+        if expected is None:
+            return
+        fields = ("id", "version", "index_text", "confidence", "scope", "last_verified")
+        if any(getattr(current, field) != getattr(expected, field) for field in fields):
+            raise CoordinatedWriteError(
+                f"条目 {current.id!r} 已在读取后发生变化，拒绝覆盖并发更新"
+            )
+
+    def update(
+        self, entry: MemoryEntry, *, expected: MemoryEntry | None = None
+    ) -> MemoryEntry:
         entry = self._validated(entry)
         validate_entry_id(entry.id)
         with interprocess_lock(self.lock_path):
             old = self.store.get(entry.id)
+            self._assert_expected(old, expected)
+            # Retrieval tracking updates only this counter and does not advance the
+            # semantic version. Preserve the lock-current value during any content
+            # or confidence update so a recent retrieval cannot be overwritten.
+            entry = MemoryEntry.model_validate(
+                entry.model_dump(mode="python")
+                | {"retrieval_count": old.retrieval_count}
+            )
             old_vector = self._vector(old)
             new_vector = self._vector(entry)
-            self._begin("update", [entry.id])
+            self._begin("update", before=[old])
             try:
                 updated = self.store.update(entry)
                 self.index.upsert(updated, new_vector)
@@ -227,12 +316,15 @@ class MemoryWriter:
                 raise ValueError("mutate 不允许变更 entry id")
             return self.update(candidate)
 
-    def delete(self, entry_id: str) -> MemoryEntry:
+    def delete(
+        self, entry_id: str, *, expected: MemoryEntry | None = None
+    ) -> MemoryEntry:
         validate_entry_id(entry_id)
         with interprocess_lock(self.lock_path):
             old = self.store.get(entry_id)
+            self._assert_expected(old, expected)
             old_vector = self._vector(old)
-            self._begin("delete", [entry_id])
+            self._begin("delete", before=[old])
             try:
                 self.store.delete(entry_id)
                 self.index.delete(entry_id)
@@ -251,15 +343,22 @@ class MemoryWriter:
             self._clear_journal()
         return old
 
-    def replace(self, old_id: str, new_entry: MemoryEntry) -> MemoryEntry:
+    def replace(
+        self,
+        old_id: str,
+        new_entry: MemoryEntry,
+        *,
+        expected: MemoryEntry | None = None,
+    ) -> MemoryEntry:
         """用 new_entry 取代 old_id；新条目完整落地后才删除旧条目。"""
 
         validate_entry_id(old_id)
         new_entry = self._validated(new_entry)
         if old_id == new_entry.id:
-            return self.update(new_entry)
+            return self.update(new_entry, expected=expected)
         with interprocess_lock(self.lock_path):
             old = self.store.get(old_id)
+            self._assert_expected(old, expected)
             # 显式预检，避免删旧后才发现新 id 冲突。
             try:
                 self.store.get(new_entry.id)
@@ -269,7 +368,7 @@ class MemoryWriter:
                 raise ValueError(f"替代条目的 id {new_entry.id!r} 已存在，拒绝删除旧条目")
             old_vector = self._vector(old)
             new_vector = self._vector(new_entry)
-            self._begin("replace", [old_id, new_entry.id])
+            self._begin("replace", before=[old], created_ids=[new_entry.id])
             try:
                 self.store.create(new_entry)
                 self.index.upsert(new_entry, new_vector)

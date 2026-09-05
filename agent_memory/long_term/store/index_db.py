@@ -297,9 +297,18 @@ class IndexDB:
         """Return stored and self-observed hashes for deep consistency checks."""
         with self._lock:
             meta = {
-                row[0]: {"content_hash": row[1], "vector_hash": row[2]}
+                row[0]: {
+                    "scope": row[1],
+                    "memory_type": row[2],
+                    "confidence": row[3],
+                    "last_verified": row[4],
+                    "created_at": row[5],
+                    "content_hash": row[6],
+                    "vector_hash": row[7],
+                }
                 for row in self.conn.execute(
-                    "SELECT id, content_hash, vector_hash FROM memories_meta"
+                    "SELECT id, scope, memory_type, confidence, last_verified, created_at,"
+                    " content_hash, vector_hash FROM memories_meta"
                 ).fetchall()
             }
             fts = {

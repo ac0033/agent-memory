@@ -7,6 +7,9 @@ HF_ENDPOINT=https://hf-mirror.com 走镜像。
 import pytest
 
 from agent_memory.long_term.retrieve.embedder import Embedder
+from agent_memory.long_term.store.coordinator import MemoryWriter
+from agent_memory.long_term.store.index_db import IndexDB
+from agent_memory.long_term.store.markdown_store import MarkdownStore
 
 pytestmark = pytest.mark.slow
 
@@ -35,3 +38,14 @@ def test_bge_m3_semantic_similarity(embedder):
         return dot / (na * nb)
 
     assert cosine(q, pos) > cosine(q, neg)
+
+
+def test_bge_m3_consistency_does_not_depend_on_batch_rounding(
+    embedder, tmp_path, entry_factory
+):
+    index = IndexDB(tmp_path / "index.db")
+    writer = MemoryWriter(MarkdownStore(tmp_path), index, embedder)
+    writer.create(entry_factory(entry_id="fact-a", content="用户确认项目使用 SQLite。"))
+    writer.create(entry_factory(entry_id="fact-b", content="用户确认项目使用 uv。"))
+    assert writer.check_consistency().consistent
+    index.close()
