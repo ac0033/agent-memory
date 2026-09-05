@@ -62,6 +62,9 @@ def test_bge_m3_consistency_detects_semantic_vector_drift_and_bad_dimension(
     unrelated = embedder.embed_texts(["今天天气晴朗，适合去公园散步。"])[0]
     index.upsert(entry, unrelated)
     assert writer.check_consistency().mismatched == ("vector-integrity",)
+    correct = embedder.embed_texts([entry.index_text])[0]
+    index.upsert(entry, [value * 1e6 for value in correct])
+    assert writer.check_consistency().mismatched == ("vector-integrity",)
     with pytest.raises(ValueError, match="向量维度"):
         index.upsert(entry, [0.0, 1.0])
     index.close()

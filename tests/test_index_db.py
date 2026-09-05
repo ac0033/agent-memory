@@ -1,5 +1,7 @@
 """IndexDB：增删查、scope 过滤、中文 trigram 全文、rebuild 幂等。"""
 
+import math
+
 import pytest
 
 from agent_memory.long_term.store.index_db import EMBEDDING_DIM, IndexDB
@@ -30,6 +32,17 @@ class TestUpsertDelete:
     def test_wrong_vector_dim_rejected(self, index, entry_factory):
         with pytest.raises(ValueError, match="维度"):
             index.upsert(entry_factory(entry_id="bad"), [0.1] * 10)
+
+    @pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+    def test_non_finite_vector_rejected(self, index, entry_factory, bad):
+        vector = _vec(0)
+        vector[0] = bad
+        with pytest.raises(ValueError, match="NaN 或 Inf"):
+            index.upsert(entry_factory(entry_id="bad"), vector)
+
+    def test_zero_vector_rejected(self, index, entry_factory):
+        with pytest.raises(ValueError, match="范数"):
+            index.upsert(entry_factory(entry_id="zero"), [0.0] * EMBEDDING_DIM)
 
     def test_delete(self, index, entry_factory):
         index.upsert(entry_factory(entry_id="m1"), _vec(0))

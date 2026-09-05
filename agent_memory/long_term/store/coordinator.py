@@ -19,7 +19,7 @@ from datetime import datetime
 
 from agent_memory.io_utils import atomic_write_text, interprocess_lock
 from agent_memory.long_term.store.index_db import IndexDB
-from agent_memory.long_term.store.markdown_store import MarkdownStore
+from agent_memory.long_term.store.markdown_store import MarkdownStore, MemoryStoreError
 from agent_memory.models import MemoryEntry, validate_entry_id
 
 
@@ -51,6 +51,7 @@ class MemoryWriter:
             store.data_dir / "state" / "evolution_apply_journal.json"
         )
         self.recovery_log = store.data_dir / "logs" / "memory_recovery.jsonl"
+        self.recover_before_write = recover
         if recover:
             self.recover_pending()
 
@@ -86,6 +87,10 @@ class MemoryWriter:
         before: list[MemoryEntry] | None = None,
         after: list[MemoryEntry] | None = None,
     ) -> dict:
+        if self.recover_before_write and self.evolution_journal_path.exists():
+            raise CoordinatedWriteError(
+                f"存在未恢复的进化事务：{self.evolution_journal_path}，拒绝开始新写入"
+            )
         if self.journal_path.exists():
             raise CoordinatedWriteError(
                 f"存在未恢复的写入日志：{self.journal_path}，拒绝开始新写入"
@@ -153,16 +158,26 @@ class MemoryWriter:
             raise CoordinatedWriteError(
                 f"进化恢复日志损坏，拒绝自动恢复：{self.evolution_journal_path}: {exc}"
             ) from exc
-        if self.store.memory_dir.exists():
-            shutil.rmtree(self.store.memory_dir)
-        shutil.copytree(snapshot_path, self.store.memory_dir)
-        rebuilt = self.index.rebuild_from_markdown(self.store.memory_dir, self.embedder)
-        report = self.check_consistency()
-        if not report.consistent:
-            raise CoordinatedWriteError(
-                f"进化恢复后仍不一致：markdown_only={report.markdown_only}, "
-                f"index_only={report.index_only}, mismatched={report.mismatched}"
+        try:
+            if self.store.memory_dir.exists():
+                shutil.rmtree(self.store.memory_dir)
+            shutil.copytree(snapshot_path, self.store.memory_dir)
+            rebuilt = self.index.rebuild_from_markdown(
+                self.store.memory_dir, self.embedder
             )
+            report = self.check_consistency()
+            if not report.consistent:
+                raise CoordinatedWriteError(
+                    f"进化恢复后仍不一致：markdown_only={report.markdown_only}, "
+                    f"index_only={report.index_only}, mismatched={report.mismatched}"
+                )
+        except CoordinatedWriteError:
+            raise
+        except Exception as exc:
+            raise CoordinatedWriteError(
+                "进化事务自动恢复失败，恢复日志已保留且新写入将被拒绝："
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
         self._append_recovery(
             "evolution_apply_recovered", rebuilt_entries=rebuilt, journal=record
         )
@@ -286,6 +301,27 @@ class MemoryWriter:
             self._clear_journal()
             return True
 
+    def _recover_before_new_write(self) -> None:
+        """Resolve every older transaction before accepting a new write.
+
+        This is required even for a long-lived writer: an evolution apply can fail
+        after this instance was constructed and leave a durable recovery marker.
+        Inner writers owned by apply_proposal opt out because the outer evolution
+        transaction deliberately owns that marker and the shared write lock.
+        """
+        if self.recover_before_write and (
+            self.evolution_journal_path.exists() or self.journal_path.exists()
+        ):
+            try:
+                self.recover_pending()
+            except CoordinatedWriteError:
+                raise
+            except Exception as exc:
+                raise CoordinatedWriteError(
+                    "存在未恢复事务且自动恢复失败，拒绝接受新写入："
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+
     def check_consistency(self) -> ConsistencyReport:
         entries = {entry.id: entry for entry in self.store.list()}
         memory_ids = set(entries)
@@ -334,23 +370,26 @@ class MemoryWriter:
         dot = sum(left * right for left, right in zip(stored, fresh, strict=True))
         stored_norm = math.sqrt(sum(value * value for value in stored))
         fresh_norm = math.sqrt(sum(value * value for value in fresh))
-        if stored_norm == 0 or fresh_norm == 0:
-            return stored_norm == fresh_norm and all(
-                abs(left - right) <= 1e-7
-                for left, right in zip(stored, fresh, strict=True)
-            )
+        if stored_norm <= 1e-12 or fresh_norm <= 1e-12:
+            return False
+        # sqlite-vec's cosine implementation is not scale-invariant for extreme
+        # float32 magnitudes. Embedders in this project promise L2-normalized output,
+        # so a persisted norm must remain numerically close to a fresh one.
+        if not math.isclose(stored_norm, fresh_norm, rel_tol=1e-4, abs_tol=1e-6):
+            return False
         return dot / (stored_norm * fresh_norm) >= 0.99999
 
     def create(self, entry: MemoryEntry) -> MemoryEntry:
         entry = self._validated(entry)
         vector = self._vector(entry)
         with interprocess_lock(self.lock_path):
+            self._recover_before_new_write()
             try:
                 self.store.get(entry.id)
             except KeyError:
                 pass
             else:
-                raise ValueError(f"id {entry.id!r} 已存在，拒绝覆盖")
+                raise MemoryStoreError(f"id {entry.id!r} 已存在，拒绝覆盖")
             journal = self._begin("create", after=[entry])
             try:
                 self.store.create(entry)
@@ -389,6 +428,7 @@ class MemoryWriter:
         entry = self._validated(entry)
         validate_entry_id(entry.id)
         with interprocess_lock(self.lock_path):
+            self._recover_before_new_write()
             old = self.store.get(entry.id)
             self._assert_expected(old, expected)
             # Retrieval tracking updates only this counter and does not advance the
@@ -424,6 +464,7 @@ class MemoryWriter:
         """Read and transform an entry under the same lock used for the coordinated update."""
         validate_entry_id(entry_id)
         with interprocess_lock(self.lock_path):
+            self._recover_before_new_write()
             current = self.store.get(entry_id)
             candidate = self._validated(transform(current))
             if candidate.id != entry_id:
@@ -435,6 +476,7 @@ class MemoryWriter:
     ) -> MemoryEntry:
         validate_entry_id(entry_id)
         with interprocess_lock(self.lock_path):
+            self._recover_before_new_write()
             old = self.store.get(entry_id)
             self._assert_expected(old, expected)
             old_vector = self._vector(old)
@@ -472,6 +514,7 @@ class MemoryWriter:
         if old_id == new_entry.id:
             return self.update(new_entry, expected=expected)
         with interprocess_lock(self.lock_path):
+            self._recover_before_new_write()
             old = self.store.get(old_id)
             self._assert_expected(old, expected)
             # 显式预检，避免删旧后才发现新 id 冲突。
@@ -480,7 +523,9 @@ class MemoryWriter:
             except KeyError:
                 pass
             else:
-                raise ValueError(f"替代条目的 id {new_entry.id!r} 已存在，拒绝删除旧条目")
+                raise MemoryStoreError(
+                    f"替代条目的 id {new_entry.id!r} 已存在，拒绝删除旧条目"
+                )
             old_vector = self._vector(old)
             new_vector = self._vector(new_entry)
             journal = self._begin("replace", before=[old], after=[new_entry])

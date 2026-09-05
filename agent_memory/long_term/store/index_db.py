@@ -9,6 +9,7 @@
 
 import hashlib
 import json
+import math
 import sqlite3
 import struct
 import threading
@@ -134,6 +135,10 @@ class IndexDB:
         """写入/更新一条记忆的 meta + 向量 + 全文索引。幂等：先删后插。"""
         if len(vector) != EMBEDDING_DIM:
             raise ValueError(f"向量维度 {len(vector)} 不是 {EMBEDDING_DIM}（bge-m3）")
+        if not all(math.isfinite(value) for value in vector):
+            raise ValueError("向量包含 NaN 或 Inf，拒绝写入派生索引")
+        if math.sqrt(sum(value * value for value in vector)) <= 1e-12:
+            raise ValueError("向量范数为零或过小，拒绝写入派生索引")
         with self._lock:
             self.delete(entry.id, missing_ok=True)
             vector_blob = sqlite_vec.serialize_float32(vector)

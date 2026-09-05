@@ -408,6 +408,49 @@ def test_deep_consistency_detects_vector_semantic_drift_even_with_matching_hash(
     index.close()
 
 
+@pytest.mark.parametrize("scale", [1e30, 1e-6])
+def test_deep_consistency_detects_vector_scale_drift_with_matching_hash(
+    tmp_path, entry_factory, fake_embedder, scale
+):
+    index = IndexDB(tmp_path / "index.db")
+    writer = MemoryWriter(MarkdownStore(tmp_path), index, fake_embedder)
+    entry = writer.create(
+        entry_factory(entry_id="scaled-vector", content="项目使用 uv 管理环境。")
+    )
+    correct = fake_embedder.embed_texts([entry.index_text])[0]
+    index.upsert(entry, [value * scale for value in correct])
+    assert writer.check_consistency().mismatched == ("scaled-vector",)
+    index.close()
+
+
+def test_deep_consistency_detects_zero_vector_with_matching_hash(
+    tmp_path, entry_factory, fake_embedder
+):
+    import hashlib
+
+    import sqlite_vec
+
+    index = IndexDB(tmp_path / "index.db")
+    writer = MemoryWriter(MarkdownStore(tmp_path), index, fake_embedder)
+    entry = writer.create(
+        entry_factory(entry_id="zero-vector", content="项目使用 uv 管理环境。")
+    )
+    blob = sqlite_vec.serialize_float32([0.0] * EMBEDDING_DIM)
+    rowid = index.conn.execute(
+        "SELECT rowid FROM memories_vec WHERE memory_id = ?", (entry.id,)
+    ).fetchone()[0]
+    index.conn.execute(
+        "UPDATE memories_vec SET embedding = ? WHERE rowid = ?", (blob, rowid)
+    )
+    index.conn.execute(
+        "UPDATE memories_meta SET vector_hash = ? WHERE id = ?",
+        (hashlib.sha256(blob).hexdigest(), entry.id),
+    )
+    index.conn.commit()
+    assert writer.check_consistency().mismatched == ("zero-vector",)
+    index.close()
+
+
 def test_consistency_detects_orphan_fts_row(tmp_path, fake_embedder):
     store = MarkdownStore(tmp_path)
     index = IndexDB(tmp_path / "index.db")

@@ -76,6 +76,75 @@ def test_add_when_neighbors_too_far(entry_factory, components):
     assert store.get("uv-entry") is not None  # 远邻不受影响
 
 
+def test_direct_add_id_conflict_is_queued_and_batch_continues(
+    entry_factory, components
+):
+    store, index, embedder, _ = components
+    original = entry_factory(
+        entry_id="occupied-id",
+        scope="repo:other",
+        content="另一作用域中的既有事实。",
+    )
+    _seed(store, index, embedder, original)
+    conflict = entry_factory(
+        entry_id="occupied-id",
+        scope="global",
+        content="候选不能覆盖同 ID 的既有事实。",
+    )
+    later = entry_factory(
+        entry_id="later-candidate",
+        scope="global",
+        content="本项目 dev server 端口固定 8765。",
+    )
+
+    report = _reconcile([conflict, later], components, DecideLLM())
+
+    assert report.added == ["later-candidate"]
+    assert [entry.id for entry, _reason in report.queued] == ["occupied-id"]
+    assert len(report.queued_files) == 1
+    assert store.get("occupied-id") == original
+    assert store.get("later-candidate") == later
+
+
+def test_llm_add_id_conflict_is_queued_and_batch_continues(
+    entry_factory, components
+):
+    store, index, embedder, _ = components
+    original = entry_factory(
+        entry_id="occupied-id",
+        scope="repo:other",
+        content="另一作用域中的既有事实。",
+    )
+    neighbor = entry_factory(
+        entry_id="uv-neighbor",
+        scope="global",
+        content="既有项目使用 uv 管理环境。",
+    )
+    _seed(store, index, embedder, original)
+    _seed(store, index, embedder, neighbor)
+    conflict = entry_factory(
+        entry_id="occupied-id",
+        scope="global",
+        content="新候选也提到 uv，但不能覆盖占用的 ID。",
+    )
+    later = entry_factory(
+        entry_id="later-candidate",
+        scope="global",
+        content="用户机器时区为 UTC+8。",
+    )
+    llm = DecideLLM({
+        "occupied-id": {"action": "ADD", "target_id": None, "reason": "独立事实"}
+    })
+
+    report = _reconcile([conflict, later], components, llm)
+
+    assert report.added == ["later-candidate"]
+    assert [entry.id for entry, _reason in report.queued] == ["occupied-id"]
+    assert len(report.queued_files) == 1
+    assert store.get("occupied-id") == original
+    assert store.get("later-candidate") == later
+
+
 def test_update_inherits_version_and_supersedes(entry_factory, components):
     store, index, embedder, _ = components
     old = entry_factory(

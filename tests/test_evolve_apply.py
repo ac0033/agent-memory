@@ -12,7 +12,7 @@ import pytest
 from agent_memory.config import Settings
 from agent_memory.long_term.evolve.apply import apply_proposal, rollback
 from agent_memory.long_term.evolve.verify import TierResult, VerifyReport
-from agent_memory.long_term.store.coordinator import MemoryWriter
+from agent_memory.long_term.store.coordinator import CoordinatedWriteError, MemoryWriter
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.models import (
@@ -300,6 +300,67 @@ class TestApply:
         assert recovered.check_consistency().consistent
         assert not recovered.evolution_journal_path.exists()
         recovered_index.close()
+
+    def test_failed_evolution_recovery_blocks_existing_writer_until_recovered(
+        self, tmp_path, entry_factory, fake_embedder, monkeypatch
+    ):
+        store = MarkdownStore(tmp_path)
+        index = IndexDB(tmp_path / "index.db")
+        writer = MemoryWriter(store, index, fake_embedder)
+        writer.create(entry_factory(entry_id="original", content="必须保留的原始事实。"))
+        proposal = _proposal([
+            EvolutionChange(
+                kind="invalidate",
+                target_ids=["original", "missing"],
+                reason="注入第二步失败以触发整批回滚",
+                contract=_contract(),
+            )
+        ])
+        original_rebuild = index.rebuild_from_markdown
+
+        def fail_rebuild(*_args, **_kwargs):
+            raise OSError("simulated recovery rebuild failure")
+
+        monkeypatch.setattr(index, "rebuild_from_markdown", fail_rebuild)
+        with pytest.raises(OSError, match="simulated recovery rebuild failure"):
+            apply_proposal(
+                proposal,
+                store,
+                index,
+                fake_embedder,
+                Settings(data_dir=tmp_path),
+                verify_report=_passing_verify(),
+                now=NOW,
+            )
+        assert writer.evolution_journal_path.exists()
+        assert store.get("original") is not None
+
+        with pytest.raises(
+            CoordinatedWriteError, match="进化事务自动恢复失败"
+        ):
+            writer.create(
+                entry_factory(
+                    entry_id="accepted-after-failure",
+                    content="该事实不得在未恢复事务期间被接受。",
+                )
+            )
+        with pytest.raises(KeyError):
+            store.get("accepted-after-failure")
+
+        monkeypatch.setattr(index, "rebuild_from_markdown", original_rebuild)
+        writer.create(
+            entry_factory(
+                entry_id="accepted-after-recovery",
+                content="恢复完成后才允许接受该事实。",
+            )
+        )
+        assert {entry.id for entry in store.list()} == {
+            "original",
+            "accepted-after-recovery",
+        }
+        assert not writer.evolution_journal_path.exists()
+        assert writer.check_consistency().consistent
+        index.close()
 
 
 class TestRollback:
