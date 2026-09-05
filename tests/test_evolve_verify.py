@@ -6,6 +6,7 @@ import pytest
 
 from agent_memory.config import Settings
 from agent_memory.llm import LLMError
+from agent_memory.long_term.evolve.apply import apply_proposal
 from agent_memory.long_term.evolve.verify import TierResult, VerifyReport, verify_proposal
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore
@@ -105,6 +106,70 @@ class TestThreeTierVeto:
         report = _verify(components, proposal, BoundaryLLM(error=True))
         assert not report.passed
         assert "fail-closed" in report.boundary.reason
+
+    @pytest.mark.parametrize("invalid_pass", ["false", "true", 0, 1, None])
+    def test_public_verify_rejects_non_boolean_pass(
+        self, entry_factory, components, invalid_pass
+    ):
+        _, store, index, embedder, _ = components
+        _seed(store, index, embedder, entry_factory(entry_id="cold", content="冷条目。"))
+        report = _verify(
+            components, _proposal([_archive_change("cold")]), BoundaryLLM(invalid_pass)
+        )
+        assert not report.passed
+        assert not report.boundary.passed
+        assert "pass 必须是 boolean" in report.boundary.reason
+
+    def test_public_verify_rejects_missing_pass(self, entry_factory, components):
+        _, store, index, embedder, _ = components
+        _seed(store, index, embedder, entry_factory(entry_id="cold", content="冷条目。"))
+
+        class MissingPassLLM(BoundaryLLM):
+            def complete_json(self, system, user, schema_description):
+                return {"reason": "缺少 pass"}
+
+        report = _verify(
+            components, _proposal([_archive_change("cold")]), MissingPassLLM()
+        )
+        assert not report.passed
+        assert "pass 必须是 boolean" in report.boundary.reason
+
+    def test_public_verify_preserves_real_boolean_semantics(
+        self, entry_factory, components
+    ):
+        _, store, index, embedder, _ = components
+        _seed(store, index, embedder, entry_factory(entry_id="cold", content="冷条目。"))
+        proposal = _proposal([_archive_change("cold")])
+        assert _verify(components, proposal, BoundaryLLM(True)).boundary.passed
+        assert not _verify(components, proposal, BoundaryLLM(False)).boundary.passed
+
+    def test_invalid_public_verify_report_cannot_drive_apply(
+        self, entry_factory, components
+    ):
+        _, store, index, embedder, settings = components
+        _seed(store, index, embedder, entry_factory(entry_id="cold", content="冷条目。"))
+        proposal = _proposal([_archive_change("cold")])
+        report = verify_proposal(
+            proposal,
+            store,
+            index,
+            embedder,
+            settings,
+            BoundaryLLM("false"),
+        )
+        assert not report.passed
+        with pytest.raises(ValueError, match="拒绝晋升"):
+            apply_proposal(
+                proposal,
+                store,
+                index,
+                embedder,
+                settings,
+                verify_report=report,
+                now=NOW,
+            )
+        assert store.get("cold").content == "冷条目。"
+        assert not (components[0] / "logs" / "evolution_audit.jsonl").exists()
 
     def test_safety_veto(self, entry_factory, components):
         """提案不得删除/弱化 safety 相关记忆。"""

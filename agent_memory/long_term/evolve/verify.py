@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agent_memory.config import Settings
-from agent_memory.llm import LLMClient, LLMError
+from agent_memory.llm import LLMClient, LLMError, ValidatingLLMClient
 from agent_memory.long_term.evolve.apply import ApplyReport, _apply_changes
 from agent_memory.long_term.retrieve.hybrid import HybridSearcher
 from agent_memory.long_term.store.index_db import IndexDB
@@ -208,6 +208,8 @@ def verify_proposal(
     llm: LLMClient,
 ) -> VerifyReport:
     """三档验证主流程。三档独立判定，任一不过则整体不晋升。"""
+    if not isinstance(llm, ValidatingLLMClient):
+        llm = ValidatingLLMClient(llm)
     safety = _check_safety(proposal, store)
     boundary = _check_boundary(proposal, llm)
     retention = _check_retention(proposal, store, index, embedder, settings)

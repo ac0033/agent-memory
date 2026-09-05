@@ -1,9 +1,10 @@
 # M10 可靠性加固计划与问题—测试矩阵
 
-> 状态：非可信根修复已完成；一项可信根入口加固等待明确授权。本文记录
-> 2026-09-05 只读审查后获授权的修复工作及独立复验后的补强。
+> 状态：已知审计问题均已修复，等待最终独立验收。本文记录 2026-09-05
+> 只读审查后获授权的修复工作及独立复验后的补强；用户随后明确授权 D6
+> 最小例外，仅允许在 `verify_proposal` 公开入口套用既有严格 LLM 响应包装。
 > 本轮不改写 `data/raw`、历史审计日志、`data/snapshots`、`evals/`、rubric、
-> 发布门槛或 `long_term/evolve/verify.py` 的三档判定逻辑。
+> 发布门槛或 `long_term/evolve/verify.py` 的三档判定逻辑与标准。
 
 ## 1. 起点与验收口径
 
@@ -65,7 +66,7 @@ Ruff clean。新增修复不得删测试、降低门槛或依赖付费外部服�
 | P04 | source/session_id 路径穿越 | 仅安全段名且归档始终位于 raw | `../` 与绝对路径测试 | 已解决 |
 | P05 | LangGraph namespace 串 scope | get/delete 必须匹配目标 scope | 跨 namespace 读删测试 | 已解决 |
 | P06 | detail 未过门/未脱敏 | content 与 detail 使用相同安全入口 | 注入 detail、secret detail 测试 | 已解决 |
-| P07 | boundary 字符串 false 误判 | LLM JSON schema 在调用边界拒绝错误类型 | 直接 verify 入口最小补丁待 D6 授权 | 未解决 |
+| P07 | boundary 字符串 false 误判 | 公开 verify 入口强制严格 LLM JSON 类型边界，错误类型 fail-closed | 字符串/数值/null/缺失、合法布尔、下游 apply 拒绝测试 | 已解决（D6 明确授权） |
 | P08 | context 无 query 绕复核门 | context 任意调用均执行复核门 | ask/strict 无 query 测试 | 已解决 |
 | P09 | 传播队列未进入 pending_review | 所有本次新增待办均返回 | propagation pending 测试 | 已解决 |
 | P10 | scope 候选被全库挤占 | 候选获取在 scope 内完成或扩大到完整过滤 | >80 外 scope 测试 | 已解决 |
@@ -115,11 +116,10 @@ Ruff clean。新增修复不得删测试、降低门槛或依赖付费外部服�
 实现集中在协调写入器、跨进程文件锁、严格输入/LLM 边界、保守对账、工作记忆
 版本控制和接入层语义对齐。新增 `memory_consistency_check` 作为只读漂移探针。
 
-最终验证：常规套件 748 passed / 4 deselected；真实 BGE-M3 慢测试 4 passed；
+最终验证：常规套件 756 passed / 4 deselected；真实 BGE-M3 慢测试 4 passed；
 `uv run ruff check .` 干净。慢测试原先在同一 Windows 进程连续创建两份 Torch
-模型时稳定触发原生 access violation，改为模块级复用一份模型后整套通过。D6
-清单中的 `evals/`、阈值、`verify.py` 判定逻辑、历史日志和快照均未修改。
-`apply_proposal` 已在可信根外拒绝伪造对象和字段类型直接错误的报告；但
-`verify_proposal` 会先把自定义 LLM 返回的字符串 `"false"` 转成布尔 `True`，形成
-结构合法的错误报告，随后仍可触发正式层变更。最小修复需要在该可信根入口套用
-既有 `ValidatingLLMClient`。
+模型时稳定触发原生 access violation，改为模块级复用一份模型后整套通过。
+在用户明确授权的 D6 最小例外下，`verify_proposal` 公开入口现强制套用既有
+`ValidatingLLMClient`，不改变三档判定逻辑、标准或阈值；`evals/`、配置阈值、
+历史日志和快照仍未修改。非法 boundary 类型生成不通过报告，下游
+`apply_proposal` 因三档 veto 拒绝变更正式层。
