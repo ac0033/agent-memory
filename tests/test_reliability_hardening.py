@@ -48,16 +48,17 @@ class UpdateWithRevisionLLM:
         return {"action": "UPDATE", "target_id": "old-port", "reason": "端口已变更"}
 
 
+class UnitEmbedder:
+    def embed_texts(self, texts):
+        return [[1.0] + [0.0] * (EMBEDDING_DIM - 1) for _ in texts]
+
+
 def _process_create_same_id(data_dir, scope, start_event, result_queue):
     """Spawn-safe worker used to prove the file lock spans Python processes."""
     from agent_memory.long_term.store.coordinator import MemoryWriter
-    from agent_memory.long_term.store.index_db import EMBEDDING_DIM, IndexDB
+    from agent_memory.long_term.store.index_db import IndexDB
     from agent_memory.long_term.store.markdown_store import MarkdownStore
     from agent_memory.models import MemoryEntry
-
-    class UnitEmbedder:
-        def embed_texts(self, texts):
-            return [[1.0] + [0.0] * (EMBEDDING_DIM - 1) for _ in texts]
 
     index = IndexDB(data_dir / "index.db")
     writer = MemoryWriter(MarkdownStore(data_dir), index, UnitEmbedder())
@@ -74,6 +75,20 @@ def _process_create_same_id(data_dir, scope, start_event, result_queue):
         result_queue.put("rejected")
     finally:
         index.close()
+
+
+def _process_crash_after_markdown_update(data_dir):
+    import os
+
+    index = IndexDB(data_dir / "index.db")
+    writer = MemoryWriter(MarkdownStore(data_dir), index, UnitEmbedder())
+    current = writer.store.get("crash-target")
+
+    def terminate_after_markdown(*_args, **_kwargs):
+        os._exit(73)
+
+    index.upsert = terminate_after_markdown
+    writer.update(current.model_copy(update={"content": "正文已经更新为崩溃后的新事实。"}))
 
 
 def _seed(writer, entry):
@@ -249,8 +264,62 @@ def test_consistency_check_reports_both_directions(tmp_path, entry_factory, fake
         "status": "inconsistent",
         "markdown_only": ["markdown-only"],
         "index_only": ["index-only"],
+        "mismatched": [],
     }
     index.close()
+
+
+def test_deep_consistency_detects_stale_content_and_vector(
+    tmp_path, entry_factory
+):
+    store = MarkdownStore(tmp_path)
+    index = IndexDB(tmp_path / "index.db")
+    writer = MemoryWriter(store, index, UnitEmbedder())
+    entry = writer.create(entry_factory(entry_id="stale", content="索引当前对应旧正文内容。"))
+    store.restore(entry.model_copy(update={"content": "Markdown 已变成新的正文内容。"}))
+    report = writer.check_consistency()
+    assert report.markdown_only == () and report.index_only == ()
+    assert report.mismatched == ("stale",)
+    index.close()
+
+
+def test_consistency_detects_orphan_fts_row(tmp_path, fake_embedder):
+    store = MarkdownStore(tmp_path)
+    index = IndexDB(tmp_path / "index.db")
+    writer = MemoryWriter(store, index, fake_embedder)
+    index.conn.execute(
+        "INSERT INTO memories_fts (id, content) VALUES (?, ?)",
+        ("orphan-fts", "孤立的全文索引行。"),
+    )
+    index.conn.commit()
+    report = writer.check_consistency()
+    assert report.index_only == ("orphan-fts",)
+    index.close()
+
+
+def test_interrupted_process_is_recovered_from_durable_journal(tmp_path, entry_factory):
+    store = MarkdownStore(tmp_path)
+    index = IndexDB(tmp_path / "index.db")
+    writer = MemoryWriter(store, index, UnitEmbedder())
+    writer.create(
+        entry_factory(entry_id="crash-target", content="正文仍然是崩溃前的旧事实。")
+    )
+    index.close()
+
+    context = multiprocessing.get_context("spawn")
+    process = context.Process(target=_process_crash_after_markdown_update, args=(tmp_path,))
+    process.start()
+    process.join(20)
+    assert process.exitcode == 73
+    assert (tmp_path / "state" / "memory_write_journal.json").exists()
+
+    recovered_index = IndexDB(tmp_path / "index.db")
+    recovered = MemoryWriter(MarkdownStore(tmp_path), recovered_index, UnitEmbedder())
+    assert recovered.store.get("crash-target").content == "正文已经更新为崩溃后的新事实。"
+    assert recovered.check_consistency().consistent
+    assert not (tmp_path / "state" / "memory_write_journal.json").exists()
+    assert (tmp_path / "logs" / "memory_recovery.jsonl").exists()
+    recovered_index.close()
 
 
 def test_dense_scope_filter_expands_past_unrelated_top_80(tmp_path, entry_factory):
@@ -351,6 +420,68 @@ def test_review_item_can_only_be_resolved_once(
     index.close()
 
 
+def test_review_retry_after_queue_delete_failure_is_idempotent(
+    tmp_path, entry_factory, fake_embedder, monkeypatch
+):
+    import agent_memory.server.mcp_server as server_module
+
+    index = IndexDB(tmp_path / "index.db")
+    service = MemoryService(
+        Settings(data_dir=tmp_path), MarkdownStore(tmp_path), index, fake_embedder
+    )
+    queue_file = write_review_queue(
+        [entry_factory(entry_id="retry-review", confidence="low")], tmp_path, "test"
+    )[0].name
+    original_delete = server_module.delete_review_item
+    attempts = 0
+
+    def fail_once(data_dir, file_name):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("simulated queue cleanup failure")
+        return original_delete(data_dir, file_name)
+
+    monkeypatch.setattr(server_module, "delete_review_item", fail_once)
+    with pytest.raises(OSError, match="cleanup failure"):
+        service.review_resolve(queue_file, "approve")
+    assert service.store.get("retry-review") is not None
+    retried = service.review_resolve(queue_file, "approve")
+    assert retried["already_applied"] is True
+    assert service.review_list()["pending_review_count"] == 0
+    index.close()
+
+
+def test_feedback_never_reverts_concurrent_content_update(
+    tmp_path, entry_factory, fake_embedder
+):
+    index = IndexDB(tmp_path / "index.db")
+    service = MemoryService(
+        Settings(data_dir=tmp_path), MarkdownStore(tmp_path), index, fake_embedder
+    )
+    service.writer.create(
+        entry_factory(
+            entry_id="feedback-race", content="用户确认这是更新前的旧正文。",
+            confidence="high",
+        )
+    )
+    barrier = __import__("threading").Barrier(2)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        update_future = pool.submit(
+            lambda: (
+                barrier.wait(),
+                service.update("feedback-race", "用户确认这是并发后的新正文。"),
+            )
+        )
+        feedback_future = pool.submit(
+            lambda: (barrier.wait(), service.feedback("feedback-race", False))
+        )
+        update_future.result()
+        feedback_future.result()
+    assert service.store.get("feedback-race").content == "用户确认这是并发后的新正文。"
+    index.close()
+
+
 def test_same_batch_stale_update_is_queued_instead_of_crashing(
     tmp_path, entry_factory, fake_embedder
 ):
@@ -375,6 +506,45 @@ def test_same_batch_stale_update_is_queued_instead_of_crashing(
     assert report.updated == [("new-a", "old")]
     assert report.queued[0][0].id == "new-b"
     assert store.get("new-a") is not None
+    index.close()
+
+
+def test_llm_decision_cannot_overwrite_newer_target_version(tmp_path, entry_factory):
+    import threading
+
+    store = MarkdownStore(tmp_path)
+    index = IndexDB(tmp_path / "index.db")
+    writer = MemoryWriter(store, index, UnitEmbedder())
+    old = writer.create(
+        entry_factory(entry_id="cas-target", content="用户确认目标仍是旧版本事实。")
+    )
+    decision_started = threading.Event()
+    release_decision = threading.Event()
+
+    class BlockingLLM:
+        def complete_json(self, system, user, schema_description):
+            decision_started.set()
+            assert release_decision.wait(10)
+            return {
+                "action": "UPDATE", "target_id": "cas-target", "reason": "stale decision"
+            }
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            reconcile,
+            [entry_factory(entry_id="candidate", content="用户确认候选试图替换旧事实。")],
+            store,
+            index,
+            BlockingLLM(),
+            UnitEmbedder(),
+            Settings(data_dir=tmp_path),
+        )
+        assert decision_started.wait(10)
+        writer.update(old.model_copy(update={"content": "用户刚确认目标已有更新版本。"}))
+        release_decision.set()
+        report = future.result()
+    assert report.queued[0][0].id == "candidate"
+    assert store.get("cas-target").content == "用户刚确认目标已有更新版本。"
     index.close()
 
 

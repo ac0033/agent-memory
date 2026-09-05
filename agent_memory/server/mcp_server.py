@@ -189,6 +189,7 @@ class MemoryService:
             "status": "ok" if report.consistent else "inconsistent",
             "markdown_only": list(report.markdown_only),
             "index_only": list(report.index_only),
+            "mismatched": list(report.mismatched),
         }
 
     def _review_gate_block(
@@ -366,6 +367,7 @@ class MemoryService:
         force_review: bool = False,
         archive: bool = True,
         evidence_line_offset: int = 0,
+        evidence_line_map: list[int] | None = None,
     ) -> AddReport:
         # 先解析校验（非法对话不归档——不把垃圾写进 data/raw），再归档、再蒸馏：
         # 归档在 LLM 调用之前，LLM 不可用/超时时内容不丢，可事后重放
@@ -394,6 +396,7 @@ class MemoryService:
                 data_dir=self.settings.data_dir,
                 extra_context=extra_context,
                 evidence_line_offset=evidence_line_offset,
+                evidence_line_map=evidence_line_map,
             )
             gate_result = gate_candidates(distill_result.entries, self.settings.data_dir)
             report = reconcile(
@@ -426,8 +429,8 @@ class MemoryService:
         """宿主蒸馏模式（M9）：宿主 agent 自己蒸馏，服务端只对候选过门。
 
         与服务端蒸馏共用 build_entries_from_distilled（校验/规范化→脱敏），
-        之后照常 评价门→对账。服务端无 LLM 也能用：对账走 reconcile 的无 LLM
-        降级（无近邻直接 ADD，有近邻转人工复核）。该模式没有对话原文，不归档。
+        之后照常过评价门。该模式没有服务端归档的原始对话，候选缺少可核查证据，
+        因此一律进入人工复核，确认后才进入正式记忆层。
         """
         try:
             parsed = json.loads(distilled_json)
@@ -448,13 +451,28 @@ class MemoryService:
             data_dir=self.settings.data_dir,
         )
         gate_result = gate_candidates(distill_result.entries, self.settings.data_dir)
+        unverified = [entry for entry in gate_result.passed if not entry.evidence]
+        if unverified:
+            write_review_queue(
+                unverified,
+                self.settings.data_dir,
+                reason="宿主蒸馏候选没有服务端原始证据，需人工确认后入库",
+            )
         report = reconcile(
-            gate_result.passed, self.store, self.index, self.llm,
+            [entry for entry in gate_result.passed if entry.evidence],
+            self.store, self.index, self.llm,
             embedder=self.embedder, settings=self.settings,
         )
-        return self._distill_report(
+        report.queued.extend(
+            (entry, "宿主蒸馏候选没有服务端原始证据，需人工确认")
+            for entry in unverified
+        )
+        result = self._distill_report(
             "distilled", None, distill_result, gate_result, report, force_review
         )
+        if unverified:
+            result.warning = f"{len(unverified)} 条宿主蒸馏候选因缺少原始证据进入人工复核"
+        return result
 
     def _distill_report(
         self,
@@ -531,8 +549,8 @@ class MemoryService:
             "编号的文本；2. 以 system_prompt 为指令、schema_description 为输出结构，"
             "在你自己的上下文里完成蒸馏（只沉淀用户明确确认过的内容）；3. 把产出的 "
             '{"memories": [...]} 以 JSON 字符串传给 memory_add 的 distilled_json '
-            "参数提交。服务端会对候选照常做 校验/规范化→脱敏→评价门→对账——"
-            "即使你这边蒸得不规范，服务端也有门兜底，但请尽量按 schema 输出。"
+            "参数提交。服务端会对候选做校验/规范化→脱敏→评价门；由于没有由"
+            "服务端归档的原始对话证据，候选会进入人工复核，确认后才正式入库。"
         )
         return protocol
 
@@ -619,59 +637,59 @@ class MemoryService:
         """反馈调整 confidence：helpful 升一档，不 helpful 降一档；
         已是 low 再降就移出正式库、写入复核队列。"""
         validate_entry_id(memory_id)
-        entry = self.store.get(memory_id)  # 找不到抛 KeyError，fail-closed
-        rung = _CONFIDENCE_LADDER.index(entry.confidence)
-        if helpful:
-            new_rung = min(rung + 1, len(_CONFIDENCE_LADDER) - 1)
-            updated = self.writer.update(
-                MemoryEntry.model_validate(
-                    entry.model_dump(mode="python")
-                    | {"confidence": _CONFIDENCE_LADDER[new_rung]}
+        with interprocess_lock(self.writer.lock_path):
+            entry = self.store.get(memory_id)  # 锁内读取，避免覆盖并发正文更新
+            rung = _CONFIDENCE_LADDER.index(entry.confidence)
+            if helpful:
+                new_rung = min(rung + 1, len(_CONFIDENCE_LADDER) - 1)
+                updated = self.writer.update(
+                    MemoryEntry.model_validate(
+                        entry.model_dump(mode="python")
+                        | {"confidence": _CONFIDENCE_LADDER[new_rung]}
+                    )
                 )
-            )
+                action = "confidence_raised"
+            elif rung == 0:
+                files = write_review_queue(
+                    [entry],
+                    self.settings.data_dir,
+                    reason=f"memory_feedback 不 helpful 且已为 low（note: {note or '无'}）",
+                )
+                self.writer.delete(memory_id)
+                return {
+                    "action": "queued_for_review",
+                    "id": memory_id,
+                    "queue_file": str(files[0]),
+                    "note": note,
+                }
+            else:
+                new_confidence = _CONFIDENCE_LADDER[rung - 1]
+                try:
+                    candidate = MemoryEntry.model_validate(
+                        entry.model_dump(mode="python") | {"confidence": new_confidence}
+                    )
+                except ValueError:
+                    files = write_review_queue(
+                        [entry], self.settings.data_dir,
+                        reason=(
+                            f"负反馈要求降为 {new_confidence}，"
+                            "但会违反条目 schema，需人工复核"
+                        ),
+                    )
+                    return {
+                        "action": "queued_for_review",
+                        "id": memory_id,
+                        "queue_file": str(files[0]),
+                        "note": note,
+                    }
+                updated = self.writer.update(candidate)
+                action = "confidence_lowered"
             return {
-                "action": "confidence_raised",
+                "action": action,
                 "id": memory_id,
                 "confidence": updated.confidence,
                 "note": note,
             }
-        if rung == 0:
-            # low 再降：移出正式库，进人工复核队列
-            files = write_review_queue(
-                [entry],
-                self.settings.data_dir,
-                reason=f"memory_feedback 不 helpful 且已为 low（note: {note or '无'}）",
-            )
-            self.writer.delete(memory_id)
-            return {
-                "action": "queued_for_review",
-                "id": memory_id,
-                "queue_file": str(files[0]),
-                "note": note,
-            }
-        new_confidence = _CONFIDENCE_LADDER[rung - 1]
-        try:
-            candidate = MemoryEntry.model_validate(
-                entry.model_dump(mode="python") | {"confidence": new_confidence}
-            )
-        except ValueError:
-            files = write_review_queue(
-                [entry], self.settings.data_dir,
-                reason=f"负反馈要求降为 {new_confidence}，但会违反条目 schema，需人工复核",
-            )
-            return {
-                "action": "queued_for_review",
-                "id": memory_id,
-                "queue_file": str(files[0]),
-                "note": note,
-            }
-        updated = self.writer.update(candidate)
-        return {
-            "action": "confidence_lowered",
-            "id": memory_id,
-            "confidence": updated.confidence,
-            "note": note,
-        }
 
     # ---- memory_update ----
 
@@ -742,6 +760,31 @@ class MemoryService:
             entry = MemoryEntry.model_validate(
                 entry.model_dump(mode="python") | {"last_verified": date.today()}
             )
+            try:
+                existing = self.store.get(entry.id)
+            except KeyError:
+                existing = None
+            if existing is not None:
+                stable_fields = (
+                    "id", "content", "detail", "memory_type", "scope", "confidence",
+                    "source", "evidence", "created_at", "supersedes",
+                )
+                if all(
+                    getattr(existing, field) == getattr(entry, field)
+                    for field in stable_fields
+                ):
+                    # Previous attempt may have committed the memory and failed only
+                    # while deleting the queue file. Retrying completes that cleanup.
+                    delete_review_item(self.settings.data_dir, queue_file)
+                    return {
+                        "action": "approved" if action == "approve" else "modified",
+                        "id": entry.id,
+                        "file": queue_file,
+                        "already_applied": True,
+                    }
+                raise ValueError(
+                    f"入库失败：id {entry.id!r} 已被不同内容占用，需先人工处理冲突"
+                )
             try:
                 self.writer.create(entry)
             except (MemoryStoreError, RuntimeError, ValueError) as e:
@@ -1040,6 +1083,14 @@ class MemoryService:
         archive_path, evidence_line_offset = self._archive_raw(
             archive_records, source, session_id
         )
+        evidence_line_map = None
+        if log_path:
+            evidence_line_map = [
+                evidence_line_offset + index + 1
+                for index, record in enumerate(archive_records)
+                if record.get("role") in {"user", "assistant"}
+                and str(record.get("content", "")).strip()
+            ]
 
         # 4. 蒸馏：无 LLM 时只归档，工作记忆保持原样
         if self.llm is None:
@@ -1064,6 +1115,7 @@ class MemoryService:
             distill_input, scope, source, session_id, extra_context=extra_context,
             archive=False,  # 本会话已在第 3 步归档，避免同 session_id 重复追加
             evidence_line_offset=evidence_line_offset,
+            evidence_line_map=evidence_line_map,
         )
         if report.status != "ok":
             # 蒸馏未执行（LLM 临时故障）：归档已完成，工作记忆保持原样不清理，
@@ -1081,10 +1133,8 @@ class MemoryService:
         wm_hint = None
         # 只有至少一条候选实际入库或进入人工复核，才能认为 done todo 的结论
         # 已有落点；全被评价门拒绝时保留工作记忆。
-        has_durable_result = (
-            not report.gate_rejected
-            or sum(report.reconcile.values()) > 0
-            or bool(report.pending_review)
+        has_durable_result = sum(report.reconcile.values()) > 0 or bool(
+            report.pending_review
         )
         if wm is not None and has_durable_result:
             current_wm = self.working_store.read(scope)

@@ -10,8 +10,8 @@ MemoryService 主路径）；llm="auto" 时按 settings 构建 OpenAILLMClient�
 存在近邻时转人工复核，save_conversation / session_end 的蒸馏段按
 MemoryService 既有语义报 LLMError 或降级 archived_only。
 
-tool 一览（16 个）：recall_memories / save_memory / save_conversation /
-save_distilled / update_memory / forget_memory / memory_feedback / review_list /
+tool 一览（17 个）：recall_memories / memory_distill_prompt / save_memory /
+save_conversation / save_distilled / update_memory / forget_memory / memory_feedback / review_list /
 review_resolve / memory_consistency_check / wm_read / wm_write / wm_clear /
 get_memory_context / read_transcript / session_end。
 """
@@ -196,6 +196,11 @@ def build_memory_tools(
             return _to_json(result)
         return result["block"] or "（无相关记忆）"
 
+    @tool
+    def memory_distill_prompt() -> str:
+        """返回宿主蒸馏协议，供无服务端 LLM 的 LangGraph 宿主生成候选。"""
+        return _to_json(service.distill_protocol())
+
     # ---- 长期记忆：写 ----
 
     @tool
@@ -209,7 +214,8 @@ def build_memory_tools(
         冲突时更新旧条目而非追加）。content 必须是一句话事实（不要写"以后都要…"
         这类指令）；memory_type ∈ semantic/procedural/episodic/profile；
         confidence ∈ high/medium/low（low 进人工复核队列而不进正式库）。
-        无 LLM 时无近邻直接 ADD，存在近邻则进入人工复核。"""
+        无 LLM 时无近邻直接 ADD，存在近邻则进入人工复核。
+        仅限主 agent 调用；subagent 禁止写记忆库。"""
         return toolkit.save(content, memory_type, scope, confidence)
 
     @tool
@@ -217,7 +223,8 @@ def build_memory_tools(
         conversation_json: str, scope: str, session_id: str | None = None
     ) -> str:
         """把一段对话走蒸馏管线沉淀为长期记忆（[{role, content}, ...] 的 JSON
-        字符串）。只沉淀用户明确确认过的内容。需要配置 LLM。"""
+        字符串）。只沉淀用户明确确认过的内容。需要配置 LLM。
+        仅限主 agent 调用；subagent 禁止写记忆库。"""
         return _to_json(
             service.add(conversation_json=conversation_json, scope=scope, session_id=session_id)
         )
@@ -226,24 +233,28 @@ def build_memory_tools(
     def save_distilled(
         distilled_json: str, scope: str, session_id: str | None = None
     ) -> str:
-        """提交宿主按 memory_distill_prompt 协议生成的原子候选。"""
+        """提交宿主按 memory_distill_prompt 协议生成的原子候选。
+        仅限主 agent 调用；subagent 禁止写记忆库。"""
         return _to_json(
             service.add(distilled_json=distilled_json, scope=scope, session_id=session_id)
         )
 
     @tool
     def update_memory(memory_id: str, new_content: str) -> str:
-        """按 id 更新一条长期记忆的正文（过脱敏与评价门）。"""
+        """按 id 更新一条长期记忆的正文（过脱敏与评价门）。
+        仅限主 agent 调用；subagent 禁止写记忆库。"""
         return _to_json(service.update(memory_id, new_content))
 
     @tool
     def forget_memory(memory_id: str) -> str:
-        """按 id 删除一条长期记忆（记忆层与索引同步删除）。"""
+        """按 id 删除一条长期记忆（记忆层与索引同步删除）。
+        仅限主 agent 调用；subagent 禁止写记忆库。"""
         return _to_json(service.forget(memory_id))
 
     @tool
     def memory_feedback(memory_id: str, helpful: bool, note: str | None = None) -> str:
-        """反馈一条记忆是否有用，调整其置信度；降到 low 以下进人工复核队列。"""
+        """反馈一条记忆是否有用，调整其置信度；降到 low 以下进人工复核队列。
+        仅限主 agent 调用；subagent 禁止写记忆库。"""
         return _to_json(service.feedback(memory_id, helpful, note))
 
     # ---- 人工复核 ----
@@ -256,7 +267,8 @@ def build_memory_tools(
     @tool
     def review_resolve(queue_file: str, action: str, new_content: str | None = None) -> str:
         """裁决一条复核待办：approve 入库 / modify 以 new_content 改后入库 /
-        discard 丢弃。queue_file 取 review_list 返回里的 file 字段。"""
+        discard 丢弃。queue_file 取 review_list 返回里的 file 字段。
+        仅限主 agent 调用；subagent 禁止写记忆库。"""
         return _to_json(service.review_resolve(queue_file, action, new_content))
 
     @tool
@@ -284,7 +296,8 @@ def build_memory_tools(
     ) -> str:
         """写工作记忆。**全量替换而非合并**：逐项检查目标/待办/决策/变量/备注后
         带上完整状态（未传字段即清空），并把 turn_watermark 更新为当前轮数。
-        todos 元素形如 {"content": ..., "status": "pending"|"done"} 或纯字符串。"""
+        todos 元素形如 {"content": ..., "status": "pending"|"done"} 或纯字符串。
+        仅限主 agent 调用；subagent 禁止写记忆库。"""
         return _to_json(
             service.wm_write(
                 scope,
@@ -299,7 +312,8 @@ def build_memory_tools(
 
     @tool
     def wm_clear(scope: str) -> str:
-        """清空该 scope 的工作记忆（幂等，本就不存在不算错误）。"""
+        """清空该 scope 的工作记忆（幂等，本就不存在不算错误）。
+        仅限主 agent 调用；subagent 禁止写记忆库。"""
         return _to_json(service.wm_clear(scope))
 
     # ---- 统一组装 / 短期记忆 / 会话收尾 ----
@@ -345,7 +359,7 @@ def build_memory_tools(
         """会话结束收尾：归档原文（data/raw/，只追加）→ 对话+工作记忆快照联合
         蒸馏 → 清理已完成待办（pending 保留）。有未完成待办时否决（status=vetoed），
         确认结束用 force=true。材料二选一：conversation_json 直传（推荐）或
-        log_path 走日志适配器。"""
+        log_path 走日志适配器。仅限主 agent 调用；subagent 禁止写记忆库。"""
         return _to_json(
             service.session_end(
                 scope,
@@ -358,6 +372,7 @@ def build_memory_tools(
 
     return [
         recall_memories,
+        memory_distill_prompt,
         save_memory,
         save_conversation,
         save_distilled,

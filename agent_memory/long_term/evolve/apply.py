@@ -100,49 +100,58 @@ def apply_proposal(
 
     verify_report 传入且未通过时 fail-closed 拒绝应用（三档 veto 不可绕过）。
     """
-    if verify_report is None:
-        raise ValueError(f"提案 {proposal.id} 缺少三档验证报告，拒绝晋升（fail-closed）")
-    if not isinstance(verify_report.passed, bool) or not verify_report.passed:
+    from agent_memory.long_term.evolve.verify import TierResult, VerifyReport
+
+    if not isinstance(verify_report, VerifyReport):
+        raise ValueError(f"提案 {proposal.id} 缺少真实三档验证报告，拒绝晋升（fail-closed）")
+    tiers = (verify_report.boundary, verify_report.retention, verify_report.safety)
+    if not all(
+        isinstance(tier, TierResult) and type(tier.passed) is bool and tier.passed
+        for tier in tiers
+    ):
         raise ValueError(f"提案 {proposal.id} 未通过三档验证，拒绝晋升（fail-closed）")
     now = now or datetime.now()
-    snapshot_id, snapshot_path = snapshot_memory(settings.data_dir, now)
+    # Snapshot, apply, rollback and audit form one exclusive evolution unit. Normal
+    # writes wait outside this lock, so a failed snapshot rollback cannot erase a
+    # concurrently committed memory.
+    with interprocess_lock(store.lock_path):
+        snapshot_id, snapshot_path = snapshot_memory(settings.data_dir, now)
+        report = ApplyReport(snapshot_id=snapshot_id)
+        try:
+            _apply_changes(proposal.changes, store, index, embedder, report)
+        except Exception:
+            # snapshot 是可信根，只读复制回正式层；不改写快照本身。
+            if store.memory_dir.exists():
+                shutil.rmtree(store.memory_dir)
+            shutil.copytree(snapshot_path, store.memory_dir)
+            index.rebuild_from_markdown(store.memory_dir, embedder)
+            raise
 
-    report = ApplyReport(snapshot_id=snapshot_id)
-    try:
-        _apply_changes(proposal.changes, store, index, embedder, report)
-    except Exception:
-        # snapshot 是可信根，只读复制回正式层；不改写快照本身。
-        if store.memory_dir.exists():
-            shutil.rmtree(store.memory_dir)
-        shutil.copytree(snapshot_path, store.memory_dir)
-        index.rebuild_from_markdown(store.memory_dir, embedder)
-        raise
-
-    logs_dir = Path(settings.data_dir) / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    audit_path = logs_dir / AUDIT_LOG_NAME
-    record = {
-        "event": "evolution_applied",
-        "proposal_id": proposal.id,
-        "applied_at": now.isoformat(timespec="seconds"),
-        "snapshot_id": snapshot_id,
-        "snapshot_path": str(snapshot_path),
-        "verify": verify_report.to_dict() if verify_report is not None else None,
-        "changes_applied": [
-            {"kind": kind, "target_ids": ids} for kind, ids in report.applied
-        ],
-        "changes_skipped": [
-            {"kind": kind, "target_ids": ids, "reason": reason}
-            for kind, ids, reason in report.skipped
-        ],
-    }
-    with interprocess_lock(Path(settings.data_dir) / "state" / "evolution_audit.lock"):
-        with audit_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-    report.audit_path = audit_path
-    return report
+        logs_dir = Path(settings.data_dir) / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        audit_path = logs_dir / AUDIT_LOG_NAME
+        record = {
+            "event": "evolution_applied",
+            "proposal_id": proposal.id,
+            "applied_at": now.isoformat(timespec="seconds"),
+            "snapshot_id": snapshot_id,
+            "snapshot_path": str(snapshot_path),
+            "verify": verify_report.to_dict(),
+            "changes_applied": [
+                {"kind": kind, "target_ids": ids} for kind, ids in report.applied
+            ],
+            "changes_skipped": [
+                {"kind": kind, "target_ids": ids, "reason": reason}
+                for kind, ids, reason in report.skipped
+            ],
+        }
+        with interprocess_lock(Path(settings.data_dir) / "state" / "evolution_audit.lock"):
+            with audit_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        report.audit_path = audit_path
+        return report
 
 
 def rollback(snapshot_id: str, settings: Settings, embedder) -> Path:

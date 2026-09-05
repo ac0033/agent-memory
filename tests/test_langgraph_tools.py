@@ -21,6 +21,7 @@ _EXPECTED_TOOLS = {
     "forget_memory", "memory_feedback", "review_list", "review_resolve",
     "wm_read", "wm_write", "wm_clear", "get_memory_context",
     "read_transcript", "session_end", "save_distilled", "memory_consistency_check",
+    "memory_distill_prompt",
 }
 
 
@@ -74,6 +75,23 @@ def tools_full(tmp_path, fake_embedder):
 def test_tool_set_matches_mcp_surface(tools_degraded):
     tools, _ = tools_degraded
     assert set(tools) == _EXPECTED_TOOLS
+
+
+def test_all_langgraph_write_tools_carry_subagent_guard(tools_degraded):
+    tools, _ = tools_degraded
+    write_tools = {
+        "save_memory", "save_conversation", "save_distilled", "update_memory",
+        "forget_memory", "memory_feedback", "review_resolve", "wm_write", "wm_clear",
+        "session_end",
+    }
+    for name in write_tools:
+        assert "仅限主 agent" in tools[name].description
+
+
+def test_langgraph_exposes_distill_protocol(tools_degraded):
+    tools, _ = tools_degraded
+    protocol = json.loads(tools["memory_distill_prompt"].invoke({}))
+    assert "schema_description" in protocol
 
 
 # ---------------------------------------------------------------- 降级路径（无 LLM）

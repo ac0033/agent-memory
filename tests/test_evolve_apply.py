@@ -1,13 +1,17 @@
 """apply.py 测试：快照 → 晋升 → 审计日志，以及 rollback 回滚。"""
 
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
 from agent_memory.config import Settings
 from agent_memory.long_term.evolve.apply import apply_proposal, rollback
 from agent_memory.long_term.evolve.verify import TierResult, VerifyReport
+from agent_memory.long_term.store.coordinator import MemoryWriter
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.models import (
@@ -162,9 +166,77 @@ class TestApply:
                 kind="archive", target_ids=["cold"], reason="归档", contract=_contract()
             )
         ])
-        with pytest.raises(ValueError, match="缺少三档验证报告"):
+        with pytest.raises(ValueError, match="缺少真实三档验证报告"):
             apply_proposal(proposal, store, index, embedder, settings, verify_report=None)
         assert store.get("cold") is not None
+
+    def test_truthy_fake_verify_report_is_rejected(self, entry_factory, components):
+        _, store, index, embedder, settings = components
+        _seed(store, index, embedder, entry_factory(entry_id="cold", content="冷条目。"))
+        fake = SimpleNamespace(passed=True, to_dict=lambda: {"passed": True})
+        with pytest.raises(ValueError, match="真实三档验证报告"):
+            apply_proposal(
+                _proposal([]), store, index, embedder, settings, verify_report=fake
+            )
+        assert store.get("cold") is not None
+
+    def test_string_false_in_real_verify_report_is_rejected(
+        self, entry_factory, components
+    ):
+        _, store, index, embedder, settings = components
+        _seed(store, index, embedder, entry_factory(entry_id="cold", content="冷条目。"))
+        malformed = VerifyReport(
+            boundary=TierResult("false", "类型错误"),  # type: ignore[arg-type]
+            retention=TierResult(True, "ok"),
+            safety=TierResult(True, "ok"),
+        )
+        with pytest.raises(ValueError, match="未通过三档验证"):
+            apply_proposal(
+                _proposal([
+                    EvolutionChange(
+                        kind="archive",
+                        target_ids=["cold"],
+                        reason="归档",
+                        contract=_contract(),
+                    )
+                ]),
+                store,
+                index,
+                embedder,
+                settings,
+                verify_report=malformed,
+            )
+        assert store.get("cold") is not None
+
+    def test_failed_apply_does_not_erase_writer_waiting_on_evolution_lock(
+        self, entry_factory, components, monkeypatch
+    ):
+        _, store, index, embedder, settings = components
+        writer = MemoryWriter(store, index, embedder)
+        writer.create(entry_factory(entry_id="before", content="进化开始前已有的事实。"))
+        pending = None
+
+        def fail_after_writer_starts(*_args, **_kwargs):
+            nonlocal pending
+            pending = pool.submit(
+                writer.create,
+                entry_factory(entry_id="concurrent", content="并发写入应在回滚后提交。"),
+            )
+            time.sleep(0.1)
+            assert not pending.done()
+            raise OSError("simulated apply failure")
+
+        monkeypatch.setattr(
+            "agent_memory.long_term.evolve.apply._apply_changes", fail_after_writer_starts
+        )
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with pytest.raises(OSError, match="apply failure"):
+                apply_proposal(
+                    _proposal([]), store, index, embedder, settings,
+                    verify_report=_passing_verify(), now=NOW,
+                )
+            pending.result(timeout=10)
+        assert {entry.id for entry in store.list()} == {"before", "concurrent"}
 
 
 class TestRollback:

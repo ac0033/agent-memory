@@ -1,6 +1,7 @@
 # M10 可靠性加固计划与问题—测试矩阵
 
-> 状态：已完成。本文记录 2026-09-05 只读审查后获授权的修复工作。
+> 状态：非可信根修复已完成；一项可信根入口加固等待明确授权。本文记录
+> 2026-09-05 只读审查后获授权的修复工作及独立复验后的补强。
 > 本轮不改写 `data/raw`、历史审计日志、`data/snapshots`、`evals/`、rubric、
 > 发布门槛或 `long_term/evolve/verify.py` 的三档判定逻辑。
 
@@ -64,13 +65,13 @@ Ruff clean。新增修复不得删测试、降低门槛或依赖付费外部服�
 | P04 | source/session_id 路径穿越 | 仅安全段名且归档始终位于 raw | `../` 与绝对路径测试 | 已解决 |
 | P05 | LangGraph namespace 串 scope | get/delete 必须匹配目标 scope | 跨 namespace 读删测试 | 已解决 |
 | P06 | detail 未过门/未脱敏 | content 与 detail 使用相同安全入口 | 注入 detail、secret detail 测试 | 已解决 |
-| P07 | boundary 字符串 false 误判 | LLM JSON schema 在调用边界拒绝错误类型 | 严格 schema 测试（不改 verify.py） | 已解决 |
+| P07 | boundary 字符串 false 误判 | LLM JSON schema 在调用边界拒绝错误类型 | apply 已拒绝错误类型；verify 入口最小补丁待 D6 授权 | 部分解决 |
 | P08 | context 无 query 绕复核门 | context 任意调用均执行复核门 | ask/strict 无 query 测试 | 已解决 |
 | P09 | 传播队列未进入 pending_review | 所有本次新增待办均返回 | propagation pending 测试 | 已解决 |
 | P10 | scope 候选被全库挤占 | 候选获取在 scope 内完成或扩大到完整过滤 | >80 外 scope 测试 | 已解决 |
 | P11 | hook 请求失败仍标已注入 | 仅成功响应后提交 session 状态 | 失败后重试测试 | 已解决 |
 | P12 | apply 可缺验证报告 | 缺报告与错误类型均拒绝 | apply None 测试 | 已解决 |
-| P13 | Markdown/索引分步失败不可恢复 | 预计算 + 补偿恢复 + 一致性报告 | embedding/index/store 故障注入 | 已解决 |
+| P13 | Markdown/索引分步失败不可恢复 | 持久 journal + 启动恢复 + 深一致性报告 | 进程硬退出、陈旧正文/向量、孤立派生行 | 已解决 |
 | P14 | 计数覆盖正文更新 | 锁内重新读取并只改计数 | 确定性线程交错测试 | 已解决 |
 | P15 | 全局 ID 唯一性存在竞态 | 跨进程锁内检查与创建 | 多线程/多进程同 ID 测试 | 已解决 |
 | P16 | session_end 清理覆盖新待办 | 版本比较/重新读取，只删除原快照 done 项 | 蒸馏期间新增 todo 测试 | 已解决 |
@@ -88,13 +89,23 @@ Ruff clean。新增修复不得删测试、降低门槛或依赖付费外部服�
 | R08 | HTTP/LangGraph 能力参数不同 | acknowledge_pending、宿主蒸馏等关键读写语义对齐 | tool schema/调用测试 | 已解决 |
 | R09 | hook 状态文件并发丢更新 | 原子写与进程锁 | 多进程状态测试 | 已解决 |
 | R10 | 工作区/索引漂移缺乏观测 | 提供只读一致性检查与清晰错误 | consistency 测试 | 已解决 |
+| R11 | feedback 锁外读取覆盖并发正文 | 读取、判定、更新使用同一写锁 | 确定性并发交错测试 | 已解决 |
+| R12 | 复核已入库但队列删除失败后不可重试 | 相同正式条目视为已应用并完成清理 | queue delete OSError 重试测试 | 已解决 |
+| R13 | 对账 LLM 判决使用陈旧目标版本 | 落库前比较判决快照，变化即转复核 | 判决期间并发更新测试 | 已解决 |
+| R14 | session_end 空蒸馏误清 done todo | 仅有正式入库或待复核落点时清理 | 空 memories 测试 | 已解决 |
+| R15 | 日志 tool 轮次使 evidence 行号错位 | 蒸馏轮次显式映射到 raw JSONL 行 | tool 夹层日志测试 | 已解决 |
+| R16 | 传播删除完成审计失败造成无记录丢失 | 恢复被删条目并转人工复核 | completion audit OSError 测试 | 已解决 |
+| R17 | LangGraph 写工具缺 subagent 约束/蒸馏协议 | 10 个写工具均声明主 agent 限制并补齐协议工具 | tool 描述与调用测试 | 已解决 |
 
 ## 4. 完成记录
 
 实现集中在协调写入器、跨进程文件锁、严格输入/LLM 边界、保守对账、工作记忆
 版本控制和接入层语义对齐。新增 `memory_consistency_check` 作为只读漂移探针。
 
-最终验证：常规套件 703 passed / 2 deselected；真实 BGE-M3 慢测试 2 passed；
+最终验证：常规套件 717 passed / 2 deselected；真实 BGE-M3 慢测试 2 passed；
 `uv run ruff check .` 干净。慢测试原先在同一 Windows 进程连续创建两份 Torch
 模型时稳定触发原生 access violation，改为模块级复用一份模型后整套通过。D6
 清单中的 `evals/`、阈值、`verify.py` 判定逻辑、历史日志和快照均未修改。
+`apply_proposal` 已在可信根外严格拒绝伪造报告及字符串布尔值，因此错误报告不能
+触发正式层变更；`verify_proposal` 自身仍可把自定义 LLM 返回的字符串 `"false"`
+呈现为通过，最小修复需要在该可信根入口套用既有 `ValidatingLLMClient`。

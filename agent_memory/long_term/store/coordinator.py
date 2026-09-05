@@ -8,9 +8,14 @@ SQLite 与文件系统无法组成真正的 ACID 事务。本模块采用：完�
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import uuid
 from dataclasses import dataclass
+from datetime import datetime
 
-from agent_memory.io_utils import interprocess_lock
+from agent_memory.io_utils import atomic_write_text, interprocess_lock
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.models import MemoryEntry, validate_entry_id
@@ -24,10 +29,11 @@ class CoordinatedWriteError(RuntimeError):
 class ConsistencyReport:
     markdown_only: tuple[str, ...]
     index_only: tuple[str, ...]
+    mismatched: tuple[str, ...] = ()
 
     @property
     def consistent(self) -> bool:
-        return not self.markdown_only and not self.index_only
+        return not self.markdown_only and not self.index_only and not self.mismatched
 
 
 class MemoryWriter:
@@ -36,6 +42,9 @@ class MemoryWriter:
         self.index = index
         self.embedder = embedder
         self.lock_path = store.data_dir / "state" / "memory_write.lock"
+        self.journal_path = store.data_dir / "state" / "memory_write_journal.json"
+        self.recovery_log = store.data_dir / "logs" / "memory_recovery.jsonl"
+        self.recover_pending()
 
     @staticmethod
     def _validated(entry: MemoryEntry) -> MemoryEntry:
@@ -62,19 +71,108 @@ class MemoryWriter:
         except KeyError:
             pass
 
+    def _begin(self, operation: str, entry_ids: list[str]) -> dict:
+        if self.journal_path.exists():
+            raise CoordinatedWriteError(
+                f"存在未恢复的写入日志：{self.journal_path}，拒绝开始新写入"
+            )
+        record = {
+            "version": 1,
+            "transaction_id": uuid.uuid4().hex,
+            "operation": operation,
+            "entry_ids": entry_ids,
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        atomic_write_text(
+            self.journal_path,
+            json.dumps(record, ensure_ascii=False, sort_keys=True),
+        )
+        return record
+
+    def _clear_journal(self) -> None:
+        self.journal_path.unlink(missing_ok=True)
+
+    def recover_pending(self) -> bool:
+        """Replay an interrupted write by rebuilding the derived index from Markdown."""
+        with interprocess_lock(self.lock_path):
+            if not self.journal_path.exists():
+                return False
+            try:
+                record = json.loads(self.journal_path.read_text(encoding="utf-8"))
+                if (
+                    not isinstance(record, dict)
+                    or record.get("version") != 1
+                    or not isinstance(record.get("transaction_id"), str)
+                    or not isinstance(record.get("operation"), str)
+                    or not isinstance(record.get("entry_ids"), list)
+                ):
+                    raise ValueError("journal schema invalid")
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                raise CoordinatedWriteError(
+                    f"写入恢复日志损坏，拒绝自动恢复：{self.journal_path}: {exc}"
+                ) from exc
+            rebuilt = self.index.rebuild_from_markdown(self.store.memory_dir, self.embedder)
+            report = self.check_consistency()
+            if not report.consistent:
+                raise CoordinatedWriteError(
+                    f"写入恢复后仍不一致：markdown_only={report.markdown_only}, "
+                    f"index_only={report.index_only}, mismatched={report.mismatched}"
+                )
+            self.recovery_log.parent.mkdir(parents=True, exist_ok=True)
+            recovery = {
+                "event": "memory_write_recovered",
+                "recovered_at": datetime.now().isoformat(timespec="seconds"),
+                "rebuilt_entries": rebuilt,
+                "journal": record,
+            }
+            with self.recovery_log.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(recovery, ensure_ascii=False) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._clear_journal()
+            return True
+
     def check_consistency(self) -> ConsistencyReport:
-        memory_ids = {e.id for e in self.store.list()}
+        entries = {entry.id: entry for entry in self.store.list()}
+        memory_ids = set(entries)
         index_ids = set(self.index.list_ids())
+        shared = sorted(memory_ids & index_ids)
+        records = self.index.integrity_records()
+        vectors = (
+            self.embedder.embed_texts([entries[entry_id].index_text for entry_id in shared])
+            if shared else []
+        )
+        mismatched: list[str] = []
+        for entry_id, vector in zip(shared, vectors, strict=True):
+            entry = entries[entry_id]
+            record = records.get(entry_id, {})
+            if (
+                record.get("content_hash") != self.index.entry_hash(entry)
+                or record.get("fts_hash")
+                != hashlib.sha256(entry.index_text.encode("utf-8")).hexdigest()
+                or record.get("vector_hash") != self.index.vector_hash(vector)
+                or record.get("stored_vector_hash") != record.get("vector_hash")
+            ):
+                mismatched.append(entry_id)
         return ConsistencyReport(
-            tuple(sorted(memory_ids - index_ids)), tuple(sorted(index_ids - memory_ids))
+            tuple(sorted(memory_ids - index_ids)),
+            tuple(sorted(index_ids - memory_ids)),
+            tuple(mismatched),
         )
 
     def create(self, entry: MemoryEntry) -> MemoryEntry:
         entry = self._validated(entry)
         vector = self._vector(entry)
         with interprocess_lock(self.lock_path):
-            self.store.create(entry)
             try:
+                self.store.get(entry.id)
+            except KeyError:
+                pass
+            else:
+                raise ValueError(f"id {entry.id!r} 已存在，拒绝覆盖")
+            self._begin("create", [entry.id])
+            try:
+                self.store.create(entry)
                 self.index.upsert(entry, vector)
             except Exception as original:
                 try:
@@ -86,9 +184,11 @@ class MemoryWriter:
                     raise CoordinatedWriteError(
                         f"索引写入失败且 Markdown 回滚失败：{original}; rollback={rollback}"
                     ) from original
+                self._clear_journal()
                 raise CoordinatedWriteError(
                     f"索引写入失败，Markdown 已回滚：{original}"
                 ) from original
+            self._clear_journal()
         return entry
 
     def update(self, entry: MemoryEntry) -> MemoryEntry:
@@ -98,8 +198,9 @@ class MemoryWriter:
             old = self.store.get(entry.id)
             old_vector = self._vector(old)
             new_vector = self._vector(entry)
-            updated = self.store.update(entry)
+            self._begin("update", [entry.id])
             try:
+                updated = self.store.update(entry)
                 self.index.upsert(updated, new_vector)
             except Exception as original:
                 try:
@@ -111,16 +212,29 @@ class MemoryWriter:
                     raise CoordinatedWriteError(
                         f"索引更新失败且补偿失败：{original}; rollback={rollback}"
                     ) from original
+                self._clear_journal()
                 raise CoordinatedWriteError(f"索引更新失败，原条目已恢复：{original}") from original
+            self._clear_journal()
         return updated
+
+    def mutate(self, entry_id: str, transform) -> MemoryEntry:
+        """Read and transform an entry under the same lock used for the coordinated update."""
+        validate_entry_id(entry_id)
+        with interprocess_lock(self.lock_path):
+            current = self.store.get(entry_id)
+            candidate = self._validated(transform(current))
+            if candidate.id != entry_id:
+                raise ValueError("mutate 不允许变更 entry id")
+            return self.update(candidate)
 
     def delete(self, entry_id: str) -> MemoryEntry:
         validate_entry_id(entry_id)
         with interprocess_lock(self.lock_path):
             old = self.store.get(entry_id)
             old_vector = self._vector(old)
-            self.store.delete(entry_id)
+            self._begin("delete", [entry_id])
             try:
+                self.store.delete(entry_id)
                 self.index.delete(entry_id)
             except Exception as original:
                 try:
@@ -132,7 +246,9 @@ class MemoryWriter:
                     raise CoordinatedWriteError(
                         f"索引删除失败且补偿失败：{original}; rollback={rollback}"
                     ) from original
+                self._clear_journal()
                 raise CoordinatedWriteError(f"索引删除失败，原条目已恢复：{original}") from original
+            self._clear_journal()
         return old
 
     def replace(self, old_id: str, new_entry: MemoryEntry) -> MemoryEntry:
@@ -153,8 +269,9 @@ class MemoryWriter:
                 raise ValueError(f"替代条目的 id {new_entry.id!r} 已存在，拒绝删除旧条目")
             old_vector = self._vector(old)
             new_vector = self._vector(new_entry)
-            self.store.create(new_entry)
+            self._begin("replace", [old_id, new_entry.id])
             try:
+                self.store.create(new_entry)
                 self.index.upsert(new_entry, new_vector)
                 self.store.delete(old_id)
                 self.index.delete(old_id)
@@ -177,5 +294,7 @@ class MemoryWriter:
                     raise CoordinatedWriteError(
                         f"替代写入失败且补偿失败：{original}; rollback={rollback}"
                     ) from original
+                self._clear_journal()
                 raise CoordinatedWriteError(f"替代写入失败，旧条目已恢复：{original}") from original
+            self._clear_journal()
         return new_entry

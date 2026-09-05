@@ -7,6 +7,7 @@
 - memories_fts：FTS5 全文，trigram 分词器（默认 unicode61 分词不支持中文子串匹配）。
 """
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -47,7 +48,9 @@ class IndexDB:
                 memory_type TEXT NOT NULL,
                 confidence TEXT NOT NULL,
                 last_verified TEXT NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                content_hash TEXT NOT NULL DEFAULT '',
+                vector_hash TEXT NOT NULL DEFAULT ''
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0 (
                 embedding float[{EMBEDDING_DIM}] distance_metric=cosine,
@@ -60,10 +63,71 @@ class IndexDB:
             );
             """
         )
+        columns = {
+            row[1] for row in self.conn.execute("PRAGMA table_info(memories_meta)").fetchall()
+        }
+        if "content_hash" not in columns:
+            self.conn.execute(
+                "ALTER TABLE memories_meta ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''"
+            )
+        if "vector_hash" not in columns:
+            self.conn.execute(
+                "ALTER TABLE memories_meta ADD COLUMN vector_hash TEXT NOT NULL DEFAULT ''"
+            )
+        # Backfill integrity metadata from the existing derived rows. A subsequent
+        # deep check still compares these hashes with Markdown and a fresh embedding.
+        missing = self.conn.execute(
+            "SELECT id, scope, memory_type, confidence, last_verified, created_at"
+            " FROM memories_meta WHERE content_hash = '' OR vector_hash = ''"
+        ).fetchall()
+        for row in missing:
+            fts_row = self.conn.execute(
+                "SELECT content FROM memories_fts WHERE id = ?", (row[0],)
+            ).fetchone()
+            vec_row = self.conn.execute(
+                "SELECT embedding FROM memories_vec WHERE memory_id = ?", (row[0],)
+            ).fetchone()
+            if fts_row is None or vec_row is None:
+                continue
+            payload = {
+                "id": row[0],
+                "scope": row[1],
+                "memory_type": row[2],
+                "confidence": row[3],
+                "last_verified": row[4],
+                "created_at": row[5],
+                "index_text": fts_row[0],
+            }
+            content_hash = hashlib.sha256(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            vector_hash = hashlib.sha256(bytes(vec_row[0])).hexdigest()
+            self.conn.execute(
+                "UPDATE memories_meta SET content_hash = ?, vector_hash = ? WHERE id = ?",
+                (content_hash, vector_hash, row[0]),
+            )
         self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
+
+    @staticmethod
+    def entry_hash(entry: MemoryEntry) -> str:
+        payload = {
+            "id": entry.id,
+            "scope": entry.scope,
+            "memory_type": entry.memory_type,
+            "confidence": entry.confidence,
+            "last_verified": entry.last_verified.isoformat(),
+            "created_at": entry.created_at.isoformat(),
+            "index_text": entry.index_text,
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def vector_hash(vector: list[float]) -> str:
+        return hashlib.sha256(sqlite_vec.serialize_float32(vector)).hexdigest()
 
     def upsert(self, entry: MemoryEntry, vector: list[float]) -> None:
         """写入/更新一条记忆的 meta + 向量 + 全文索引。幂等：先删后插。"""
@@ -71,9 +135,13 @@ class IndexDB:
             raise ValueError(f"向量维度 {len(vector)} 不是 {EMBEDDING_DIM}（bge-m3）")
         with self._lock:
             self.delete(entry.id, missing_ok=True)
+            vector_blob = sqlite_vec.serialize_float32(vector)
+            content_hash = self.entry_hash(entry)
+            vector_hash = hashlib.sha256(vector_blob).hexdigest()
             self.conn.execute(
                 "INSERT INTO memories_meta (id, scope, memory_type, confidence,"
-                " last_verified, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                " last_verified, created_at, content_hash, vector_hash)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     entry.id,
                     entry.scope,
@@ -81,11 +149,13 @@ class IndexDB:
                     entry.confidence,
                     entry.last_verified.isoformat(),
                     entry.created_at.isoformat(),
+                    content_hash,
+                    vector_hash,
                 ),
             )
             self.conn.execute(
                 "INSERT INTO memories_vec (embedding, memory_id) VALUES (?, ?)",
-                (sqlite_vec.serialize_float32(vector), entry.id),
+                (vector_blob, entry.id),
             )
             self.conn.execute(
                 "INSERT INTO memories_fts (id, content) VALUES (?, ?)",
@@ -213,12 +283,43 @@ class IndexDB:
             return self.conn.execute("SELECT COUNT(*) FROM memories_meta").fetchone()[0]
 
     def list_ids(self) -> list[str]:
-        """列出派生索引中的全部 id，供只读一致性检查。"""
+        """列出派生索引任一表中的全部 id，包含孤立派生行。"""
         with self._lock:
             return [
                 r[0]
-                for r in self.conn.execute("SELECT id FROM memories_meta ORDER BY id").fetchall()
+                for r in self.conn.execute(
+                    "SELECT id FROM memories_meta UNION SELECT memory_id FROM memories_vec "
+                    "UNION SELECT id FROM memories_fts ORDER BY id"
+                ).fetchall()
             ]
+
+    def integrity_records(self) -> dict[str, dict[str, str]]:
+        """Return stored and self-observed hashes for deep consistency checks."""
+        with self._lock:
+            meta = {
+                row[0]: {"content_hash": row[1], "vector_hash": row[2]}
+                for row in self.conn.execute(
+                    "SELECT id, content_hash, vector_hash FROM memories_meta"
+                ).fetchall()
+            }
+            fts = {
+                row[0]: hashlib.sha256(row[1].encode("utf-8")).hexdigest()
+                for row in self.conn.execute("SELECT id, content FROM memories_fts").fetchall()
+            }
+            vectors = {
+                row[0]: hashlib.sha256(bytes(row[1])).hexdigest()
+                for row in self.conn.execute(
+                    "SELECT memory_id, embedding FROM memories_vec"
+                ).fetchall()
+            }
+        return {
+            entry_id: {
+                **hashes,
+                "fts_hash": fts.get(entry_id, ""),
+                "stored_vector_hash": vectors.get(entry_id, ""),
+            }
+            for entry_id, hashes in meta.items()
+        }
 
     def get_meta(self, entry_id: str) -> dict | None:
         with self._lock:

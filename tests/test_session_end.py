@@ -182,10 +182,38 @@ def test_log_path_supply(service, tmp_path):
     assert "get_weather" not in user_prompt
 
 
+def test_log_path_evidence_maps_filtered_turn_to_raw_archive_line(service, tmp_path):
+    service.llm = RecordingFakeLLM(
+        {
+            "memories": [
+                {
+                    "id": "weather-result",
+                    "content": "用户确认助手已经报告北京当前天气。",
+                    "evidence_turns": [2, 2],
+                }
+            ]
+        }
+    )
+    path = _write_wire(tmp_path)
+    service.session_end("global", log_path=str(path), session_id="mapped")
+    evidence = service.store.get("weather-result").evidence[0]
+    raw_lines = [
+        json.loads(line)
+        for line in (tmp_path / "raw" / "mcp" / "mapped.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert evidence.line_range == (3, 3)
+    assert raw_lines[evidence.line_range[0] - 1]["role"] == "assistant"
+
+
 # ---------------------------------------------------------------- 清理（已完成 TODO 移除）
 
 
 def test_cleanup_done_todos_removed(service):
+    service.llm = RecordingFakeLLM(
+        {"memories": [{"id": "durable", "content": "用户确认归档只追加。", "evidence_turns": [1]}]}
+    )
     service.wm_write(
         "repo:demo",
         goal="实现 M7b",
@@ -211,6 +239,11 @@ def test_cleanup_done_todos_removed(service):
 
 def test_cleanup_all_empty_suggests_clear(service):
     """清理后整个工作记忆全空：提示可 memory_wm_clear，但不自动清。"""
+    service.llm = RecordingFakeLLM(
+        {"memories": [
+            {"id": "durable", "content": "用户确认唯一任务已经完成。", "evidence_turns": [1]}
+        ]}
+    )
     service.wm_write("repo:demo", todos=[{"content": "唯一任务", "status": "done"}])
     out = service.session_end(
         "repo:demo", conversation_json=json.dumps(_conversation(), ensure_ascii=False),
@@ -222,6 +255,16 @@ def test_cleanup_all_empty_suggests_clear(service):
     assert "memory_wm_clear" in out["wm_hint"]
     # 不自动清：工作记忆文档仍在（只是内容全空）
     assert service.wm_read("repo:demo")["exists"] is True
+
+
+def test_empty_distillation_keeps_done_todo(service):
+    service.wm_write("repo:demo", todos=[{"content": "结论尚未沉淀", "status": "done"}])
+    out = service.session_end(
+        "repo:demo", conversation_json=json.dumps(_conversation(), ensure_ascii=False)
+    )
+    assert out["distill"]["distilled"] == 0
+    assert out["todos_cleared"] == 0
+    assert service.wm_read("repo:demo")["working_memory"]["todos"]
 
 
 def test_cleanup_preserves_todo_added_during_distillation(tmp_path, fake_embedder):
@@ -246,7 +289,11 @@ def test_cleanup_preserves_todo_added_during_distillation(tmp_path, fake_embedde
                 ),
                 expected_version=current.version,
             )
-            return {"memories": []}
+            return {
+                "memories": [
+                    {"id": "durable", "content": "用户确认原待办已经完成。", "evidence_turns": [1]}
+                ]
+            }
 
     llm = ConcurrentTodoLLM()
     svc = MemoryService(

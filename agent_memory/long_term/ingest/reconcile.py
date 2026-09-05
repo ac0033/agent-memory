@@ -300,6 +300,15 @@ def reconcile(
                     # 第一阶段看到的目标可能已被同批前一条替代；重新读取，失效则
                     # 交人工，不让整批在部分成功后异常退出。
                     old = store.get(target_id)
+                    decided_old = next(n for n in neighbors if n.id == target_id)
+                    if (
+                        old.version != decided_old.version
+                        or old.index_text != decided_old.index_text
+                        or old.confidence != decided_old.confidence
+                    ):
+                        raise RuntimeError(
+                            f"LLM 判决已过期：目标 {target_id!r} 在判决后发生变化"
+                        )
                     if action == "UPDATE":
                         new_id, _old_id = r.apply_update(candidate, old)
                         report.updated.append((new_id, _old_id))

@@ -300,14 +300,24 @@ def propagate_change(
         if verdict["verdict"] == "INVALIDATED":
             # 审计是删除的恢复依据：先确保追加成功，再执行协调删除。审计日志
             # 允许记录随后失败的删除尝试，绝不因审计失败先丢正式记忆。
+            deleted = False
             try:
                 _append_audit(
                     data_dir, old, new, neighbor, verdict["reason"],
                     event="propagation_invalidation_intent",
                 )
                 writer.delete(neighbor.id)
+                deleted = True
                 _append_audit(data_dir, old, new, neighbor, verdict["reason"])
             except Exception as e:
+                if deleted:
+                    try:
+                        writer.create(neighbor)
+                    except Exception as restore_error:
+                        raise RuntimeError(
+                            "传播完成审计失败，且已删除条目无法恢复："
+                            f"audit={e}; restore={restore_error}"
+                        ) from restore_error
                 report.failed.append((neighbor.id, f"传播删除不可用：{e}"))
             else:
                 report.invalidated.append(neighbor.id)

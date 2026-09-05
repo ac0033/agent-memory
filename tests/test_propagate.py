@@ -194,6 +194,38 @@ def test_audit_failure_prevents_invalidation_delete(
     assert store.get("check-port-first") is not None
 
 
+def test_completion_audit_failure_restores_deleted_entry(
+    entry_factory, components, monkeypatch
+):
+    old, new = _old_new(entry_factory)
+    _, store, index, embedder, _ = components
+    neighbor = entry_factory(
+        entry_id="check-port-first",
+        content="排查启动失败时先看 dev server 端口 8765 是否被占用。",
+        memory_type="procedural",
+    )
+    _seed(store, index, embedder, neighbor)
+    llm = VerdictLLM({"check-port-first": {"verdict": "INVALIDATED", "reason": "失效"}})
+    from agent_memory.long_term.ingest import propagate as module
+
+    original = module._append_audit
+    calls = 0
+
+    def fail_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("completion audit failed")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_append_audit", fail_second)
+    report = _propagate(components, llm, old, new)
+    assert report.invalidated == []
+    assert report.failed
+    assert store.get("check-port-first") is not None
+    assert report.queued_files
+
+
 def test_unparseable_verdict_fails_closed(entry_factory):
     """判定输出无法解析时不得静默视为不受影响。"""
     class GarbageLLM(VerdictLLM):

@@ -33,13 +33,19 @@ def interprocess_lock(path: Path) -> Iterator[None]:
         depths[key] = depth + 1
         _local.depths = depths
         handle = None
+        acquired = False
         try:
             if depth == 0:
-                handle = path.open("a+b")
-                handle.seek(0, os.SEEK_END)
-                if handle.tell() == 0:
-                    handle.write(b"0")
-                    handle.flush()
+                try:
+                    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                except FileExistsError:
+                    pass
+                else:
+                    with os.fdopen(fd, "wb") as created:
+                        created.write(b"0")
+                        created.flush()
+                        os.fsync(created.fileno())
+                handle = path.open("r+b")
                 handle.seek(0)
                 if os.name == "nt":
                     import msvcrt
@@ -49,12 +55,13 @@ def interprocess_lock(path: Path) -> Iterator[None]:
                     import fcntl
 
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                acquired = True
             yield
         finally:
             depths[key] -= 1
             if depths[key] == 0:
                 del depths[key]
-                if handle is not None:
+                if handle is not None and acquired:
                     handle.seek(0)
                     if os.name == "nt":
                         import msvcrt
@@ -64,6 +71,8 @@ def interprocess_lock(path: Path) -> Iterator[None]:
                         import fcntl
 
                         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    handle.close()
+                elif handle is not None:
                     handle.close()
 
 

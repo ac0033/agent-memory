@@ -41,6 +41,8 @@ def _components() -> Iterator[tuple[Settings, MarkdownStore, IndexDB]]:
     store = MarkdownStore(settings.data_dir)
     index = IndexDB(settings.data_dir / "index.db")
     try:
+        if (settings.data_dir / "state" / "memory_write_journal.json").exists():
+            MemoryWriter(store, index, _get_embedder())
         yield settings, store, index
     finally:
         index.close()

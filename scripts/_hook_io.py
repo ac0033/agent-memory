@@ -43,11 +43,16 @@ def interprocess_lock(path: Path):
             return
         depths[key] = 1
         try:
-            with path.open("a+b") as handle:
-                handle.seek(0)
-                if handle.tell() == 0 and path.stat().st_size == 0:
-                    handle.write(b"0")
-                    handle.flush()
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                pass
+            else:
+                with os.fdopen(fd, "wb") as created:
+                    created.write(b"0")
+                    created.flush()
+                    os.fsync(created.fileno())
+            with path.open("r+b") as handle:
                 handle.seek(0)
                 if os.name == "nt":
                     import msvcrt

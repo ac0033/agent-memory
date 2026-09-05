@@ -34,9 +34,9 @@ from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
 
 - `AgentMemoryStore`：LangGraph `BaseStore` 实现，namespace 约定 `("memories", <scope>)`，
   适合替换图的记忆存储层；
-- `build_memory_tools()`：16 个 LangChain tool，**与 MCP 的 15 个 tool 能力对应**
+- `build_memory_tools()`：17 个 LangChain tool，**与 MCP 的 15 个 tool 能力对应**
   （长期 / 工作 / 短期三层全暴露；宿主蒸馏在 LangGraph 中单列为 `save_distilled`）——
-  `recall_memories`、`save_memory`、`save_conversation`、`save_distilled`、
+  `recall_memories`、`memory_distill_prompt`、`save_memory`、`save_conversation`、`save_distilled`、
   `memory_consistency_check`、`wm_read` / `wm_write` / `wm_clear`、
   `get_memory_context`、`read_transcript`、`session_end`、`review_list` /
   `review_resolve`、`update_memory` / `forget_memory` / `memory_feedback`。
@@ -75,7 +75,7 @@ from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
 
 ### 无 API key 的宿主：宿主蒸馏
 
-订阅制 agent（登录即用、没有 API key）配不了服务端 LLM，对话蒸馏改由宿主自己做：`memory_distill_prompt` 拿协议 → 宿主在自己的上下文里蒸馏 → `memory_add(distilled_json=...)` 提交。服务端对候选照常过 校验/脱敏/评价门/对账（门在服务端，不信任蒸馏来源）；无 LLM 时对账降级为"无近邻直接 ADD、有近邻进人工复核队列"。
+订阅制 agent（登录即用、没有 API key）配不了服务端 LLM，对话蒸馏改由宿主自己做：`memory_distill_prompt` 拿协议 → 宿主在自己的上下文里蒸馏 → `memory_add(distilled_json=...)` 提交。服务端对候选照常过校验/脱敏/评价门；由于服务端没有对应原始证据，候选统一进入人工复核，确认后才写入正式记忆层。
 
 ### 会话开头注入工作记忆（可选但推荐）
 

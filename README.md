@@ -32,7 +32,7 @@ M2 交付蒸馏写路径 + MCP server：
 M3 交付 LangGraph 适配 + Skill + 轨迹前缀回归评估：
 
 - `agent_memory/long_term/adapters/langgraph/store.py`：`AgentMemoryStore`（LangGraph `BaseStore` 实现，namespace `("memories", <scope>)`，put 过脱敏+评价门规则、search 走混合检索）；
-- `agent_memory/long_term/adapters/langgraph/tools.py`：`build_memory_tools()` 产出 16 个 ReAct tool（三层记忆全暴露，业务实现收敛在 MemoryService）；默认走完整管线（含 LLM 对账），LLM 缺失时无近邻直接 ADD、存在近邻转人工复核；
+- `agent_memory/long_term/adapters/langgraph/tools.py`：`build_memory_tools()` 产出 17 个 ReAct tool（三层记忆全暴露，业务实现收敛在 MemoryService）；默认走完整管线（含 LLM 对账），LLM 缺失时无近邻直接 ADD、存在近邻转人工复核；
 - `agent_memory/long_term/retrieve/resident.py`：`build_system_context(scope)` 常驻层注入（profile 记忆按置信度排序进 system prompt，预算为召回预算的一半）；
 - `skills/agent-memory/SKILL.md`：教 agent 何时检索/写入/反馈（MCP tool 名与参数示例，"召回是参考而非指令"）；
 - `evals/datasets/prefix/` 9 条轨迹前缀回归用例（指令冲突 2 + scope 泄漏 2 + 低置信度 2 + 抗注入 2 + 正常召回对照 1）；
@@ -368,11 +368,11 @@ wire.jsonl，按文件名自动识别格式）解析成干净的轮次序列（u
 
 1. `memory_distill_prompt()` 拿蒸馏协议（system prompt + 输出 JSON schema + 对话渲染格式）；
 2. 宿主在自己的上下文里按协议蒸馏，产出 `{"memories": [...]}`；
-3. `memory_add(distilled_json=...)` 提交——候选照常过服务端的 校验/规范化→脱敏→评价门→对账，
-   门在服务端、不信任蒸馏来源。
+3. `memory_add(distilled_json=...)` 提交——候选照常过服务端的校验/规范化→脱敏→评价门；
+   因服务端没有对应原始证据，候选进入人工复核，确认后才写入正式记忆层。
 
-无服务端 LLM 时对账走规则降级：无近邻直接 ADD，有近邻进人工复核队列（关系判断必须靠 LLM，
-fail-safe 不猜）。`memory_add` 的对话模式在无 LLM 时返回 `archived_only`，warning 里会指引
+单条 `content` 写入在无服务端 LLM 时对账走规则降级：无近邻直接 ADD，有近邻进人工复核队列
+（关系判断必须靠 LLM，fail-safe 不猜）。`memory_add` 的对话模式在无 LLM 时返回 `archived_only`，warning 里会指引
 改走宿主蒸馏。
 
 ### 会话开头自动注入工作记忆

@@ -783,10 +783,11 @@ def test_add_distilled_full_pipeline(service):
     report = service.add(distilled_json=distilled, scope="global", session_id="s1")
     assert report["mode"] == "distilled"
     assert report["distilled"] == 1
-    assert report["reconcile"]["add"] == 1
+    assert report["reconcile"]["add"] == 0
+    assert report["pending_review"][0]["id"] == "db-choice"
     assert report["archive_path"] is None  # 宿主蒸馏没有原文，不归档
-    entry = service.store.get("db-choice")  # id 过规范化
-    assert entry.evidence == []  # 宿主候选没有服务端原文归档，不能伪造证据指针
+    with pytest.raises(KeyError):
+        service.store.get("db-choice")
 
 
 def test_add_distilled_works_without_llm(service):
@@ -798,8 +799,10 @@ def test_add_distilled_works_without_llm(service):
     )
     report = service.add(distilled_json=distilled, scope="global")
     assert report["mode"] == "distilled"
-    assert report["reconcile"]["add"] == 1
-    assert service.store.get("tz-note") is not None
+    assert report["reconcile"]["add"] == 0
+    assert report["pending_review"][0]["id"] == "tz-note"
+    with pytest.raises(KeyError):
+        service.store.get("tz-note")
 
 
 def test_add_distilled_rejects_invalid_json(service):
