@@ -864,6 +864,67 @@ def test_add_distilled_rejects_invalid_range_in_existing_raw(service):
         service.store.get("invalid-host-evidence")
 
 
+def test_add_distilled_maps_dialogue_turns_across_tool_lines(service):
+    service._archive_raw(
+        [
+            {"role": "user", "content": "用户确认数据库使用 SQLite。"},
+            {"role": "tool", "content": "工具输出不属于对话证据轮次。"},
+            {"role": "assistant", "content": "已记录。"},
+        ],
+        "host",
+        "tool-session",
+    )
+    report = service.add(
+        distilled_json=json.dumps(
+            {
+                "memories": [
+                    {
+                        "id": "mapped-host-evidence",
+                        "content": "用户确认数据库使用 SQLite。",
+                        "evidence_turns": [1, 2],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        scope="global",
+        source="host",
+        session_id="tool-session",
+    )
+    assert report["reconcile"]["add"] == 1
+    assert service.store.get("mapped-host-evidence").evidence[0].line_range == (1, 3)
+
+
+def test_add_distilled_requires_user_role_in_evidence_range(service):
+    service._archive_raw(
+        [{"role": "assistant", "content": "助手单方面建议改用 PostgreSQL。"}],
+        "host",
+        "assistant-only-session",
+    )
+    report = service.add(
+        distilled_json=json.dumps(
+            {
+                "memories": [
+                    {
+                        "id": "assistant-only-claim",
+                        "content": "项目数据库改用 PostgreSQL。",
+                        "evidence_turns": [1, 1],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        scope="global",
+        source="host",
+        session_id="assistant-only-session",
+    )
+    assert report["reconcile"]["add"] == 0
+    assert report["pending_review"][0]["id"] == "assistant-only-claim"
+    assert "PostgreSQL" in report["pending_review"][0]["content_preview"]
+    with pytest.raises(KeyError):
+        service.store.get("assistant-only-claim")
+
+
 def test_add_distilled_rejects_invalid_json(service):
     with pytest.raises(ValueError, match="distilled_json 不是合法 JSON"):
         service.add(distilled_json="这不是 JSON")

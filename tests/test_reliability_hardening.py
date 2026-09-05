@@ -3,8 +3,8 @@
 import json
 import multiprocessing
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import date
 
 import pytest
@@ -93,22 +93,76 @@ def _process_crash_after_markdown_update(data_dir):
     writer.update(current.model_copy(update={"content": "正文已经更新为崩溃后的新事实。"}))
 
 
-def _process_crash_mid_replace(data_dir):
+def _process_crash_replace_at(data_dir, cut):
     import os
 
     index = IndexDB(data_dir / "index.db")
     writer = MemoryWriter(MarkdownStore(data_dir), index, UnitEmbedder())
     old = writer.store.get("replace-old")
     new = old.model_copy(update={"id": "replace-new", "supersedes": old.id})
-    original_delete = writer.store.delete
+    original_store_delete = writer.store.delete
+    original_index_upsert = writer.index.upsert
+    original_index_delete = writer.index.delete
 
-    def terminate_before_old_delete(entry_id):
-        if entry_id == old.id:
-            os._exit(74)
-        return original_delete(entry_id)
+    if cut == "after-new-markdown":
+        def crash_index_upsert(entry, vector):
+            if entry.id == new.id:
+                os._exit(74)
+            return original_index_upsert(entry, vector)
 
-    writer.store.delete = terminate_before_old_delete
+        writer.index.upsert = crash_index_upsert
+    elif cut == "after-new-index":
+        def crash_store_delete(entry_id):
+            if entry_id == old.id:
+                os._exit(75)
+            return original_store_delete(entry_id)
+
+        writer.store.delete = crash_store_delete
+    elif cut == "after-old-markdown":
+        def crash_index_delete(entry_id, **kwargs):
+            if entry_id == old.id:
+                os._exit(76)
+            return original_index_delete(entry_id, **kwargs)
+
+        writer.index.delete = crash_index_delete
+    elif cut == "before-commit":
+        writer._mark_committed = lambda *_args, **_kwargs: os._exit(77)
+    elif cut == "after-commit":
+        writer._clear_journal = lambda: os._exit(78)
+    else:
+        raise AssertionError(f"unknown cut: {cut}")
+
     writer.replace(old.id, new)
+
+
+def _process_crash_after_update_commit(data_dir):
+    import os
+
+    index = IndexDB(data_dir / "index.db")
+    writer = MemoryWriter(MarkdownStore(data_dir), index, UnitEmbedder())
+    current = writer.store.get("commit-target")
+    writer._clear_journal = lambda: os._exit(79)
+    writer.update(
+        current.model_copy(update={"content": "提交点后的新事实必须保留。"})
+    )
+
+
+def _process_feedback_or_review(data_dir, action, queue_file, start_event, result_queue):
+    index = IndexDB(data_dir / "index.db")
+    service = MemoryService(
+        Settings(data_dir=data_dir), MarkdownStore(data_dir), index, UnitEmbedder()
+    )
+    start_event.wait(10)
+    try:
+        if action == "feedback":
+            service.feedback("process-feedback-low", False)
+        else:
+            service.review_resolve(queue_file, "approve")
+        result_queue.put((action, "ok"))
+    except Exception as exc:
+        result_queue.put((action, f"{type(exc).__name__}: {exc}"))
+    finally:
+        index.close()
 
 
 def _seed(writer, entry):
@@ -133,6 +187,26 @@ def test_create_index_failure_rolls_back_markdown(
         writer.create(entry_factory(entry_id="new-entry"))
     assert store.list() == []
     assert index.count() == 0
+    index.close()
+
+
+def test_commit_marker_failure_rolls_back_prepared_create(
+    tmp_path, entry_factory, fake_embedder, monkeypatch
+):
+    store = MarkdownStore(tmp_path)
+    index = IndexDB(tmp_path / "index.db")
+    writer = MemoryWriter(store, index, fake_embedder)
+
+    def fail_commit(*_args, **_kwargs):
+        raise OSError("simulated journal commit failure")
+
+    monkeypatch.setattr(writer, "_mark_committed", fail_commit)
+    with pytest.raises(CoordinatedWriteError, match="已回滚"):
+        writer.create(entry_factory(entry_id="commit-marker-failure"))
+    with pytest.raises(KeyError):
+        store.get("commit-marker-failure")
+    assert writer.check_consistency().consistent
+    assert not writer.journal_path.exists()
     index.close()
 
 
@@ -318,6 +392,22 @@ def test_deep_consistency_detects_actual_meta_drift(
     index.close()
 
 
+def test_deep_consistency_detects_vector_semantic_drift_even_with_matching_hash(
+    tmp_path, entry_factory, fake_embedder
+):
+    index = IndexDB(tmp_path / "index.db")
+    writer = MemoryWriter(MarkdownStore(tmp_path), index, fake_embedder)
+    entry = writer.create(
+        entry_factory(entry_id="semantic-vector-drift", content="项目使用 uv 管理环境。")
+    )
+    # Simulate a coherently rewritten derived row: its byte hash matches the wrong
+    # vector, so only comparison with a fresh embedding can detect the drift.
+    wrong = fake_embedder.embed_texts(["项目端口为 8765。"])[0]
+    index.upsert(entry, wrong)
+    assert writer.check_consistency().mismatched == ("semantic-vector-drift",)
+    index.close()
+
+
 def test_consistency_detects_orphan_fts_row(tmp_path, fake_embedder):
     store = MarkdownStore(tmp_path)
     index = IndexDB(tmp_path / "index.db")
@@ -357,22 +447,55 @@ def test_interrupted_process_is_recovered_from_durable_journal(tmp_path, entry_f
     recovered_index.close()
 
 
-def test_interrupted_replace_rolls_back_both_markdown_sides(tmp_path, entry_factory):
+@pytest.mark.parametrize(
+    ("cut", "exit_code", "expected_ids"),
+    [
+        ("after-new-markdown", 74, {"replace-old"}),
+        ("after-new-index", 75, {"replace-old"}),
+        ("after-old-markdown", 76, {"replace-old"}),
+        ("before-commit", 77, {"replace-old"}),
+        ("after-commit", 78, {"replace-new"}),
+    ],
+)
+def test_interrupted_replace_recovers_at_every_cut(
+    tmp_path, entry_factory, cut, exit_code, expected_ids
+):
     index = IndexDB(tmp_path / "index.db")
     writer = MemoryWriter(MarkdownStore(tmp_path), index, UnitEmbedder())
     writer.create(entry_factory(entry_id="replace-old", content="替换前的正式事实。"))
     index.close()
 
     process = multiprocessing.get_context("spawn").Process(
-        target=_process_crash_mid_replace, args=(tmp_path,)
+        target=_process_crash_replace_at, args=(tmp_path, cut)
     )
     process.start()
     process.join(20)
-    assert process.exitcode == 74
+    assert process.exitcode == exit_code
 
     recovered_index = IndexDB(tmp_path / "index.db")
     recovered = MemoryWriter(MarkdownStore(tmp_path), recovered_index, UnitEmbedder())
-    assert {entry.id for entry in recovered.store.list()} == {"replace-old"}
+    assert {entry.id for entry in recovered.store.list()} == expected_ids
+    assert recovered.check_consistency().consistent
+    assert not recovered.journal_path.exists()
+    recovered_index.close()
+
+
+def test_interrupted_update_after_commit_preserves_new_value(tmp_path, entry_factory):
+    index = IndexDB(tmp_path / "index.db")
+    writer = MemoryWriter(MarkdownStore(tmp_path), index, UnitEmbedder())
+    writer.create(entry_factory(entry_id="commit-target", content="提交点前的旧事实。"))
+    index.close()
+
+    process = multiprocessing.get_context("spawn").Process(
+        target=_process_crash_after_update_commit, args=(tmp_path,)
+    )
+    process.start()
+    process.join(20)
+    assert process.exitcode == 79
+
+    recovered_index = IndexDB(tmp_path / "index.db")
+    recovered = MemoryWriter(MarkdownStore(tmp_path), recovered_index, UnitEmbedder())
+    assert recovered.store.get("commit-target").content == "提交点后的新事实必须保留。"
     assert recovered.check_consistency().consistent
     assert not recovered.journal_path.exists()
     recovered_index.close()
@@ -565,7 +688,21 @@ def test_memory_update_holds_write_lock_while_merging_current_entry(
     )
     read_done = threading.Event()
     release_read = threading.Event()
+    feedback_attempted_lock = threading.Event()
     original_get = service.store.get
+
+    from agent_memory.server import mcp_server as mcp_server_module
+
+    real_interprocess_lock = mcp_server_module.interprocess_lock
+
+    @contextmanager
+    def observed_lock(path):
+        if threading.current_thread().name == "feedback-update":
+            feedback_attempted_lock.set()
+        with real_interprocess_lock(path):
+            yield
+
+    monkeypatch.setattr(mcp_server_module, "interprocess_lock", observed_lock)
 
     def delayed_get(entry_id):
         entry = original_get(entry_id)
@@ -578,12 +715,16 @@ def test_memory_update_holds_write_lock_while_merging_current_entry(
         threading.current_thread().name = "content-update"
         return service.update("update-race", "用户确认这是新的正文。")
 
+    def lower_confidence():
+        threading.current_thread().name = "feedback-update"
+        return service.feedback("update-race", False)
+
     monkeypatch.setattr(service.store, "get", delayed_get)
     with ThreadPoolExecutor(max_workers=2) as pool:
         update_future = pool.submit(update_content)
         assert read_done.wait(10)
-        feedback_future = pool.submit(service.feedback, "update-race", False)
-        time.sleep(0.1)
+        feedback_future = pool.submit(lower_confidence)
+        assert feedback_attempted_lock.wait(10)
         assert not feedback_future.done()
         release_read.set()
         update_future.result(timeout=10)
@@ -619,6 +760,53 @@ def test_feedback_and_review_resolution_share_lock_order(
         review_future.result(timeout=10)
     assert service.store.get("review-other") is not None
     index.close()
+
+
+def test_feedback_and_review_resolution_do_not_deadlock_across_processes(
+    tmp_path, entry_factory, fake_embedder
+):
+    index = IndexDB(tmp_path / "index.db")
+    service = MemoryService(
+        Settings(data_dir=tmp_path), MarkdownStore(tmp_path), index, fake_embedder
+    )
+    service.writer.create(
+        entry_factory(entry_id="process-feedback-low", confidence="low")
+    )
+    queue_file = write_review_queue(
+        [entry_factory(entry_id="process-review-other", confidence="low")],
+        tmp_path,
+        "test",
+    )[0].name
+    index.close()
+
+    context = multiprocessing.get_context("spawn")
+    start_event = context.Event()
+    result_queue = context.Queue()
+    processes = [
+        context.Process(
+            target=_process_feedback_or_review,
+            args=(tmp_path, action, queue_file, start_event, result_queue),
+        )
+        for action in ("feedback", "review")
+    ]
+    for process in processes:
+        process.start()
+    start_event.set()
+    for process in processes:
+        process.join(20)
+        assert process.exitcode == 0
+    assert sorted(result_queue.get(timeout=5) for _ in processes) == [
+        ("feedback", "ok"),
+        ("review", "ok"),
+    ]
+
+    final_index = IndexDB(tmp_path / "index.db")
+    final_store = MarkdownStore(tmp_path)
+    assert final_store.get("process-review-other") is not None
+    with pytest.raises(KeyError):
+        final_store.get("process-feedback-low")
+    assert MemoryWriter(final_store, final_index, UnitEmbedder()).check_consistency().consistent
+    final_index.close()
 
 
 def test_same_batch_stale_update_is_queued_instead_of_crashing(
@@ -723,6 +911,46 @@ def test_llm_cas_is_rechecked_inside_writer_lock(
     assert report.updated == []
     assert report.queued[0][0].id == "new-port"
     assert store.get("old-port").content == "端口刚被并发改为 9000。"
+    index.close()
+
+
+def test_llm_same_id_cas_is_rechecked_inside_writer_lock(
+    tmp_path, entry_factory, fake_embedder, monkeypatch
+):
+    store = MarkdownStore(tmp_path)
+    index = IndexDB(tmp_path / "index.db")
+    other_writer = MemoryWriter(store, index, fake_embedder)
+    other_writer.create(
+        entry_factory(entry_id="same-port", content="本项目端口当前固定为 8765。")
+    )
+    original_update = MemoryWriter.update
+    injected = False
+
+    def interleave(self, entry, **kwargs):
+        nonlocal injected
+        if entry.id == "same-port" and kwargs.get("expected") is not None and not injected:
+            injected = True
+            current = store.get(entry.id)
+            original_update(
+                other_writer,
+                current.model_copy(update={"content": "端口刚被并发改为 9000。"}),
+            )
+        return original_update(self, entry, **kwargs)
+
+    monkeypatch.setattr(MemoryWriter, "update", interleave)
+    report = reconcile(
+        [entry_factory(entry_id="same-port", content="本项目端口当前固定为 8766。")],
+        store,
+        index,
+        ScriptedLLM([
+            {"action": "UPDATE", "target_id": "same-port", "reason": "端口变更"}
+        ]),
+        embedder=fake_embedder,
+        settings=Settings(data_dir=tmp_path),
+    )
+    assert report.updated == []
+    assert report.queued[0][0].id == "same-port"
+    assert store.get("same-port").content == "端口刚被并发改为 9000。"
     index.close()
 
 

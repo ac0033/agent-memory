@@ -10,6 +10,7 @@
 import hashlib
 import json
 import sqlite3
+import struct
 import threading
 from datetime import date
 from pathlib import Path
@@ -293,7 +294,7 @@ class IndexDB:
                 ).fetchall()
             ]
 
-    def integrity_records(self) -> dict[str, dict[str, str]]:
+    def integrity_records(self) -> dict[str, dict[str, object]]:
         """Return stored and self-observed hashes for deep consistency checks."""
         with self._lock:
             meta = {
@@ -311,21 +312,36 @@ class IndexDB:
                     " content_hash, vector_hash FROM memories_meta"
                 ).fetchall()
             }
-            fts = {
-                row[0]: hashlib.sha256(row[1].encode("utf-8")).hexdigest()
-                for row in self.conn.execute("SELECT id, content FROM memories_fts").fetchall()
-            }
-            vectors = {
-                row[0]: hashlib.sha256(bytes(row[1])).hexdigest()
-                for row in self.conn.execute(
-                    "SELECT memory_id, embedding FROM memories_vec"
-                ).fetchall()
-            }
+            fts_rows = self.conn.execute(
+                "SELECT id, content FROM memories_fts"
+            ).fetchall()
+            vector_rows = self.conn.execute(
+                "SELECT memory_id, embedding FROM memories_vec"
+            ).fetchall()
+            fts: dict[str, str] = {}
+            fts_counts: dict[str, int] = {}
+            for entry_id, content in fts_rows:
+                fts_counts[entry_id] = fts_counts.get(entry_id, 0) + 1
+                fts[entry_id] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            vectors: dict[str, str] = {}
+            vector_values: dict[str, tuple[float, ...]] = {}
+            vector_counts: dict[str, int] = {}
+            for entry_id, raw_embedding in vector_rows:
+                blob = bytes(raw_embedding)
+                vector_counts[entry_id] = vector_counts.get(entry_id, 0) + 1
+                vectors[entry_id] = hashlib.sha256(blob).hexdigest()
+                if len(blob) % 4 == 0:
+                    vector_values[entry_id] = struct.unpack(
+                        f"<{len(blob) // 4}f", blob
+                    )
         return {
             entry_id: {
                 **hashes,
                 "fts_hash": fts.get(entry_id, ""),
+                "fts_count": fts_counts.get(entry_id, 0),
                 "stored_vector_hash": vectors.get(entry_id, ""),
+                "vector_count": vector_counts.get(entry_id, 0),
+                "vector": vector_values.get(entry_id, ()),
             }
             for entry_id, hashes in meta.items()
         }

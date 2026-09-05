@@ -159,7 +159,7 @@ def _build_entry(
     result: DistillResult, evidence_line_offset: int = 0,
     evidence_line_map: list[int] | None = None,
     strict_evidence: bool = False,
-    valid_evidence_lines: set[int] | None = None,
+    evidence_role_map: list[str] | None = None,
 ) -> MemoryEntry:
     """把一条蒸馏 JSON 记录构造为 MemoryEntry（可能抛 ValidationError）。
 
@@ -170,8 +170,9 @@ def _build_entry(
     content 超长不截断（截断会改变事实语义），交给上层进复核队列。
 
     n_turns 是服务端蒸馏时的对话轮数，用于把 evidence_turns 夹进合法区间；
-    宿主蒸馏模式（distilled_json）传 None——服务端没有对话轮数，以宿主给的
-    evidence_turns 为准（start 仍保证 ≥1）。
+    宿主蒸馏在存在 raw 归档时传入其中 user/assistant 对话轮次到实际 JSONL
+    行号的映射，引用范围必须有效且至少包含一个 user 轮次。没有 raw 归档时
+    n_turns=None，条目不生成 evidence，随后保守进入人工复核。
     """
     if not isinstance(raw, dict):
         raise ValueError(f"单条蒸馏输出必须是 JSON object，收到: {type(raw).__name__}")
@@ -186,12 +187,16 @@ def _build_entry(
     start, end = int(evidence_turns[0]), int(evidence_turns[-1])
     if strict_evidence and (
         n_turns is None
+        or evidence_line_map is None
+        or evidence_role_map is None
+        or len(evidence_line_map) != n_turns
+        or len(evidence_role_map) != n_turns
         or start < 1
         or end < start
         or end > n_turns
         or (
-            valid_evidence_lines is not None
-            and any(line not in valid_evidence_lines for line in range(start, end + 1))
+            evidence_role_map is not None
+            and "user" not in evidence_role_map[start - 1 : end]
         )
     ):
         raise ValueError("evidence_turns 未指向该 source/session 的有效对话证据")
@@ -309,14 +314,14 @@ def build_entries_from_distilled(
     evidence_line_offset: int = 0,
     evidence_line_map: list[int] | None = None,
     strict_evidence: bool = False,
-    valid_evidence_lines: set[int] | None = None,
+    evidence_role_map: list[str] | None = None,
 ) -> DistillResult:
     """把蒸馏产出的 JSON（{"memories": [...]}）加工成候选条目（M9 抽出共用）。
 
     服务端蒸馏（distill_memories）与宿主蒸馏（memory_add 的 distilled_json
     模式）共用这条路径：规范化（id/confidence/detail）→ 构造 MemoryEntry →
-    脱敏 → 非法进复核队列。n_turns=None 表示 evidence_turns 不夹上界
-    （宿主蒸馏模式，服务端没有对话轮数）。
+    脱敏 → 非法进复核队列。n_turns=None 表示没有可核查的 raw 对话证据，
+    因而不会为候选生成 evidence。
     """
     if result is None:
         result = DistillResult()
@@ -342,7 +347,7 @@ def build_entries_from_distilled(
         try:
             entry = _build_entry(
                 raw, scope, source, session_id, n_turns, result, evidence_line_offset,
-                evidence_line_map, strict_evidence, valid_evidence_lines,
+                evidence_line_map, strict_evidence, evidence_role_map,
             )
         except (ValidationError, ValueError, TypeError, IndexError, KeyError) as e:
             # 规范化后仍不合法：不丢弃，进复核队列（保留原始记录与失败原因）

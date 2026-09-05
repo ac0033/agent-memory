@@ -96,21 +96,22 @@ Ruff clean。新增修复不得删测试、降低门槛或依赖付费外部服�
 | R15 | 日志 tool 轮次使 evidence 行号错位 | 蒸馏轮次显式映射到 raw JSONL 行 | tool 夹层日志测试 | 已解决 |
 | R16 | 传播删除完成审计失败造成无记录丢失 | 恢复被删条目并转人工复核 | completion audit OSError 测试 | 已解决 |
 | R17 | LangGraph 写工具缺 subagent 约束/蒸馏协议 | 10 个写工具均声明主 agent 限制并补齐协议工具 | tool 描述与调用测试 | 已解决 |
-| R18 | replace 进程中断后同时保留新旧事实 | journal 保存事务前镜像，恢复时回滚整个操作 | replace 中途 `os._exit` 测试 | 已解决 |
+| R18 | replace 进程中断后同时保留新旧事实 | journal 保存 before/after 意图与 prepared/committed 提交点；提交前整笔回滚，提交后校验并保留结果 | replace 五个切点 `os._exit` + update 提交后恢复测试 | 已解决 |
 | R19 | evolution 进程中断留下部分变更 | 整批应用持久标记 + 整理前快照恢复 | 第二条变更前 `os._exit` 测试 | 已解决 |
 | R20 | CAS 检查与写锁之间仍有竞态 | 期望版本比较下沉到协调写入器锁内 | 检查后并发更新测试 | 已解决 |
 | R21 | memory_update 覆盖并发 confidence | 锁内读取、合并、校验和更新 | update/feedback 确定性交错测试 | 已解决 |
-| R22 | feedback 与 review_resolve 锁序相反 | 统一按 memory_write → review_queue 获取 | 双线程完成时限测试 | 已解决 |
-| R23 | 真实 BGE 批量浮点差异误报损坏 | 校验持久向量自身哈希，不重新批量嵌入比较 | 真实 BGE 三项慢测试 | 已解决 |
+| R22 | feedback 与 review_resolve 锁序相反 | 统一按 memory_write → review_queue 获取 | 无 sleep 的事件交错 + 双线程/双进程完成时限测试 | 已解决 |
+| R23 | 真实 BGE 批量浮点差异误报损坏 | 同时校验持久字节哈希与 fresh embedding 数值余弦容差，不做浮点逐字节等值 | 真实 BGE 四项慢测试（批舍入/语义漂移/维度） | 已解决 |
 | R24 | 深检查信任 hash 而漏实际 meta 漂移 | 逐字段比较实际 meta 与 Markdown | scope 隔离篡改测试 | 已解决 |
-| R25 | 有既存 raw 证据的宿主候选也被降级 | 校验证据文件与行范围后进入正常对账 | 有效/越界 evidence 测试 | 已解决 |
+| R25 | 有既存 raw 证据的宿主候选也被降级 | 校验归档、对话轮次范围、user/assistant 到 raw 行映射，并要求范围含 user 证据 | 有效/越界/tool 夹层/assistant-only 测试 | 已解决 |
+| R26 | Windows 首次并发创建锁文件可在 flush 时权限失败 | 先锁定 byte 0，再在锁内初始化空文件 | 10 轮双进程首次建锁压力测试 | 已解决 |
 
 ## 4. 完成记录
 
 实现集中在协调写入器、跨进程文件锁、严格输入/LLM 边界、保守对账、工作记忆
 版本控制和接入层语义对齐。新增 `memory_consistency_check` 作为只读漂移探针。
 
-最终验证：常规套件 726 passed / 3 deselected；真实 BGE-M3 慢测试 3 passed；
+最终验证：常规套件 737 passed / 4 deselected；真实 BGE-M3 慢测试 4 passed；
 `uv run ruff check .` 干净。慢测试原先在同一 Windows 进程连续创建两份 Torch
 模型时稳定触发原生 access violation，改为模块级复用一份模型后整套通过。D6
 清单中的 `evals/`、阈值、`verify.py` 判定逻辑、历史日志和快照均未修改。

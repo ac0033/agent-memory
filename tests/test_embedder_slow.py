@@ -49,3 +49,19 @@ def test_bge_m3_consistency_does_not_depend_on_batch_rounding(
     writer.create(entry_factory(entry_id="fact-b", content="用户确认项目使用 uv。"))
     assert writer.check_consistency().consistent
     index.close()
+
+
+def test_bge_m3_consistency_detects_semantic_vector_drift_and_bad_dimension(
+    embedder, tmp_path, entry_factory
+):
+    index = IndexDB(tmp_path / "index.db")
+    writer = MemoryWriter(MarkdownStore(tmp_path), index, embedder)
+    entry = writer.create(
+        entry_factory(entry_id="vector-integrity", content="用户确认项目使用 uv。")
+    )
+    unrelated = embedder.embed_texts(["今天天气晴朗，适合去公园散步。"])[0]
+    index.upsert(entry, unrelated)
+    assert writer.check_consistency().mismatched == ("vector-integrity",)
+    with pytest.raises(ValueError, match="向量维度"):
+        index.upsert(entry, [0.0, 1.0])
+    index.close()

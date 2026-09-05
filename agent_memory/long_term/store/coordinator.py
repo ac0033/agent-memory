@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import uuid
@@ -83,18 +84,19 @@ class MemoryWriter:
         operation: str,
         *,
         before: list[MemoryEntry] | None = None,
-        created_ids: list[str] | None = None,
+        after: list[MemoryEntry] | None = None,
     ) -> dict:
         if self.journal_path.exists():
             raise CoordinatedWriteError(
                 f"存在未恢复的写入日志：{self.journal_path}，拒绝开始新写入"
             )
         record = {
-            "version": 1,
+            "version": 2,
             "transaction_id": uuid.uuid4().hex,
             "operation": operation,
+            "phase": "prepared",
             "before": [entry.model_dump(mode="json") for entry in before or []],
-            "created_ids": created_ids or [],
+            "after": [entry.model_dump(mode="json") for entry in after or []],
             "started_at": datetime.now().isoformat(timespec="seconds"),
         }
         atomic_write_text(
@@ -102,6 +104,19 @@ class MemoryWriter:
             json.dumps(record, ensure_ascii=False, sort_keys=True),
         )
         return record
+
+    def _mark_committed(self, record: dict, after: list[MemoryEntry]) -> None:
+        """Persist the transaction commit point before the journal is removed."""
+        committed = {
+            **record,
+            "phase": "committed",
+            "after": [entry.model_dump(mode="json") for entry in after],
+            "committed_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        atomic_write_text(
+            self.journal_path,
+            json.dumps(committed, ensure_ascii=False, sort_keys=True),
+        )
 
     def _clear_journal(self) -> None:
         self.journal_path.unlink(missing_ok=True)
@@ -164,13 +179,24 @@ class MemoryWriter:
                 return False
             try:
                 record = json.loads(self.journal_path.read_text(encoding="utf-8"))
+                version = record.get("version") if isinstance(record, dict) else None
                 if (
                     not isinstance(record, dict)
-                    or record.get("version") != 1
+                    or version not in {1, 2}
                     or not isinstance(record.get("transaction_id"), str)
                     or not isinstance(record.get("operation"), str)
                     or not isinstance(record.get("before"), list)
-                    or not isinstance(record.get("created_ids"), list)
+                    or (
+                        version == 1
+                        and not isinstance(record.get("created_ids"), list)
+                    )
+                    or (
+                        version == 2
+                        and (
+                            record.get("phase") not in {"prepared", "committed"}
+                            or not isinstance(record.get("after"), list)
+                        )
+                    )
                 ):
                     raise ValueError("journal schema invalid")
             except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -179,15 +205,74 @@ class MemoryWriter:
                 ) from exc
             try:
                 before = [MemoryEntry.model_validate(item) for item in record["before"]]
-                created_ids = [validate_entry_id(item) for item in record["created_ids"]]
+                if record["version"] == 1:
+                    after_ids = [
+                        validate_entry_id(item) for item in record["created_ids"]
+                    ]
+                    after: list[MemoryEntry] = []
+                    phase = "prepared"
+                else:
+                    after = [
+                        MemoryEntry.model_validate(item) for item in record["after"]
+                    ]
+                    after_ids = [entry.id for entry in after]
+                    phase = record["phase"]
+                operation = record["operation"]
+                if operation not in {"create", "update", "delete", "replace"}:
+                    raise ValueError(f"unknown operation {operation!r}")
+                if record["version"] == 2:
+                    shape = (len(before), len(after))
+                    valid_shape = {
+                        "create": (0, 1),
+                        "update": (1, 1),
+                        "delete": (1, 0),
+                        "replace": (1, 1),
+                    }[operation]
+                    if shape != valid_shape:
+                        raise ValueError(
+                            f"{operation} journal intent has shape {shape}, "
+                            f"expected {valid_shape}"
+                        )
+                    if operation == "update" and before[0].id != after[0].id:
+                        raise ValueError("update journal changes id")
+                    if operation == "replace" and before[0].id == after[0].id:
+                        raise ValueError("replace journal keeps the same id")
             except (TypeError, ValueError) as exc:
                 raise CoordinatedWriteError(
                     f"写入恢复日志内容非法，拒绝自动恢复：{self.journal_path}: {exc}"
                 ) from exc
-            for entry_id in created_ids:
-                self._delete_store_if_present(entry_id)
-            for entry in before:
-                self.store.restore(entry)
+            if phase == "prepared":
+                # No durable commit point: restore the exact pre-transaction image.
+                for entry_id in after_ids:
+                    if entry_id not in {entry.id for entry in before}:
+                        self._delete_store_if_present(entry_id)
+                for entry in before:
+                    self.store.restore(entry)
+            else:
+                # Commit marker is durable: fail closed if the Markdown fact layer
+                # does not contain exactly the committed transaction result.
+                before_ids = {entry.id for entry in before}
+                after_by_id = {entry.id: entry for entry in after}
+                for removed_id in before_ids - set(after_by_id):
+                    try:
+                        self.store.get(removed_id)
+                    except KeyError:
+                        pass
+                    else:
+                        raise CoordinatedWriteError(
+                            f"已提交事务的旧条目 {removed_id!r} 仍存在，拒绝猜测恢复"
+                        )
+                for entry_id, expected in after_by_id.items():
+                    try:
+                        current = self.store.get(entry_id)
+                    except KeyError as exc:
+                        raise CoordinatedWriteError(
+                            f"已提交事务缺少结果条目 {entry_id!r}，拒绝猜测恢复"
+                        ) from exc
+                    if current != expected:
+                        raise CoordinatedWriteError(
+                            f"已提交事务结果条目 {entry_id!r} 与日志不符，拒绝猜测恢复"
+                        )
             rebuilt = self.index.rebuild_from_markdown(self.store.memory_dir, self.embedder)
             report = self.check_consistency()
             if not report.consistent:
@@ -207,10 +292,17 @@ class MemoryWriter:
         index_ids = set(self.index.list_ids())
         shared = sorted(memory_ids & index_ids)
         records = self.index.integrity_records()
+        fresh_vectors = (
+            self.embedder.embed_texts([entries[entry_id].index_text for entry_id in shared])
+            if shared
+            else []
+        )
         mismatched: list[str] = []
-        for entry_id in shared:
+        for entry_id, fresh_vector in zip(shared, fresh_vectors, strict=True):
             entry = entries[entry_id]
             record = records.get(entry_id, {})
+            stored_vector = record.get("vector", ())
+            vector_matches = self._vectors_equivalent(stored_vector, fresh_vector)
             if (
                 record.get("scope") != entry.scope
                 or record.get("memory_type") != entry.memory_type
@@ -221,6 +313,9 @@ class MemoryWriter:
                 or record.get("fts_hash")
                 != hashlib.sha256(entry.index_text.encode("utf-8")).hexdigest()
                 or record.get("stored_vector_hash") != record.get("vector_hash")
+                or record.get("fts_count") != 1
+                or record.get("vector_count") != 1
+                or not vector_matches
             ):
                 mismatched.append(entry_id)
         return ConsistencyReport(
@@ -228,6 +323,23 @@ class MemoryWriter:
             tuple(sorted(index_ids - memory_ids)),
             tuple(mismatched),
         )
+
+    @staticmethod
+    def _vectors_equivalent(stored, fresh) -> bool:
+        """Compare embeddings numerically, tolerating legitimate batch rounding."""
+        if len(stored) != len(fresh) or len(stored) != 1024:
+            return False
+        if not all(math.isfinite(value) for value in (*stored, *fresh)):
+            return False
+        dot = sum(left * right for left, right in zip(stored, fresh, strict=True))
+        stored_norm = math.sqrt(sum(value * value for value in stored))
+        fresh_norm = math.sqrt(sum(value * value for value in fresh))
+        if stored_norm == 0 or fresh_norm == 0:
+            return stored_norm == fresh_norm and all(
+                abs(left - right) <= 1e-7
+                for left, right in zip(stored, fresh, strict=True)
+            )
+        return dot / (stored_norm * fresh_norm) >= 0.99999
 
     def create(self, entry: MemoryEntry) -> MemoryEntry:
         entry = self._validated(entry)
@@ -239,10 +351,11 @@ class MemoryWriter:
                 pass
             else:
                 raise ValueError(f"id {entry.id!r} 已存在，拒绝覆盖")
-            self._begin("create", created_ids=[entry.id])
+            journal = self._begin("create", after=[entry])
             try:
                 self.store.create(entry)
                 self.index.upsert(entry, vector)
+                self._mark_committed(journal, [entry])
             except Exception as original:
                 try:
                     self._compensate([
@@ -287,10 +400,11 @@ class MemoryWriter:
             )
             old_vector = self._vector(old)
             new_vector = self._vector(entry)
-            self._begin("update", before=[old])
+            journal = self._begin("update", before=[old], after=[entry])
             try:
                 updated = self.store.update(entry)
                 self.index.upsert(updated, new_vector)
+                self._mark_committed(journal, [updated])
             except Exception as original:
                 try:
                     self._compensate([
@@ -324,10 +438,11 @@ class MemoryWriter:
             old = self.store.get(entry_id)
             self._assert_expected(old, expected)
             old_vector = self._vector(old)
-            self._begin("delete", before=[old])
+            journal = self._begin("delete", before=[old])
             try:
                 self.store.delete(entry_id)
                 self.index.delete(entry_id)
+                self._mark_committed(journal, [])
             except Exception as original:
                 try:
                     self._compensate([
@@ -368,12 +483,13 @@ class MemoryWriter:
                 raise ValueError(f"替代条目的 id {new_entry.id!r} 已存在，拒绝删除旧条目")
             old_vector = self._vector(old)
             new_vector = self._vector(new_entry)
-            self._begin("replace", before=[old], created_ids=[new_entry.id])
+            journal = self._begin("replace", before=[old], after=[new_entry])
             try:
                 self.store.create(new_entry)
                 self.index.upsert(new_entry, new_vector)
                 self.store.delete(old_id)
                 self.index.delete(old_id)
+                self._mark_committed(journal, [new_entry])
             except Exception as original:
                 try:
                     # 恢复旧事实，移除可能落下一半的新事实。

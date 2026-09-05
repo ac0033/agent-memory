@@ -36,16 +36,12 @@ def interprocess_lock(path: Path) -> Iterator[None]:
         acquired = False
         try:
             if depth == 0:
-                try:
-                    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                except FileExistsError:
-                    pass
-                else:
-                    with os.fdopen(fd, "wb") as created:
-                        created.write(b"0")
-                        created.flush()
-                        os.fsync(created.fileno())
-                handle = path.open("r+b")
+                # Open/create first, then lock byte 0. Writing an initial byte before
+                # locking has a Windows race: another process can lock the newly
+                # visible file while its creator is still flushing that byte.
+                # msvcrt supports locking a region beyond EOF, so initialization can
+                # safely happen after the region is exclusively held.
+                handle = path.open("a+b")
                 handle.seek(0)
                 if os.name == "nt":
                     import msvcrt
@@ -56,6 +52,10 @@ def interprocess_lock(path: Path) -> Iterator[None]:
 
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
                 acquired = True
+                if os.fstat(handle.fileno()).st_size == 0:
+                    handle.write(b"0")
+                    handle.flush()
+                    os.fsync(handle.fileno())
             yield
         finally:
             depths[key] -= 1

@@ -452,11 +452,13 @@ class MemoryService:
         )
         archive_file = self.settings.data_dir / "raw" / source / f"{session_id}.jsonl"
         archived_turns: int | None = None
-        valid_evidence_lines: set[int] | None = None
+        evidence_line_map: list[int] | None = None
+        evidence_role_map: list[str] | None = None
         with interprocess_lock(self.settings.data_dir / "state" / "raw_archive.lock"):
             if archive_file.exists():
                 lines = archive_file.read_text(encoding="utf-8").splitlines()
-                valid_evidence_lines = set()
+                evidence_line_map = []
+                evidence_role_map = []
                 for line_number, line in enumerate(lines, start=1):
                     try:
                         record = json.loads(line)
@@ -470,13 +472,15 @@ class MemoryService:
                         and isinstance(record.get("content"), str)
                         and record["content"].strip()
                     ):
-                        valid_evidence_lines.add(line_number)
-                archived_turns = len(lines)
+                        evidence_line_map.append(line_number)
+                        evidence_role_map.append(record["role"])
+                archived_turns = len(evidence_line_map)
         distill_result = build_entries_from_distilled(
             parsed, scope, source, session_id, n_turns=archived_turns,
             data_dir=self.settings.data_dir,
             strict_evidence=archived_turns is not None,
-            valid_evidence_lines=valid_evidence_lines,
+            evidence_line_map=evidence_line_map,
+            evidence_role_map=evidence_role_map,
         )
         gate_result = gate_candidates(distill_result.entries, self.settings.data_dir)
         unverified = [entry for entry in gate_result.passed if not entry.evidence]
