@@ -108,13 +108,14 @@ Ruff clean。新增修复不得删测试、降低门槛或依赖付费外部服�
 | R27 | 未决 evolution 日志出现于既有 writer 构造之后 | 每个新写事务在同一写锁内统一恢复 write/evolution 日志，恢复失败 fail-closed | apply 回滚重建失败→旧 writer 拒写→恢复后放行 | 已解决 |
 | R28 | 向量同步改 hash 后的极端缩放破坏 sqlite-vec 检索却漏报 | 数值方向之外校验范数尺度；索引入口拒绝 NaN/Inf/零范数 | 巨大/微小/零缩放、NaN/±Inf、正文错配测试 | 已解决 |
 | R29 | ADD 的 ID 占用异常逃逸并中止整批 | 协调器统一抛 MemoryStoreError，对账逐候选转复核并继续原顺序批次 | 无近邻 ADD 与 LLM ADD 两分支冲突测试 | 已解决 |
+| R30 | 服务层先读进化中间态、writer 随后恢复并按旧分支写入 | 暴露 memory_write 锁内“先恢复再读”的 write_guard，MCP、LangGraph 与 CLI 读后写入口统一使用 | high→中间态 low→恢复失败→feedback 拒绝→恢复后降 medium | 已解决 |
 
 ## 4. 完成记录
 
 实现集中在协调写入器、跨进程文件锁、严格输入/LLM 边界、保守对账、工作记忆
 版本控制和接入层语义对齐。新增 `memory_consistency_check` 作为只读漂移探针。
 
-最终验证：常规套件 747 passed / 4 deselected；真实 BGE-M3 慢测试 4 passed；
+最终验证：常规套件 748 passed / 4 deselected；真实 BGE-M3 慢测试 4 passed；
 `uv run ruff check .` 干净。慢测试原先在同一 Windows 进程连续创建两份 Torch
 模型时稳定触发原生 access violation，改为模块级复用一份模型后整套通过。D6
 清单中的 `evals/`、阈值、`verify.py` 判定逻辑、历史日志和快照均未修改。

@@ -734,18 +734,16 @@ def test_memory_update_holds_write_lock_while_merging_current_entry(
     feedback_attempted_lock = threading.Event()
     original_get = service.store.get
 
-    from agent_memory.server import mcp_server as mcp_server_module
-
-    real_interprocess_lock = mcp_server_module.interprocess_lock
+    real_write_guard = service.writer.write_guard
 
     @contextmanager
-    def observed_lock(path):
+    def observed_guard():
         if threading.current_thread().name == "feedback-update":
             feedback_attempted_lock.set()
-        with real_interprocess_lock(path):
+        with real_write_guard():
             yield
 
-    monkeypatch.setattr(mcp_server_module, "interprocess_lock", observed_lock)
+    monkeypatch.setattr(service.writer, "write_guard", observed_guard)
 
     def delayed_get(entry_id):
         entry = original_get(entry_id)

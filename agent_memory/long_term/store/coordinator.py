@@ -14,6 +14,8 @@ import math
 import os
 import shutil
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -321,6 +323,13 @@ class MemoryWriter:
                     "存在未恢复事务且自动恢复失败，拒绝接受新写入："
                     f"{type(exc).__name__}: {exc}"
                 ) from exc
+
+    @contextmanager
+    def write_guard(self) -> Iterator[None]:
+        """Hold the global write lock and recover before any read-decide-write flow."""
+        with interprocess_lock(self.lock_path):
+            self._recover_before_new_write()
+            yield
 
     def check_consistency(self) -> ConsistencyReport:
         entries = {entry.id: entry for entry in self.store.list()}

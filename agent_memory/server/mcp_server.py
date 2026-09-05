@@ -670,7 +670,7 @@ class MemoryService:
         """反馈调整 confidence：helpful 升一档，不 helpful 降一档；
         已是 low 再降就移出正式库、写入复核队列。"""
         validate_entry_id(memory_id)
-        with interprocess_lock(self.writer.lock_path):
+        with self.writer.write_guard():
             entry = self.store.get(memory_id)  # 锁内读取，避免覆盖并发正文更新
             rung = _CONFIDENCE_LADDER.index(entry.confidence)
             if helpful:
@@ -729,7 +729,7 @@ class MemoryService:
     def update(self, memory_id: str, new_content: str) -> dict[str, Any]:
         """更新记忆正文：先脱敏，再过评价门（指令性/残留/长度规则同样适用）。"""
         validate_entry_id(memory_id)
-        with interprocess_lock(self.writer.lock_path):
+        with self.writer.write_guard():
             entry = self.store.get(memory_id)
             redacted, _hits = redact(new_content)
             candidate = MemoryEntry.model_validate(
@@ -771,7 +771,7 @@ class MemoryService:
             raise ValueError(f"非法 action {action!r}，只支持 approve / modify / discard")
         # 全局锁序固定为 memory_write → review_queue；feedback 在低置信度分支
         # 也按此顺序获取，避免两个路径互相等待。
-        with interprocess_lock(self.writer.lock_path), review_queue_lock(
+        with self.writer.write_guard(), review_queue_lock(
             self.settings.data_dir
         ):
             if action == "discard":

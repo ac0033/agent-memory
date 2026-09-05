@@ -148,10 +148,11 @@ class AgentMemoryStore(BaseStore):
         scope = namespace_to_scope(op.namespace)
         if op.value is None:
             # LangGraph 约定：value=None 即 delete
-            existing = self.store.get(op.key)
-            if existing.scope != scope:
-                raise KeyError(f"namespace {op.namespace!r} 下不存在 key {op.key!r}")
-            self.writer.delete(op.key)
+            with self.writer.write_guard():
+                existing = self.store.get(op.key)
+                if existing.scope != scope:
+                    raise KeyError(f"namespace {op.namespace!r} 下不存在 key {op.key!r}")
+                self.writer.delete(op.key)
             return None
 
         content = str(op.value.get("content", ""))
@@ -180,30 +181,33 @@ class AgentMemoryStore(BaseStore):
             # confidence=low：已写入 review_queue，不进正式库（put 视同落到了复核队列）
             return None
 
-        try:
-            existing = self.store.get(op.key)
-        except MemoryNotFoundError:
-            existing = None
-        if existing is None:
-            self.writer.create(entry)
-        else:
-            # upsert 语义：已有条目走 update（version 自动 +1、刷新 last_verified）；
-            # 新 value 未给的字段继承旧条目，避免 put 把元数据抹掉
-            if existing.scope != scope:
-                raise ValueError(
-                    f"key {op.key!r} 已存在于 scope={existing.scope!r}，"
-                    "不能跨 scope/namespace 覆盖"
+        with self.writer.write_guard():
+            try:
+                existing = self.store.get(op.key)
+            except MemoryNotFoundError:
+                existing = None
+            if existing is None:
+                self.writer.create(entry)
+            else:
+                # upsert 语义：已有条目走 update（version 自动 +1、刷新 last_verified）；
+                # 新 value 未给的字段继承旧条目，避免 put 把元数据抹掉
+                if existing.scope != scope:
+                    raise ValueError(
+                        f"key {op.key!r} 已存在于 scope={existing.scope!r}，"
+                        "不能跨 scope/namespace 覆盖"
+                    )
+                entry = self.writer.update(
+                    MemoryEntry.model_validate(
+                        entry.model_dump(mode="python")
+                        | {
+                            "created_at": existing.created_at,
+                            "evidence": existing.evidence,
+                            "detail": (
+                                entry.detail if "detail" in op.value else existing.detail
+                            ),
+                        }
+                    )
                 )
-            entry = self.writer.update(
-                MemoryEntry.model_validate(
-                    entry.model_dump(mode="python")
-                    | {
-                        "created_at": existing.created_at,
-                        "evidence": existing.evidence,
-                        "detail": entry.detail if "detail" in op.value else existing.detail,
-                    }
-                )
-            )
         return None
 
     def _handle_search(self, op: SearchOp) -> list[SearchItem]:

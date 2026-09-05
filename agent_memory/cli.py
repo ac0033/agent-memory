@@ -41,7 +41,10 @@ def _components() -> Iterator[tuple[Settings, MarkdownStore, IndexDB]]:
     store = MarkdownStore(settings.data_dir)
     index = IndexDB(settings.data_dir / "index.db")
     try:
-        if (settings.data_dir / "state" / "memory_write_journal.json").exists():
+        if any(
+            (settings.data_dir / "state" / name).exists()
+            for name in ("memory_write_journal.json", "evolution_apply_journal.json")
+        ):
             MemoryWriter(store, index, _get_embedder())
         yield settings, store, index
     finally:
@@ -249,32 +252,36 @@ def update(
 ):
     """更新一条记忆（version 自动 +1，last_verified 置为今天）。"""
     with _components() as (_, store, index):
-        try:
-            entry = store.get(entry_id)
-        except KeyError:
-            raise _fail(f"找不到记忆 {entry_id!r}") from None
-        changes = {}
-        if content is not None:
-            redacted, hits = redact(content)
-            if hits:
-                typer.secho(
-                    f"警告：内容命中敏感信息 {hits}，已脱敏", fg=typer.colors.YELLOW, err=True
+        writer = MemoryWriter(store, index, _get_embedder())
+        with writer.write_guard():
+            try:
+                entry = store.get(entry_id)
+            except KeyError:
+                raise _fail(f"找不到记忆 {entry_id!r}") from None
+            changes = {}
+            if content is not None:
+                redacted, hits = redact(content)
+                if hits:
+                    typer.secho(
+                        f"警告：内容命中敏感信息 {hits}，已脱敏",
+                        fg=typer.colors.YELLOW,
+                        err=True,
+                    )
+                changes["content"] = redacted
+            if confidence is not None:
+                changes["confidence"] = confidence
+            if not changes:
+                raise _fail("没有要更新的字段（--content / --confidence）")
+            try:
+                candidate = MemoryEntry.model_validate(
+                    entry.model_dump(mode="python") | changes
                 )
-            changes["content"] = redacted
-        if confidence is not None:
-            changes["confidence"] = confidence
-        if not changes:
-            raise _fail("没有要更新的字段（--content / --confidence）")
-        try:
-            candidate = MemoryEntry.model_validate(
-                entry.model_dump(mode="python") | changes
-            )
-            gate_result = gate_candidates([candidate])
-            if gate_result.rejected:
-                raise ValueError(f"评价门拒绝 update：{gate_result.rejected[0][1]}")
-            updated = MemoryWriter(store, index, _get_embedder()).update(candidate)
-        except (ValueError, RuntimeError, MemoryStoreError) as e:
-            raise _fail(f"更新失败：{e}") from e
+                gate_result = gate_candidates([candidate])
+                if gate_result.rejected:
+                    raise ValueError(f"评价门拒绝 update：{gate_result.rejected[0][1]}")
+                updated = writer.update(candidate)
+            except (ValueError, RuntimeError, MemoryStoreError) as e:
+                raise _fail(f"更新失败：{e}") from e
     typer.echo(f"已更新：{updated.id}（version={updated.version}）")
 
 

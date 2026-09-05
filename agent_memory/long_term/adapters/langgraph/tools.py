@@ -126,15 +126,16 @@ class MemoryToolkit:
         if gate_result.queued:
             return f"queued: confidence=low 不进正式库，已写入复核队列（id={entry.id}）"
 
-        neighbors = self._find_neighbors(entry)
-        if neighbors:
-            files = write_review_queue(
-                [entry], self.settings.data_dir,
-                reason="未配置 LLM，存在语义近邻，无法可靠区分重复与事实变更",
-            )
-            return f"queued: 存在语义近邻，已交人工复核（file={files[0].name}）"
+        with self.writer.write_guard():
+            neighbors = self._find_neighbors(entry)
+            if neighbors:
+                files = write_review_queue(
+                    [entry], self.settings.data_dir,
+                    reason="未配置 LLM，存在语义近邻，无法可靠区分重复与事实变更",
+                )
+                return f"queued: 存在语义近邻，已交人工复核（file={files[0].name}）"
 
-        self.writer.create(entry)
+            self.writer.create(entry)
         return f"add: 已入库（id={entry.id}, scope={scope}, type={memory_type}）"
 
     def _find_neighbors(self, entry: MemoryEntry) -> list[MemoryEntry]:

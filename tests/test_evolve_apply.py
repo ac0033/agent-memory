@@ -20,6 +20,7 @@ from agent_memory.models import (
     EvolutionProposal,
     FalsifiableContract,
 )
+from agent_memory.server.mcp_server import MemoryService
 
 NOW = datetime(2026, 8, 20, 12, 0, 0)
 
@@ -360,6 +361,72 @@ class TestApply:
         }
         assert not writer.evolution_journal_path.exists()
         assert writer.check_consistency().consistent
+        index.close()
+
+    def test_feedback_recovers_before_reading_and_choosing_branch(
+        self, tmp_path, entry_factory, fake_embedder, monkeypatch
+    ):
+        from agent_memory.long_term.evolve import apply as apply_module
+
+        store = MarkdownStore(tmp_path)
+        index = IndexDB(tmp_path / "index.db")
+        settings = Settings(data_dir=tmp_path)
+        service = MemoryService(settings, store, index, fake_embedder)
+        service.writer.create(
+            entry_factory(
+                entry_id="feedback-recovery",
+                content="恢复前后都必须保留的正式事实。",
+                confidence="high",
+            )
+        )
+        proposal = _proposal([
+            EvolutionChange(
+                kind="downgrade",
+                target_ids=["feedback-recovery"],
+                new_confidence="low",
+                reason="制造进化中间态",
+                contract=_contract(),
+            ),
+            EvolutionChange(
+                kind="invalidate",
+                target_ids=["missing"],
+                reason="触发进化失败",
+                contract=_contract(),
+            ),
+        ])
+        original_rmtree = apply_module.shutil.rmtree
+
+        def fail_snapshot_restore(*_args, **_kwargs):
+            raise OSError("simulated snapshot restore failure")
+
+        monkeypatch.setattr(apply_module.shutil, "rmtree", fail_snapshot_restore)
+        with pytest.raises(OSError, match="simulated snapshot restore failure"):
+            apply_proposal(
+                proposal,
+                store,
+                index,
+                fake_embedder,
+                settings,
+                verify_report=_passing_verify(),
+                now=NOW,
+            )
+        assert store.get("feedback-recovery").confidence == "low"
+        assert service.writer.evolution_journal_path.exists()
+
+        # Recovery still fails: feedback must stop before using the low intermediate
+        # state to choose the destructive low -> review/delete branch.
+        with pytest.raises(CoordinatedWriteError, match="进化事务自动恢复失败"):
+            service.feedback("feedback-recovery", False)
+        assert store.get("feedback-recovery").confidence == "low"
+        assert service.review_list()["pending_review_count"] == 0
+
+        monkeypatch.setattr(apply_module.shutil, "rmtree", original_rmtree)
+        result = service.feedback("feedback-recovery", False)
+        assert result["action"] == "confidence_lowered"
+        assert result["confidence"] == "medium"
+        assert store.get("feedback-recovery").confidence == "medium"
+        assert not service.writer.evolution_journal_path.exists()
+        assert service.writer.check_consistency().consistent
         index.close()
 
 
