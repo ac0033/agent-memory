@@ -20,7 +20,7 @@ _EXPECTED_TOOLS = {
     "recall_memories", "save_memory", "save_conversation", "update_memory",
     "forget_memory", "memory_feedback", "review_list", "review_resolve",
     "wm_read", "wm_write", "wm_clear", "get_memory_context",
-    "read_transcript", "session_end",
+    "read_transcript", "session_end", "save_distilled", "memory_consistency_check",
 }
 
 
@@ -101,20 +101,20 @@ def test_recall_no_hit(tools_degraded):
     assert out == "（无相关记忆）"
 
 
-def test_save_duplicate_content_is_noop(tools_degraded):
+def test_save_duplicate_content_is_queued_without_llm(tools_degraded):
     tools, _ = tools_degraded
     kwargs = {"content": "本项目用 uv 管理 Python 环境。", "scope": "global"}
     assert tools["save_memory"].invoke(kwargs).startswith("add:")
-    # 同内容再写一次：向量距离 0，规则对账判 NOOP，不产生重复条目
-    assert tools["save_memory"].invoke(kwargs).startswith("noop:")
+    # 没有 LLM 时关系判断 fail-closed：即便文字相同也交人工裁决。
+    assert tools["save_memory"].invoke(kwargs).startswith("queued:")
 
 
-def test_save_semantic_duplicate_via_neighbor(tools_degraded):
+def test_save_semantic_neighbor_is_queued_without_llm(tools_degraded):
     tools, _ = tools_degraded
     tools["save_memory"].invoke({"content": "本项目用 uv 管理环境。", "scope": "global"})
-    # 措辞不同但都含关键词 uv：fake embedder 下向量相同，距离 ≤ 阈值，判 NOOP
+    # 措辞不同但有近邻：不能猜是重复还是事实变更。
     msg = tools["save_memory"].invoke({"content": "uv 是本项目的包管理器。", "scope": "global"})
-    assert msg.startswith("noop:")
+    assert msg.startswith("queued:")
 
 
 def test_save_instructional_rejected(tools_degraded):

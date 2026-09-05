@@ -18,7 +18,8 @@ from datetime import datetime
 from pathlib import Path
 
 from agent_memory.config import Settings
-from agent_memory.llm import LLMClient
+from agent_memory.io_utils import atomic_write_text
+from agent_memory.llm import LLMClient, ValidatingLLMClient
 from agent_memory.long_term.evolve.apply import ApplyReport, apply_proposal
 from agent_memory.long_term.evolve.consolidate import build_proposal, save_proposal
 from agent_memory.long_term.evolve.trigger import collect_store_stats, should_run
@@ -47,8 +48,9 @@ def load_last_run_at(data_dir: Path) -> datetime | None:
 def save_last_run_at(data_dir: Path, at: datetime) -> None:
     state_dir = Path(data_dir) / _STATE_DIR
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / _STATE_FILE).write_text(
-        json.dumps({"last_run_at": at.isoformat()}, ensure_ascii=False), encoding="utf-8"
+    atomic_write_text(
+        state_dir / _STATE_FILE,
+        json.dumps({"last_run_at": at.isoformat()}, ensure_ascii=False),
     )
 
 
@@ -79,6 +81,7 @@ def run_evolution_cycle(
 ) -> CycleReport:
     """跑一次睡眠学习循环。dry_run 只到提案为止。"""
     now = now or datetime.now()
+    llm = ValidatingLLMClient(llm)
     embedder = embedder or get_embedder(settings)
     store = MarkdownStore(settings.data_dir)
     index = IndexDB(settings.data_dir / "index.db")
@@ -101,8 +104,9 @@ def run_evolution_cycle(
         verify = verify_proposal(proposal, store, index, embedder, settings, llm)
         report.verify = verify
         # 验证结果与提案同目录留档（无论通过与否，人工可追溯）
-        (proposal_dir / "verdict.json").write_text(
-            json.dumps(verify.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+        atomic_write_text(
+            proposal_dir / "verdict.json",
+            json.dumps(verify.to_dict(), ensure_ascii=False, indent=2),
         )
         if not verify.passed:
             return report  # 提案留在 review_queue/evolution/<ts>/ 交人工，不改记忆层

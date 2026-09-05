@@ -14,7 +14,8 @@ from pathlib import Path
 
 import yaml
 
-from agent_memory.models import MemoryEntry
+from agent_memory.io_utils import atomic_write_text, interprocess_lock
+from agent_memory.models import MemoryEntry, validate_entry_id
 
 # scope -> 目录名的分隔符："repo:abc" -> "repo__abc"
 SCOPE_DIR_SEP = "__"
@@ -72,15 +73,22 @@ class MarkdownStore:
     def __init__(self, data_dir: Path):
         self.data_dir = Path(data_dir)
         self.memory_dir = self.data_dir / "memory"
+        self.lock_path = self.data_dir / "state" / "memory_write.lock"
 
     def _path_for(self, scope: str, entry_id: str) -> Path:
+        validate_entry_id(entry_id)
         return self.memory_dir / scope_to_dirname(scope) / f"{entry_id}.md"
 
     def _find_path(self, entry_id: str) -> Path:
         """按 id 全局定位文件；0 个抛 MemoryNotFoundError，多个说明数据已损坏。"""
+        validate_entry_id(entry_id)
         if not self.memory_dir.exists():
             raise MemoryNotFoundError(entry_id)
-        matches = sorted(self.memory_dir.glob(f"*/{entry_id}.md"))
+        matches = sorted(
+            d / f"{entry_id}.md"
+            for d in self.memory_dir.iterdir()
+            if d.is_dir() and (d / f"{entry_id}.md").is_file()
+        )
         if not matches:
             raise MemoryNotFoundError(entry_id)
         if len(matches) > 1:
@@ -89,11 +97,17 @@ class MarkdownStore:
 
     def create(self, entry: MemoryEntry) -> MemoryEntry:
         """写入新记忆。id 已存在（任意 scope 下）时报错，fail-closed。"""
-        if self.memory_dir.exists() and any(self.memory_dir.glob(f"*/{entry.id}.md")):
-            raise MemoryStoreError(f"id {entry.id!r} 已存在，拒绝覆盖（create 是 fail-closed 的）")
-        path = self._path_for(entry.scope, entry.id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(entry_to_markdown(entry), encoding="utf-8")
+        entry = MemoryEntry.model_validate(entry.model_dump(mode="python"))
+        with interprocess_lock(self.lock_path):
+            try:
+                self._find_path(entry.id)
+            except MemoryNotFoundError:
+                pass
+            else:
+                raise MemoryStoreError(
+                    f"id {entry.id!r} 已存在，拒绝覆盖（create 是 fail-closed 的）"
+                )
+            atomic_write_text(self._path_for(entry.scope, entry.id), entry_to_markdown(entry))
         return entry
 
     def get(self, entry_id: str) -> MemoryEntry:
@@ -102,28 +116,50 @@ class MarkdownStore:
 
     def update(self, entry: MemoryEntry) -> MemoryEntry:
         """更新已有条目：version 自动 +1，last_verified 置为今天。scope 不允许变更。"""
-        existing = self.get(entry.id)
-        if entry.scope != existing.scope:
-            raise MemoryStoreError(
-                f"不允许通过 update 变更 scope（{existing.scope!r} -> {entry.scope!r}），"
-                "请 forget 后重新 create"
+        entry = MemoryEntry.model_validate(entry.model_dump(mode="python"))
+        with interprocess_lock(self.lock_path):
+            existing = self.get(entry.id)
+            if entry.scope != existing.scope:
+                raise MemoryStoreError(
+                    f"不允许通过 update 变更 scope（{existing.scope!r} -> {entry.scope!r}），"
+                    "请 forget 后重新 create"
+                )
+            updated = MemoryEntry.model_validate(
+                entry.model_dump(mode="python")
+                | {"version": existing.version + 1, "last_verified": date.today()}
             )
-        updated = entry.model_copy(
-            update={"version": existing.version + 1, "last_verified": date.today()}
-        )
-        path = self._find_path(entry.id)
-        path.write_text(entry_to_markdown(updated), encoding="utf-8")
+            atomic_write_text(self._find_path(entry.id), entry_to_markdown(updated))
         return updated
 
+    def restore(self, entry: MemoryEntry) -> MemoryEntry:
+        """补偿事务专用：原样恢复完整条目，不递增版本。"""
+        entry = MemoryEntry.model_validate(entry.model_dump(mode="python"))
+        with interprocess_lock(self.lock_path):
+            path = self._path_for(entry.scope, entry.id)
+            if self.memory_dir.exists():
+                for d in self.memory_dir.iterdir():
+                    candidate = d / f"{entry.id}.md"
+                    if d.is_dir() and candidate.is_file() and candidate != path:
+                        candidate.unlink()
+            atomic_write_text(path, entry_to_markdown(entry))
+        return entry
+
     def delete(self, entry_id: str) -> None:
-        self._find_path(entry_id).unlink()
+        validate_entry_id(entry_id)
+        with interprocess_lock(self.lock_path):
+            self._find_path(entry_id).unlink()
 
     def increment_retrieval_count(self, entry_id: str) -> MemoryEntry:
         """检索命中计数 +1（M4a）。只改 retrieval_count，不动 version/last_verified。"""
-        path = self._find_path(entry_id)
-        entry = entry_from_markdown(path.read_text(encoding="utf-8"), path=path)
-        updated = entry.model_copy(update={"retrieval_count": entry.retrieval_count + 1})
-        path.write_text(entry_to_markdown(updated), encoding="utf-8")
+        validate_entry_id(entry_id)
+        with interprocess_lock(self.lock_path):
+            path = self._find_path(entry_id)
+            entry = entry_from_markdown(path.read_text(encoding="utf-8"), path=path)
+            updated = MemoryEntry.model_validate(
+                entry.model_dump(mode="python")
+                | {"retrieval_count": entry.retrieval_count + 1}
+            )
+            atomic_write_text(path, entry_to_markdown(updated))
         return updated
 
     def list(self, scope: str | None = None) -> list[MemoryEntry]:

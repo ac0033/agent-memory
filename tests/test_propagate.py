@@ -86,8 +86,9 @@ def test_invalidated_neighbor_deleted_with_audit(entry_factory, components):
         store.get("check-port-first")  # 已从记忆层删除
     # 审计日志留下完整快照（版本历史）
     log_lines = (tmp_path / "logs" / "propagation.jsonl").read_text(encoding="utf-8").splitlines()
-    assert len(log_lines) == 1
-    record = json.loads(log_lines[0])
+    assert len(log_lines) == 2
+    intent, record = map(json.loads, log_lines)
+    assert intent["event"] == "propagation_invalidation_intent"
     assert record["event"] == "propagated_invalidation"
     assert record["removed"]["id"] == "check-port-first"
     assert record["trigger_new"]["id"] == "port-new"
@@ -170,16 +171,39 @@ def test_llm_failure_goes_to_queue_not_deleted(entry_factory, components):
     assert len(report.queued_files) == 1
 
 
-def test_unparseable_verdict_defaults_to_unaffected(entry_factory):
-    """判定输出无法解析（如脚本化 oracle 的 ADD 响应）按 UNAFFECTED 处理。"""
+def test_audit_failure_prevents_invalidation_delete(
+    entry_factory, components, monkeypatch
+):
+    old, new = _old_new(entry_factory)
+    _, store, index, embedder, _ = components
+    neighbor = entry_factory(
+        entry_id="check-port-first",
+        content="排查启动失败时先看 dev server 端口 8765 是否被占用。",
+        memory_type="procedural",
+    )
+    _seed(store, index, embedder, neighbor)
+    llm = VerdictLLM({"check-port-first": {"verdict": "INVALIDATED", "reason": "失效"}})
+
+    def fail_audit(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("agent_memory.long_term.ingest.propagate._append_audit", fail_audit)
+    report = _propagate(components, llm, old, new)
+    assert report.invalidated == []
+    assert report.failed
+    assert store.get("check-port-first") is not None
+
+
+def test_unparseable_verdict_fails_closed(entry_factory):
+    """判定输出无法解析时不得静默视为不受影响。"""
     class GarbageLLM(VerdictLLM):
         def complete_json(self, system, user, schema_description):
             return {"action": "ADD", "target_id": None, "reason": "oracle 默认"}
 
     old, new = _old_new(entry_factory)
     neighbor = entry_factory(entry_id="some-entry", content="本项目 dev server 端口固定 8765。")
-    verdict = judge_propagation(GarbageLLM(), old, new, neighbor)
-    assert verdict["verdict"] == "UNAFFECTED"
+    with pytest.raises(Exception, match="verdict"):
+        judge_propagation(GarbageLLM(), old, new, neighbor)
 
 
 def test_change_parties_excluded(entry_factory, components):

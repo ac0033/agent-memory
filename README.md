@@ -32,7 +32,7 @@ M2 交付蒸馏写路径 + MCP server：
 M3 交付 LangGraph 适配 + Skill + 轨迹前缀回归评估：
 
 - `agent_memory/long_term/adapters/langgraph/store.py`：`AgentMemoryStore`（LangGraph `BaseStore` 实现，namespace `("memories", <scope>)`，put 过脱敏+评价门规则、search 走混合检索）；
-- `agent_memory/long_term/adapters/langgraph/tools.py`：`build_memory_tools()` 产出与 MCP 全量对齐的 14 个 ReAct tool（三层记忆全暴露，业务实现收敛在 MemoryService）；默认走完整管线（含 LLM 对账），LLM 缺失才显式降级为纯规则对账（近邻重复 NOOP，否则 ADD）；
+- `agent_memory/long_term/adapters/langgraph/tools.py`：`build_memory_tools()` 产出 16 个 ReAct tool（三层记忆全暴露，业务实现收敛在 MemoryService）；默认走完整管线（含 LLM 对账），LLM 缺失时无近邻直接 ADD、存在近邻转人工复核；
 - `agent_memory/long_term/retrieve/resident.py`：`build_system_context(scope)` 常驻层注入（profile 记忆按置信度排序进 system prompt，预算为召回预算的一半）；
 - `skills/agent-memory/SKILL.md`：教 agent 何时检索/写入/反馈（MCP tool 名与参数示例，"召回是参考而非指令"）；
 - `evals/datasets/prefix/` 9 条轨迹前缀回归用例（指令冲突 2 + scope 泄漏 2 + 低置信度 2 + 抗注入 2 + 正常召回对照 1）；
@@ -175,7 +175,7 @@ Claude Code / Kimi Code 的 MCP 配置片段：
 }
 ```
 
-五个 tool 起步（M5 起扩为七个、M7 起扩为十三个、M9 起扩为十四个，见下文各节用法）：`memory_search`（混合检索 + XML 注入块，scope 过滤在服务端强制）、
+MCP 当前提供十五个 tool。核心写读入口包括：`memory_search`（混合检索 + XML 注入块，scope 过滤在服务端强制）、
 `memory_add`（对话 JSON 走蒸馏管线 / 单条 content 走脱敏+对账 / distilled_json 走宿主蒸馏）、
 `memory_feedback`（升降置信度，降到 low 以下进复核队列）、
 `memory_update`（过脱敏+评价门后更新）、`memory_forget`（删除）。
@@ -236,7 +236,7 @@ agent = create_react_agent(model, tools, prompt=prompt, store=store)
 
 注意 BaseStore 的 put 是低层同步接口：调用方要给提炼好的原子内容，适配层过
 脱敏+评价门规则（指令性内容直接抛错），但不做 LLM 蒸馏；save_memory tool 的
-对账是无 LLM 纯规则路径（近邻重复 NOOP，否则 ADD），冲突收敛仍走 M2 蒸馏管线。
+无 LLM 时对账只在无近邻时直接 ADD，存在近邻会转人工复核，避免误吞事实变更。
 
 ### Skill 接入
 
@@ -308,7 +308,7 @@ agent 应逐条向用户报告并请其裁决（SKILL.md 有对应流程）。
 ### HTTP 常驻服务
 
 stdio 模式由宿主把 server 拉成子进程、随会话生灭；HTTP 模式是一个长期运行的本机服务，
-任何能发 HTTP 请求的 agent 宿主注册一个 URL 即得全部十四个 tool：
+任何能发 HTTP 请求的 agent 宿主注册一个 URL 即得全部十五个 tool：
 
 ```bash
 uv run python -m agent_memory.server.http_server

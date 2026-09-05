@@ -61,6 +61,18 @@ def is_valid_scope(v: str) -> bool:
     return bool(_SCOPE_RE.fullmatch(v))
 
 
+def is_valid_entry_id(v: str) -> bool:
+    """entry id 是否为严格 kebab-case。"""
+    return bool(_KEBAB_RE.fullmatch(v))
+
+
+def validate_entry_id(v: str) -> str:
+    """校验外部传入的 entry id，防 glob/路径语义进入文件操作。"""
+    if not is_valid_entry_id(v):
+        raise ValueError(f"id 必须是 kebab-case（小写字母/数字/连字符），收到: {v!r}")
+    return v
+
+
 class EvidenceRef(BaseModel):
     """指向 raw 层证据的指针。"""
 
@@ -98,9 +110,7 @@ class MemoryEntry(BaseModel):
     @field_validator("id")
     @classmethod
     def id_must_be_kebab_case(cls, v: str) -> str:
-        if not _KEBAB_RE.fullmatch(v):
-            raise ValueError(f"id 必须是 kebab-case（小写字母/数字/连字符），收到: {v!r}")
-        return v
+        return validate_entry_id(v)
 
     @field_validator("scope")
     @classmethod

@@ -130,13 +130,10 @@ class IndexDB:
         所以分两步：先放大 k 取 KNN 候选，再用 SQL 在 memories_meta 上过滤 scope
         （传入当前 scope + global），保持候选顺序截断到 k。
         """
-        fetch_k = k if not scopes else max(k * 4, 50)
         with self._lock:
-            rows = self.conn.execute(
-                "SELECT memory_id, distance FROM memories_vec"
-                " WHERE embedding MATCH ? AND k = ? ORDER BY distance",
-                (sqlite_vec.serialize_float32(query_vector), fetch_k),
-            ).fetchall()
+            total = self.conn.execute("SELECT COUNT(*) FROM memories_meta").fetchone()[0]
+            if total == 0:
+                return []
             if scopes:
                 placeholders = ", ".join("?" for _ in scopes)
                 allowed = {
@@ -146,7 +143,23 @@ class IndexDB:
                         list(scopes),
                     )
                 }
-                rows = [r for r in rows if r[0] in allowed]
+                if not allowed:
+                    return []
+                fetch_k = min(total, max(k * 4, 50))
+            else:
+                allowed = None
+                fetch_k = min(total, k)
+            while True:
+                rows = self.conn.execute(
+                    "SELECT memory_id, distance FROM memories_vec"
+                    " WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+                    (sqlite_vec.serialize_float32(query_vector), fetch_k),
+                ).fetchall()
+                filtered = [r for r in rows if allowed is None or r[0] in allowed]
+                if len(filtered) >= k or fetch_k >= total:
+                    rows = filtered
+                    break
+                fetch_k = min(total, fetch_k * 2)
         return [(r[0], float(r[1])) for r in rows[:k]]
 
     def search_sparse(
@@ -198,6 +211,14 @@ class IndexDB:
     def count(self) -> int:
         with self._lock:
             return self.conn.execute("SELECT COUNT(*) FROM memories_meta").fetchone()[0]
+
+    def list_ids(self) -> list[str]:
+        """列出派生索引中的全部 id，供只读一致性检查。"""
+        with self._lock:
+            return [
+                r[0]
+                for r in self.conn.execute("SELECT id FROM memories_meta ORDER BY id").fetchall()
+            ]
 
     def get_meta(self, entry_id: str) -> dict | None:
         with self._lock:

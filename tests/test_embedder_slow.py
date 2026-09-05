@@ -11,15 +11,19 @@ from agent_memory.long_term.retrieve.embedder import Embedder
 pytestmark = pytest.mark.slow
 
 
-def test_bge_m3_embed_dim_and_batch():
-    embedder = Embedder()
+@pytest.fixture(scope="module")
+def embedder():
+    """Reuse one native model instance; repeated teardown/reload crashes Torch on Windows."""
+    return Embedder()
+
+
+def test_bge_m3_embed_dim_and_batch(embedder):
     vectors = embedder.embed_texts(["用户用 uv 管理环境", "这个项目 dev server 端口是 8765"])
     assert len(vectors) == 2
     assert all(len(v) == 1024 for v in vectors)
 
 
-def test_bge_m3_semantic_similarity():
-    embedder = Embedder()
+def test_bge_m3_semantic_similarity(embedder):
     q, pos, neg = embedder.embed_texts(
         ["用什么工具管理 Python 环境", "用户所有项目都用 uv 管理环境", "今天天气怎么样"]
     )

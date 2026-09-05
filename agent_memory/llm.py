@@ -34,6 +34,49 @@ class LLMError(RuntimeError):
     """LLM 调用或响应解析失败（fail-closed，直接抛出）。"""
 
 
+def validate_json_response(parsed: dict, schema_description: str) -> dict:
+    """对关键 schema 做严格类型校验，拒绝 JSON 中 truthy 字符串等歧义。"""
+    if '"pass": true/false' in schema_description and type(parsed.get("pass")) is not bool:
+        raise LLMError("LLM JSON 字段 pass 必须是 boolean")
+    if '"memories": [' in schema_description and not isinstance(parsed.get("memories"), list):
+        raise LLMError("LLM JSON 字段 memories 必须是 array")
+    if '"action":' in schema_description:
+        if not isinstance(parsed.get("action"), str):
+            raise LLMError("LLM JSON 字段 action 必须是 string")
+        if "add_new" in parsed and type(parsed["add_new"]) is not bool:
+            raise LLMError("LLM JSON 字段 add_new 必须是 boolean")
+        if parsed.get("target_id") is not None and not isinstance(parsed.get("target_id"), str):
+            raise LLMError("LLM JSON 字段 target_id 必须是 string 或 null")
+    if '"verdict":' in schema_description and not isinstance(parsed.get("verdict"), str):
+        raise LLMError("LLM JSON 字段 verdict 必须是 string")
+    return parsed
+
+
+class ValidatingLLMClient:
+    """给注入的测试/第三方 LLMClient 补上与生产客户端一致的严格 JSON 边界。"""
+
+    def __init__(self, inner: "LLMClient"):
+        self.inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        """Preserve useful attributes exposed by injected fakes (calls, last_user, etc.)."""
+        return getattr(self.inner, name)
+
+    def complete(self, system: str, user: str) -> str:
+        return self.inner.complete(system, user)
+
+    def complete_json(self, system: str, user: str, schema_description: str) -> dict:
+        try:
+            parsed = self.inner.complete_json(system, user, schema_description)
+        except LLMError:
+            raise
+        except Exception as e:
+            raise LLMError(f"LLM 调用失败：{type(e).__name__}: {e}") from e
+        if not isinstance(parsed, dict):
+            raise LLMError("LLM JSON 输出必须是 object")
+        return validate_json_response(parsed, schema_description)
+
+
 @runtime_checkable
 class LLMClient(Protocol):
     """LLM 客户端协议：生产实现与测试 fake 都满足它。"""
@@ -137,13 +180,16 @@ class OpenAILLMClient:
         cached = self._cache_read(key)
         if cached is not None:
             return cached
-        resp = self._client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        )
+        try:
+            resp = self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            )
+        except Exception as e:
+            raise LLMError(f"LLM 调用失败：{type(e).__name__}: {e}") from e
         content = resp.choices[0].message.content
         if not content:
             raise LLMError("LLM 返回了空内容")
@@ -175,10 +221,13 @@ class OpenAILLMClient:
                 parsed: Any = json.loads(content)
                 if not isinstance(parsed, dict):
                     raise LLMError(f"LLM 输出的 JSON 不是 object（第 {attempt} 次）: {content!r}")
+                parsed = validate_json_response(parsed, schema_description)
                 self._cache_write(key, "json", json_system, user, parsed)
                 return parsed
             except (json.JSONDecodeError, LLMError) as e:
                 last_error = e
+            except Exception as e:
+                last_error = LLMError(f"LLM 调用失败：{type(e).__name__}: {e}")
         raise LLMError(
             f"LLM JSON 输出解析失败，重试 {_JSON_MAX_ATTEMPTS} 次后放弃: {last_error}"
         ) from last_error

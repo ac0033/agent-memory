@@ -31,11 +31,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent_memory.config import Settings, get_settings
-from agent_memory.llm import LLMClient, LLMError
+from agent_memory.llm import LLMClient
 from agent_memory.long_term.ingest.gate import write_review_queue
 from agent_memory.long_term.ingest.propagate import PropagationReport, propagate_change
 from agent_memory.long_term.retrieve.embedder import get_embedder
 from agent_memory.long_term.retrieve.hybrid import HybridSearcher
+from agent_memory.long_term.store.coordinator import MemoryWriter
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore, MemoryStoreError
 from agent_memory.models import MemoryEntry
@@ -133,6 +134,7 @@ class _Reconciler:
         self.embedder = embedder
         self.settings: Settings = settings
         self.searcher = HybridSearcher(store, index, embedder, settings)
+        self.writer = MemoryWriter(store, index, embedder)
 
     def find_neighbors(self, candidate: MemoryEntry) -> list[MemoryEntry]:
         """混合检索 top5，再用稠密距离阈值筛出真正的语义近邻。"""
@@ -178,37 +180,30 @@ class _Reconciler:
     # ---- 四种处置 ----
 
     def apply_add(self, candidate: MemoryEntry) -> str:
-        self.store.create(candidate)
-        self.index.upsert(candidate, self.embedder.embed_texts([candidate.index_text])[0])
+        self.writer.create(candidate)
         return candidate.id
 
     def apply_update(self, candidate: MemoryEntry, old: MemoryEntry) -> tuple[str, str]:
         """新条目 version 继承旧条目 +1、supersedes 指旧 id；旧条目删除。"""
         if candidate.id == old.id:
             # id 相同走 store.update（自动 version+1、刷新 last_verified）
-            self.store.update(candidate.model_copy(update={"supersedes": None}))
-            self.index.upsert(candidate, self.embedder.embed_texts([candidate.index_text])[0])
+            self.writer.update(candidate.model_copy(update={"supersedes": None}))
             return candidate.id, old.id
         new_entry = candidate.model_copy(
             update={"version": old.version + 1, "supersedes": old.id}
         )
-        self.store.delete(old.id)
-        self.index.delete(old.id)
-        self.store.create(new_entry)
-        self.index.upsert(new_entry, self.embedder.embed_texts([new_entry.index_text])[0])
+        self.writer.replace(old.id, new_entry)
         return new_entry.id, old.id
 
     def apply_delete(self, candidate: MemoryEntry, old: MemoryEntry, add_new: bool) -> None:
-        self.store.delete(old.id)
-        self.index.delete(old.id)
         if add_new:
-            self.store.create(candidate)
-            self.index.upsert(candidate, self.embedder.embed_texts([candidate.index_text])[0])
+            self.writer.replace(old.id, candidate)
+        else:
+            self.writer.delete(old.id)
 
     def apply_noop(self, old: MemoryEntry) -> None:
         """重复信息：只刷新旧条目的 last_verified（store.update 会顺带 version+1）。"""
-        updated = self.store.update(old)
-        self.index.upsert(updated, self.embedder.embed_texts([updated.index_text])[0])
+        self.writer.update(old)
 
     def propagate(
         self, old: MemoryEntry, new: MemoryEntry | None, exclude_ids: set[str]
@@ -239,9 +234,8 @@ def reconcile(
     llm=None（M9 无 LLM 降级）：跳过 LLM 判决策——无近邻的候选直接 ADD
     （纯规则，不需要 LLM）；有近邻的候选进复核队列（ADD/UPDATE/DELETE/NOOP
     的关系判断必须靠 LLM，fail-safe 不猜）。该路径不发生 UPDATE/DELETE，
-    因此也不做变更传播。注意这与 langgraph 适配器的 _rule_based_save
-    （近邻重复 NOOP 否则 ADD）是两套独立的降级语义：这里更保守，凡有近邻
-    一律交人工。
+    因此也不做变更传播。LangGraph 适配器使用同一保守语义：凡有近邻一律
+    交人工。
     """
     settings = settings or get_settings()
     embedder = embedder or get_embedder(settings)
@@ -263,7 +257,7 @@ def reconcile(
             return candidate, neighbors, None, "未配置 LLM，无法判定与既有记忆的关系"
         try:
             return candidate, neighbors, r.decide(candidate, neighbors), None
-        except LLMError as e:
+        except Exception as e:
             # LLM 输出连续无法解析：不强行收敛，交人工复核（fail-safe）
             return candidate, neighbors, None, str(e)
 
@@ -302,25 +296,30 @@ def reconcile(
                     f"LLM 决策的 target_id {target_id!r} 不在近邻集合内，拒绝执行"
                 )
             else:
-                old = store.get(target_id)
-                if action == "UPDATE":
-                    new_id, _old_id = r.apply_update(candidate, old)
-                    report.updated.append((new_id, _old_id))
-                    report.propagation.append(
-                        r.propagate(old, new=store.get(new_id), exclude_ids={candidate.id})
-                    )
-                elif action == "DELETE":
-                    r.apply_delete(candidate, old, decision["add_new"])
-                    report.deleted.append(old.id)
-                    if decision["add_new"]:
-                        report.added.append(candidate.id)
-                    new_entry = store.get(candidate.id) if decision["add_new"] else None
-                    report.propagation.append(
-                        r.propagate(old, new=new_entry, exclude_ids={candidate.id})
-                    )
-                else:
-                    r.apply_noop(old)
-                    report.noops.append(candidate.id)
+                try:
+                    # 第一阶段看到的目标可能已被同批前一条替代；重新读取，失效则
+                    # 交人工，不让整批在部分成功后异常退出。
+                    old = store.get(target_id)
+                    if action == "UPDATE":
+                        new_id, _old_id = r.apply_update(candidate, old)
+                        report.updated.append((new_id, _old_id))
+                        report.propagation.append(
+                            r.propagate(old, new=store.get(new_id), exclude_ids={candidate.id})
+                        )
+                    elif action == "DELETE":
+                        r.apply_delete(candidate, old, decision["add_new"])
+                        report.deleted.append(old.id)
+                        if decision["add_new"]:
+                            report.added.append(candidate.id)
+                        new_entry = store.get(candidate.id) if decision["add_new"] else None
+                        report.propagation.append(
+                            r.propagate(old, new=new_entry, exclude_ids={candidate.id})
+                        )
+                    else:
+                        r.apply_noop(old)
+                        report.noops.append(candidate.id)
+                except Exception as e:
+                    queue_reason = f"对账落库失败，候选未自动应用：{type(e).__name__}: {e}"
 
         if queue_reason is not None:
             report.queued.append((candidate, queue_reason))

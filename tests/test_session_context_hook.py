@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -141,6 +142,32 @@ def test_server_unreachable_silent_pass(tmp_path):
     result = _run_hook(tmp_path, port=9)
     assert result.returncode == 0
     assert result.stdout == ""
+
+
+def test_failed_request_does_not_mark_session_injected(tmp_path):
+    assert _run_hook(tmp_path, session_id="retry", port=9).stdout == ""
+    server = FakeServer()
+    try:
+        retried = _run_hook(tmp_path, session_id="retry", port=server.port)
+        assert SERVED_TEXT in retried.stdout
+    finally:
+        server.close()
+
+
+def test_concurrent_same_session_is_recorded_once(tmp_path):
+    server = FakeServer()
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(
+                pool.map(
+                    lambda _i: _run_hook(tmp_path, session_id="shared", port=server.port),
+                    range(4),
+                )
+            )
+        assert sum(SERVED_TEXT in result.stdout for result in results) == 1
+        assert len(server.requests) == 1
+    finally:
+        server.close()
 
 
 def test_hook_disabled_by_env(tmp_path):

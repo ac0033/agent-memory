@@ -21,6 +21,7 @@ from agent_memory.long_term.ingest.reconcile import reconcile
 from agent_memory.long_term.ingest.redact import redact
 from agent_memory.long_term.retrieve.embedder import get_embedder
 from agent_memory.long_term.retrieve.hybrid import HybridSearcher
+from agent_memory.long_term.store.coordinator import MemoryWriter
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore, MemoryStoreError
 from agent_memory.models import MemoryEntry
@@ -79,7 +80,7 @@ def add(
             err=True,
         )
     today = date.today()
-    with _components() as (_, store, index):
+    with _components() as (settings, store, index):
         try:
             entry = MemoryEntry(
                 id=entry_id,
@@ -92,9 +93,14 @@ def add(
                 created_at=today,
                 last_verified=today,
             )
-            store.create(entry)
-            index.upsert(entry, _get_embedder().embed_texts([entry.index_text])[0])
-        except (ValueError, MemoryStoreError) as e:
+            gate_result = gate_candidates([entry], settings.data_dir)
+            if gate_result.rejected:
+                raise ValueError(f"评价门拒绝 add：{gate_result.rejected[0][1]}")
+            if gate_result.queued:
+                typer.secho("低置信度候选已进入人工复核队列，未写入正式库", err=True)
+                return
+            MemoryWriter(store, index, _get_embedder()).create(entry)
+        except (ValueError, RuntimeError, MemoryStoreError) as e:
             raise _fail(f"入库失败：{e}") from e
     typer.echo(f"已入库：{entry.id}（scope={entry.scope}, type={entry.memory_type}）")
 
@@ -258,9 +264,14 @@ def update(
         if not changes:
             raise _fail("没有要更新的字段（--content / --confidence）")
         try:
-            updated = store.update(entry.model_copy(update=changes))
-            index.upsert(updated, _get_embedder().embed_texts([updated.index_text])[0])
-        except (ValueError, MemoryStoreError) as e:
+            candidate = MemoryEntry.model_validate(
+                entry.model_dump(mode="python") | changes
+            )
+            gate_result = gate_candidates([candidate])
+            if gate_result.rejected:
+                raise ValueError(f"评价门拒绝 update：{gate_result.rejected[0][1]}")
+            updated = MemoryWriter(store, index, _get_embedder()).update(candidate)
+        except (ValueError, RuntimeError, MemoryStoreError) as e:
             raise _fail(f"更新失败：{e}") from e
     typer.echo(f"已更新：{updated.id}（version={updated.version}）")
 
@@ -270,8 +281,7 @@ def forget(entry_id: str):
     """删除一条记忆（Markdown 层与索引同步删除）。"""
     with _components() as (_, store, index):
         try:
-            store.delete(entry_id)
-            index.delete(entry_id)
+            MemoryWriter(store, index, _get_embedder()).delete(entry_id)
         except KeyError:
             raise _fail(f"找不到记忆 {entry_id!r}") from None
     typer.echo(f"已删除：{entry_id}")

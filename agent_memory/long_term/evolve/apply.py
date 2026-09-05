@@ -12,12 +12,15 @@ evolution_audit.jsonl 是可信根（红线 D6），禁止 agent 自修改。
 """
 
 import json
+import os
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from agent_memory.config import Settings
+from agent_memory.io_utils import interprocess_lock
+from agent_memory.long_term.store.coordinator import MemoryWriter
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.models import EvolutionChange, EvolutionProposal
@@ -57,6 +60,7 @@ def _apply_changes(
     report: ApplyReport,
 ) -> None:
     """逐条应用变更。conflict / revise 跳过（人工裁决项）。"""
+    writer = MemoryWriter(store, index, embedder)
     for change in changes:
         if change.kind in {"conflict", "revise"}:
             report.skipped.append((change.kind, change.target_ids, "人工裁决项，不自动应用"))
@@ -64,24 +68,22 @@ def _apply_changes(
         if change.kind == "merge":
             merged = change.merged_entry
             assert merged is not None  # schema 校验保证
+            # 先让合并结果完整落地，再协调删除来源；外层 apply_proposal 对整批
+            # 任何异常使用只读快照自动恢复。
+            writer.create(merged)
             for tid in change.target_ids:
-                store.delete(tid)
-                index.delete(tid)
-            store.create(merged)
-            index.upsert(merged, embedder.embed_texts([merged.index_text])[0])
+                writer.delete(tid)
             report.applied.append(("merge", change.target_ids))
         elif change.kind in {"invalidate", "archive"}:
             for tid in change.target_ids:
-                store.delete(tid)
-                index.delete(tid)
+                writer.delete(tid)
             report.applied.append((change.kind, change.target_ids))
         elif change.kind == "downgrade":
             for tid in change.target_ids:
                 entry = store.get(tid)
-                updated = store.update(
+                writer.update(
                     entry.model_copy(update={"confidence": change.new_confidence})
                 )
-                index.upsert(updated, embedder.embed_texts([updated.index_text])[0])
             report.applied.append(("downgrade", change.target_ids))
 
 
@@ -98,13 +100,23 @@ def apply_proposal(
 
     verify_report 传入且未通过时 fail-closed 拒绝应用（三档 veto 不可绕过）。
     """
-    if verify_report is not None and not verify_report.passed:
+    if verify_report is None:
+        raise ValueError(f"提案 {proposal.id} 缺少三档验证报告，拒绝晋升（fail-closed）")
+    if not isinstance(verify_report.passed, bool) or not verify_report.passed:
         raise ValueError(f"提案 {proposal.id} 未通过三档验证，拒绝晋升（fail-closed）")
     now = now or datetime.now()
     snapshot_id, snapshot_path = snapshot_memory(settings.data_dir, now)
 
     report = ApplyReport(snapshot_id=snapshot_id)
-    _apply_changes(proposal.changes, store, index, embedder, report)
+    try:
+        _apply_changes(proposal.changes, store, index, embedder, report)
+    except Exception:
+        # snapshot 是可信根，只读复制回正式层；不改写快照本身。
+        if store.memory_dir.exists():
+            shutil.rmtree(store.memory_dir)
+        shutil.copytree(snapshot_path, store.memory_dir)
+        index.rebuild_from_markdown(store.memory_dir, embedder)
+        raise
 
     logs_dir = Path(settings.data_dir) / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -124,8 +136,11 @@ def apply_proposal(
             for kind, ids, reason in report.skipped
         ],
     }
-    with audit_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    with interprocess_lock(Path(settings.data_dir) / "state" / "evolution_audit.lock"):
+        with audit_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
     report.audit_path = audit_path
     return report
 

@@ -25,6 +25,8 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from _hook_io import atomic_write_text, interprocess_lock
+
 # Windows 上 Python 的 stdout/stderr 被管道捕获时默认用系统区域编码（中文系统
 # 为 GBK），而 kimi-code 按 UTF-8 读取 hook 输出——不重配的话中文指令会变乱码
 for _stream in (sys.stdout, sys.stderr):
@@ -91,21 +93,18 @@ def main() -> int:
 
     counter_file = data_dir / "state" / "turn_counter.json"
     try:
-        counter_file.parent.mkdir(parents=True, exist_ok=True)
-        counters = _load_counters(counter_file)
-        session_id = str(payload.get("session_id") or "default")
-        count = int(counters.get(session_id, 0)) + 1
-        if count < interval:
-            counters[session_id] = count
-            counter_file.write_text(
-                json.dumps(counters, ensure_ascii=False), encoding="utf-8"
-            )
-            return 0
-        # 计满：清零并拦截本轮结束，注入蒸馏指令
-        counters[session_id] = 0
-        counter_file.write_text(
-            json.dumps(counters, ensure_ascii=False), encoding="utf-8"
-        )
+        with interprocess_lock(data_dir / "state" / "turn_hook.lock"):
+            counter_file.parent.mkdir(parents=True, exist_ok=True)
+            counters = _load_counters(counter_file)
+            session_id = str(payload.get("session_id") or "default")
+            count = int(counters.get(session_id, 0)) + 1
+            if count < interval:
+                counters[session_id] = count
+                atomic_write_text(counter_file, json.dumps(counters, ensure_ascii=False))
+                return 0
+            # 计满：清零并拦截本轮结束，注入蒸馏指令
+            counters[session_id] = 0
+            atomic_write_text(counter_file, json.dumps(counters, ensure_ascii=False))
     except OSError:
         return 0  # 状态文件读写失败：放行，不影响主流程
 

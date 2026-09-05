@@ -16,6 +16,7 @@ from pathlib import Path
 
 import yaml
 
+from agent_memory.io_utils import atomic_write_text, interprocess_lock
 from agent_memory.long_term.store.markdown_store import scope_to_dirname
 from agent_memory.working.models import WorkingMemory
 
@@ -28,6 +29,10 @@ class WorkingMemoryStoreError(ValueError):
 
 class WorkingMemoryNotFoundError(KeyError):
     """按 scope 找不到工作记忆时抛出。"""
+
+
+class WorkingMemoryConflictError(RuntimeError):
+    """基于旧版本的工作记忆写入被拒绝。"""
 
 
 def wm_to_markdown(wm: WorkingMemory) -> str:
@@ -90,6 +95,7 @@ class WorkingMemoryStore:
     def __init__(self, data_dir: Path):
         self.data_dir = Path(data_dir)
         self.working_dir = self.data_dir / "working"
+        self.lock_path = self.data_dir / "state" / "working_memory.lock"
 
     def _path_for(self, scope: str) -> Path:
         return self.working_dir / f"{scope_to_dirname(scope)}.md"
@@ -101,22 +107,32 @@ class WorkingMemoryStore:
             return None
         return wm_from_markdown(path.read_text(encoding="utf-8"), path=path)
 
-    def write(self, wm: WorkingMemory) -> WorkingMemory:
+    def write(
+        self, wm: WorkingMemory, *, expected_version: int | None = None
+    ) -> WorkingMemory:
         """全量写入。已存在则 version 在旧值上 +1、updated_at 置为当前时间；
         不存在则按传入内容创建（version 应为 1）。"""
-        path = self._path_for(wm.scope)
-        existing = self.read(wm.scope)
-        if existing is not None:
-            wm = wm.model_copy(
-                update={"version": existing.version + 1, "updated_at": datetime.now()}
-            )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(wm_to_markdown(wm), encoding="utf-8")
+        wm = WorkingMemory.model_validate(wm.model_dump(mode="python"))
+        with interprocess_lock(self.lock_path):
+            path = self._path_for(wm.scope)
+            existing = self.read(wm.scope)
+            actual = existing.version if existing is not None else 0
+            if expected_version is not None and actual != expected_version:
+                raise WorkingMemoryConflictError(
+                    f"工作记忆版本冲突：expected={expected_version}, actual={actual}"
+                )
+            if existing is not None:
+                wm = WorkingMemory.model_validate(
+                    wm.model_dump(mode="python")
+                    | {"version": existing.version + 1, "updated_at": datetime.now()}
+                )
+            atomic_write_text(path, wm_to_markdown(wm))
         return wm
 
     def delete(self, scope: str) -> None:
         """删除一个 scope 的工作记忆；不存在时抛 WorkingMemoryNotFoundError。"""
-        path = self._path_for(scope)
-        if not path.exists():
-            raise WorkingMemoryNotFoundError(scope)
-        path.unlink()
+        with interprocess_lock(self.lock_path):
+            path = self._path_for(scope)
+            if not path.exists():
+                raise WorkingMemoryNotFoundError(scope)
+            path.unlink()

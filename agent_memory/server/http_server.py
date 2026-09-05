@@ -2,7 +2,7 @@
 
 与 stdio 入口（server/mcp_server.py 的 main）的区别：stdio 由宿主把 server 拉成
 子进程、随会话生灭；本模块是一个长期运行的 HTTP 服务，任何能发 HTTP 请求的
-agent 宿主都能接入——注册一个 URL 即得全部十四个 tool。
+agent 宿主都能接入——注册一个 URL 即得全部十五个 tool。
 
 路由：
 - /mcp       —— MCP 协议端点（streamable-http，由 MCPServer 提供）；
@@ -45,11 +45,11 @@ def build_bootstrap_text(host: str, port: int) -> str:
 1. 把这个 MCP server 注册进你的宿主（配置名叫 agent-memory）：
    {base}/mcp
    注册方式因宿主而异（Kimi Code 改 mcp.json，Claude Code 改 mcpServers 配置，
-   其他宿主同理），传输类型是 streamable-http / HTTP。注册后你会获得十四个
+   其他宿主同理），传输类型是 streamable-http / HTTP。注册后你会获得十五个
    tool：memory_search / memory_add / memory_distill_prompt / memory_feedback /
    memory_update / memory_forget / memory_review_list / memory_review_resolve /
    memory_wm_read / memory_wm_write / memory_wm_clear / memory_context /
-   memory_transcript_read / memory_session_end。
+   memory_transcript_read / memory_session_end / memory_consistency_check。
 
 2. 读取使用规范并遵循它（特别是记忆作用域的选择规则与人工复核交互流程）：
    {base}/SKILL.md
@@ -66,12 +66,24 @@ memory_distill_prompt 拿协议 → 自行蒸馏 → memory_add(distilled_json=.
 
 
 def build_http_server(service: MemoryService, host: str, port: int):
-    """在十四个 tool 的 MCP server 上叠加 /SKILL.md、/bootstrap、/wm_blocks 静态路由。"""
+    """在十五个 tool 的 MCP server 上叠加 /SKILL.md、/bootstrap、/wm_blocks 静态路由。"""
 
     server = build_server(service)
 
+    def reject_untrusted_host(request: Request) -> PlainTextResponse | None:
+        raw_host = request.headers.get("host", "")
+        request_host = raw_host.rsplit(":", 1)[0].strip("[]").lower()
+        allowed = {host.lower()}
+        if host in {"127.0.0.1", "::1", "localhost"}:
+            allowed.update({"127.0.0.1", "::1", "localhost"})
+        if request_host not in allowed:
+            return PlainTextResponse("Invalid Host header", status_code=421)
+        return None
+
     @server.custom_route("/SKILL.md", methods=["GET"], include_in_schema=False)
     async def skill_md(_request: Request) -> PlainTextResponse:
+        if rejected := reject_untrusted_host(_request):
+            return rejected
         try:
             text = _SKILL_MD_PATH.read_text(encoding="utf-8")
         except OSError as e:
@@ -80,6 +92,8 @@ def build_http_server(service: MemoryService, host: str, port: int):
 
     @server.custom_route("/bootstrap", methods=["GET"], include_in_schema=False)
     async def bootstrap(_request: Request) -> PlainTextResponse:
+        if rejected := reject_untrusted_host(_request):
+            return rejected
         return PlainTextResponse(
             build_bootstrap_text(host, port), media_type="text/plain; charset=utf-8"
         )
@@ -91,6 +105,8 @@ def build_http_server(service: MemoryService, host: str, port: int):
         纯读路由，供宿主的会话开头 hook 用普通 HTTP GET 拉取（免 MCP 握手）。
         空的 scope 跳过；全部为空返回空字符串 200。scope 归一化后仍非法返回 400。
         """
+        if rejected := reject_untrusted_host(request):
+            return rejected
         raw = request.query_params.get("scopes", "")
         scopes = [s.strip() for s in raw.split(",") if s.strip()]
         if not scopes:

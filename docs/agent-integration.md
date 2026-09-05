@@ -34,17 +34,17 @@ from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
 
 - `AgentMemoryStore`：LangGraph `BaseStore` 实现，namespace 约定 `("memories", <scope>)`，
   适合替换图的记忆存储层；
-- `build_memory_tools()`：14 个 LangChain tool，**与 MCP 的 14 个 tool 能力基本对应**
-  （长期 / 工作 / 短期三层全暴露，区别只是调用形态；MCP 独有的 `memory_distill_prompt`
-  面向无 API key 的宿主蒸馏场景，LangGraph 应用自带 LLM 不需要）——`recall_memories`、
-  `save_memory`、`save_conversation`、`wm_read` / `wm_write` / `wm_clear`、
+- `build_memory_tools()`：16 个 LangChain tool，**与 MCP 的 15 个 tool 能力对应**
+  （长期 / 工作 / 短期三层全暴露；宿主蒸馏在 LangGraph 中单列为 `save_distilled`）——
+  `recall_memories`、`save_memory`、`save_conversation`、`save_distilled`、
+  `memory_consistency_check`、`wm_read` / `wm_write` / `wm_clear`、
   `get_memory_context`、`read_transcript`、`session_end`、`review_list` /
   `review_resolve`、`update_memory` / `forget_memory` / `memory_feedback`。
   默认走完整管线（`llm="auto"` 按 `AGENT_MEMORY_LLM_*` 自动构建蒸馏/对账用 LLM）；
-  构建失败才显式降级：`save_memory` 退化为纯规则对账（近邻重复 NOOP，否则 ADD），
+  构建失败才显式降级：`save_memory` 无近邻直接 ADD、存在近邻转人工复核，
   `save_conversation` / `session_end` 的蒸馏段报 LLMError 或降级为只归档。
 
-## 三、工具一览（14 个）
+## 三、工具一览（15 个 MCP tool）
 
 | 分组 | 工具 | 用途 |
 |---|---|---|
@@ -53,6 +53,7 @@ from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
 | 读 | `memory_wm_read` | 单读工作记忆 |
 | 读 | `memory_transcript_read` | 读会话日志为干净轮次（支持 since_turn 增量） |
 | 读 | `memory_distill_prompt` | 宿主蒸馏协议（无服务端 LLM 时自行蒸馏后走 `memory_add(distilled_json=...)`） |
+| 读 | `memory_consistency_check` | 检查 Markdown 事实层与 SQLite 派生索引是否一致 |
 | 写 | `memory_add` | 写入长期记忆（对话蒸馏 / 单条 content / distilled_json 宿主蒸馏） |
 | 写 | `memory_wm_write` | 写工作记忆（**全量替换**，带完整状态 + turn_watermark） |
 | 写 | `memory_wm_clear` | 清空工作记忆 |

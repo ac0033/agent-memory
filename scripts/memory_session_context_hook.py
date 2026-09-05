@@ -29,6 +29,8 @@ import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
+from _hook_io import atomic_write_text, interprocess_lock
+
 # Windows 上 Python 的 stdout/stderr 被管道捕获时默认用系统区域编码（中文系统
 # 为 GBK），而宿主按 UTF-8 读取 hook 输出——不重配的话中文记忆块会变乱码
 for _stream in (sys.stdout, sys.stderr):
@@ -94,32 +96,27 @@ def main() -> int:
     cwd = str(payload.get("cwd") or os.getcwd())
     agent_name = os.environ.get("AGENT_MEMORY_AGENT_NAME", "kimi-code")
 
-    # 每个 session 只注入一次
+    # 每个 session 只注入一次。锁覆盖“检查→请求→提交”，避免两个宿主进程
+    # 同时判定未注入；只有 HTTP 成功后才写状态，临时故障可在下一次重试。
     state_file = data_dir / "state" / "wm_injected_sessions.json"
     try:
-        state_file.parent.mkdir(parents=True, exist_ok=True)
-        injected = _load_injected(state_file)
-        if session_id in injected:
-            return 0
-        injected[session_id] = True
-        # 只保留最近 N 个 session，防状态文件无限增长（dict 保插入序）
-        while len(injected) > _MAX_TRACKED_SESSIONS:
-            injected.pop(next(iter(injected)))
-        state_file.write_text(
-            json.dumps(injected, ensure_ascii=False), encoding="utf-8"
-        )
-    except OSError:
-        return 0  # 状态文件读写失败：放行，不注入（宁可不注入也不冒险重复）
-
-    host = os.environ.get("AGENT_MEMORY_HTTP_HOST", "127.0.0.1")
-    port = os.environ.get("AGENT_MEMORY_HTTP_PORT", "8765")
-    scopes = _derive_scopes(cwd, agent_name)
-    url = f"http://{host}:{port}/wm_blocks?" + urllib.parse.urlencode(
-        {"scopes": ",".join(scopes)}
-    )
-    try:
-        with urllib.request.urlopen(url, timeout=_TIMEOUT_SECONDS) as resp:
-            text = resp.read().decode("utf-8", errors="replace").strip()
+        with interprocess_lock(data_dir / "state" / "wm_hook.lock"):
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            injected = _load_injected(state_file)
+            if session_id in injected:
+                return 0
+            host = os.environ.get("AGENT_MEMORY_HTTP_HOST", "127.0.0.1")
+            port = os.environ.get("AGENT_MEMORY_HTTP_PORT", "8765")
+            scopes = _derive_scopes(cwd, agent_name)
+            url = f"http://{host}:{port}/wm_blocks?" + urllib.parse.urlencode(
+                {"scopes": ",".join(scopes)}
+            )
+            with urllib.request.urlopen(url, timeout=_TIMEOUT_SECONDS) as resp:
+                text = resp.read().decode("utf-8", errors="replace").strip()
+            injected[session_id] = True
+            while len(injected) > _MAX_TRACKED_SESSIONS:
+                injected.pop(next(iter(injected)))
+            atomic_write_text(state_file, json.dumps(injected, ensure_ascii=False))
     except Exception:
         return 0  # 服务不可达/路由错误：静默放行（fail-open）
 

@@ -312,8 +312,8 @@ def test_build_entries_from_distilled_normalizes(tmp_path):
     assert result.normalized_ids == {"Python.Version.Upgrade": "python-version-upgrade"}
 
 
-def test_build_entries_no_turn_clamp_when_n_turns_none():
-    """n_turns=None（宿主蒸馏模式）：evidence_turns 不夹上界，start 仍保证 ≥1。"""
+def test_build_entries_without_server_archive_has_no_fake_evidence():
+    """宿主蒸馏没有服务端原文归档，不制造无法追溯的行号证据。"""
     from agent_memory.long_term.ingest.distill import build_entries_from_distilled
 
     result = build_entries_from_distilled(
@@ -336,8 +336,8 @@ def test_build_entries_no_turn_clamp_when_n_turns_none():
         "s1",
         n_turns=None,
     )
-    assert result.entries[0].evidence[0].line_range == (3, 9)  # 不夹上界
-    assert result.entries[1].evidence[0].line_range == (1, 2)  # start 夹到 ≥1
+    assert result.entries[0].evidence == []
+    assert result.entries[1].evidence == []
 
 
 def test_build_entries_invalid_queued_not_dropped(tmp_path):

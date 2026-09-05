@@ -26,14 +26,17 @@ fail-safe：LLM 判定失败或输出无法解析时不动作、进复核队列�
 """
 
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from agent_memory.config import Settings
+from agent_memory.io_utils import interprocess_lock
 from agent_memory.llm import LLMClient, LLMError
 from agent_memory.long_term.ingest.review_queue import write_review_queue
 from agent_memory.long_term.retrieve.hybrid import HybridSearcher
+from agent_memory.long_term.store.coordinator import MemoryWriter
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.models import MemoryEntry
@@ -131,7 +134,7 @@ def judge_propagation(
     )
     verdict = str(parsed.get("verdict", "")).upper()
     if verdict not in PROPAGATION_VERDICTS:
-        verdict = "UNAFFECTED"
+        raise LLMError(f"传播判定 verdict 非法: {verdict!r}")
     return {"verdict": verdict, "reason": str(parsed.get("reason", ""))}
 
 
@@ -240,21 +243,25 @@ def find_dependents(
 
 
 def _append_audit(
-    data_dir: Path, old: MemoryEntry, new: MemoryEntry | None, removed: MemoryEntry, reason: str
+    data_dir: Path, old: MemoryEntry, new: MemoryEntry | None, removed: MemoryEntry, reason: str,
+    *, event: str = "propagated_invalidation",
 ) -> None:
     """向 data/logs/propagation.jsonl 追加一条失效删除的审计记录（含完整快照）。"""
     logs_dir = Path(data_dir) / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     record = {
-        "event": "propagated_invalidation",
+        "event": event,
         "at": datetime.now().isoformat(timespec="seconds"),
         "trigger_old": old.model_dump(mode="json"),
         "trigger_new": new.model_dump(mode="json") if new is not None else None,
         "removed": removed.model_dump(mode="json"),
         "reason": reason,
     }
-    with (logs_dir / AUDIT_LOG_NAME).open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    with interprocess_lock(Path(data_dir) / "state" / "propagation_audit.lock"):
+        with (logs_dir / AUDIT_LOG_NAME).open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
 
 
 def propagate_change(
@@ -281,19 +288,29 @@ def propagate_change(
     if new is not None:
         excluded.add(new.id)
     report = PropagationReport()
+    writer = MemoryWriter(store, index, embedder)
 
     for neighbor in find_dependents(store, index, embedder, settings, old, excluded):
         try:
             verdict = judge_propagation(llm, old, new, neighbor)
-        except LLMError as e:
+        except Exception as e:
             # 判定失败不动作，进复核队列（fail-safe，可见）
             report.failed.append((neighbor.id, f"传播判定不可用：{e}"))
             continue
         if verdict["verdict"] == "INVALIDATED":
-            store.delete(neighbor.id)
-            index.delete(neighbor.id)
-            _append_audit(data_dir, old, new, neighbor, verdict["reason"])
-            report.invalidated.append(neighbor.id)
+            # 审计是删除的恢复依据：先确保追加成功，再执行协调删除。审计日志
+            # 允许记录随后失败的删除尝试，绝不因审计失败先丢正式记忆。
+            try:
+                _append_audit(
+                    data_dir, old, new, neighbor, verdict["reason"],
+                    event="propagation_invalidation_intent",
+                )
+                writer.delete(neighbor.id)
+                _append_audit(data_dir, old, new, neighbor, verdict["reason"])
+            except Exception as e:
+                report.failed.append((neighbor.id, f"传播删除不可用：{e}"))
+            else:
+                report.invalidated.append(neighbor.id)
         elif verdict["verdict"] == "NEEDS_REVISION":
             report.needs_revision.append(neighbor.id)
         else:

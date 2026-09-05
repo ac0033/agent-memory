@@ -78,8 +78,8 @@ class TestSmoke:
         assert r.exit_code == 1
 
     def test_rebuild(self):
-        assert _add(id="a", content="uv 记忆").exit_code == 0
-        assert _add(id="b", content="端口 8765 记忆").exit_code == 0
+        assert _add(id="a", content="本项目使用 uv 管理 Python 环境").exit_code == 0
+        assert _add(id="b", content="本项目开发端口固定为 8765").exit_code == 0
         r = runner.invoke(app, ["rebuild"])
         assert r.exit_code == 0 and "2 条记忆" in r.output
 

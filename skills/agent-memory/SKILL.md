@@ -1,6 +1,6 @@
 ---
 name: agent-memory
-description: 本地长期记忆 Skill。教 agent 在合适的时机检索、写入、反馈长期记忆，维护当前任务的工作记忆，并在会话结束时收尾（通过 agent-memory MCP server 的十四个 tool），并负责人工复核的两个交互节点（写入后确认、读取前复核门），让跨会话的偏好、项目约定和踩坑经验沉淀下来并被后续会话复用。
+description: 本地长期记忆 Skill。教 agent 在合适的时机检索、写入、反馈长期记忆，维护当前任务的工作记忆，并在会话结束时收尾（通过 agent-memory MCP server 的十五个 tool），并负责人工复核的两个交互节点（写入后确认、读取前复核门），让跨会话的偏好、项目约定和踩坑经验沉淀下来并被后续会话复用。
 ---
 
 # agent-memory：本地长期记忆

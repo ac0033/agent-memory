@@ -1,4 +1,4 @@
-"""MCP Server（M2/M5/M7a/M7b/M9）：把记忆内核暴露为十四个 MCP tool，stdio 传输。
+"""MCP Server：把记忆内核暴露为十五个 MCP tool，stdio 传输。
 
 长期记忆 tool（八个）：
 - memory_search：混合检索 + render_recall_block 渲染，scope 过滤在检索层强制
@@ -41,6 +41,8 @@ fake embedder / fake LLM / fake working store 调用，不走 MCP 传输。
 """
 
 import json
+import os
+import re
 import sys
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
@@ -48,7 +50,8 @@ from pathlib import Path
 from typing import Any
 
 from agent_memory.config import Settings, get_settings
-from agent_memory.llm import LLMClient, LLMError, OpenAILLMClient
+from agent_memory.io_utils import interprocess_lock
+from agent_memory.llm import LLMClient, LLMError, OpenAILLMClient, ValidatingLLMClient
 from agent_memory.long_term.ingest.distill import (
     build_entries_from_distilled,
     distill_memories,
@@ -62,14 +65,16 @@ from agent_memory.long_term.ingest.review_queue import (
     delete_review_item,
     list_review_queue,
     load_review_item,
+    review_queue_lock,
 )
 from agent_memory.long_term.retrieve.embedder import get_embedder
 from agent_memory.long_term.retrieve.hybrid import HybridSearcher
 from agent_memory.long_term.retrieve.inject import render_recall_block
 from agent_memory.long_term.retrieve.resident import build_system_context
+from agent_memory.long_term.store.coordinator import MemoryWriter
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore, MemoryStoreError
-from agent_memory.models import MemoryEntry, is_valid_scope, normalize_scope
+from agent_memory.models import MemoryEntry, is_valid_scope, normalize_scope, validate_entry_id
 from agent_memory.short_term.adapter import detect_adapter, get_adapter
 from agent_memory.working.models import TodoItem, WorkingMemory
 from agent_memory.working.render import is_stale, render_working_memory_block
@@ -81,6 +86,7 @@ _CONFIDENCE_LADDER = ["low", "medium", "high"]
 # session_end 把工作记忆快照渲染给蒸馏当参考上下文的预算：蒸馏材料不进注入层，
 # 给宽松预算（注入层 working_memory_budget_chars 的数倍），避免快照被预算挤丢
 _SESSION_END_WM_SNAPSHOT_BUDGET_CHARS = 4000
+_SAFE_PATH_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 @dataclass
@@ -145,8 +151,17 @@ def _pending_from_raw(raw: object, reason: str) -> dict:
     return {"id": rid, "content_preview": str(content)[:80], "reason": reason}
 
 
+def _validate_archive_segment(value: str, field_name: str) -> str:
+    if not _SAFE_PATH_SEGMENT.fullmatch(value) or value in {".", ".."}:
+        raise ValueError(
+            f"{field_name} 非法：只能使用 1-128 位字母、数字、点、下划线或连字符，"
+            "且不能包含路径分隔或上级目录"
+        )
+    return value
+
+
 class MemoryService:
-    """十四个 tool 的业务实现。与 MCP 传输解耦，测试直接实例化调用。"""
+    """十五个 MCP tool 的业务实现。与传输解耦，测试直接实例化调用。"""
 
     def __init__(
         self,
@@ -161,10 +176,49 @@ class MemoryService:
         self.store = store
         self.index = index
         self.embedder = embedder
-        self.llm = llm
+        self.llm = ValidatingLLMClient(llm) if llm is not None else None
         # 工作记忆存储缺省按 settings.data_dir 自建；测试可注入以隔离
         self.working_store = working_store or WorkingMemoryStore(settings.data_dir)
         self.searcher = HybridSearcher(store, index, embedder, settings)
+        self.writer = MemoryWriter(store, index, embedder)
+
+    def consistency(self) -> dict[str, Any]:
+        """只读检查 Markdown 正式层与派生索引是否一致。"""
+        report = self.writer.check_consistency()
+        return {
+            "status": "ok" if report.consistent else "inconsistent",
+            "markdown_only": list(report.markdown_only),
+            "index_only": list(report.index_only),
+        }
+
+    def _review_gate_block(
+        self, acknowledge_pending: bool
+    ) -> tuple[int, dict[str, Any] | None]:
+        pending_count = len(list_review_queue(self.settings.data_dir))
+        gate = self.settings.review_gate
+        if pending_count and gate == "strict":
+            return pending_count, {
+                "status": "blocked",
+                "gate": gate,
+                "pending_review_count": pending_count,
+                "message": (
+                    f"记忆库有 {pending_count} 条人工复核尚未确认，当前 review_gate=strict"
+                    "（本环境不做交互确认），暂未读取记忆。请先通过 memory_review_list /"
+                    " memory_review_resolve 处理待办，或将 review_gate 调低一档。"
+                ),
+            }
+        if pending_count and gate == "ask" and not acknowledge_pending:
+            return pending_count, {
+                "status": "blocked",
+                "gate": gate,
+                "pending_review_count": pending_count,
+                "message": (
+                    f"记忆库有 {pending_count} 条人工复核尚未确认。请先向用户确认："
+                    "现在逐条处理（memory_review_list 查看 + memory_review_resolve 裁决），"
+                    "还是本次照常读取（用户明确同意后以 acknowledge_pending=true 重试本调用）。"
+                ),
+            }
+        return pending_count, None
 
     # ---- memory_search ----
 
@@ -186,30 +240,9 @@ class MemoryService:
                 "scope 非法：必须匹配 global | repo:<slug> | agent:<name>"
                 f"（slug 为小写字母/数字/连字符），收到: {scope!r}"
             )
-        pending_count = len(list_review_queue(self.settings.data_dir))
-        gate = self.settings.review_gate
-        if pending_count and gate == "strict":
-            return {
-                "status": "blocked",
-                "gate": gate,
-                "pending_review_count": pending_count,
-                "message": (
-                    f"记忆库有 {pending_count} 条人工复核尚未确认，当前 review_gate=strict"
-                    "（本环境不做交互确认），暂未读取记忆。请先通过 memory_review_list /"
-                    " memory_review_resolve 处理待办，或将 review_gate 调低一档。"
-                ),
-            }
-        if pending_count and gate == "ask" and not acknowledge_pending:
-            return {
-                "status": "blocked",
-                "gate": gate,
-                "pending_review_count": pending_count,
-                "message": (
-                    f"记忆库有 {pending_count} 条人工复核尚未确认。请先向用户确认："
-                    "现在逐条处理（memory_review_list 查看 + memory_review_resolve 裁决），"
-                    "还是本次照常读取（用户明确同意后以 acknowledge_pending=true 重试本调用）。"
-                ),
-            }
+        pending_count, blocked = self._review_gate_block(acknowledge_pending)
+        if blocked:
+            return blocked
         results = self.searcher.search(query, scopes=[scope], k=k, track_retrieval=True)
         block = render_recall_block(results, self.settings.recall_budget_chars)
         hits = [
@@ -302,17 +335,26 @@ class MemoryService:
         report.scope_reminder = scope_reminder
         return asdict(report)
 
-    def _archive_raw(self, records: list[dict], source: str, session_id: str) -> Path:
+    def _archive_raw(self, records: list[dict], source: str, session_id: str) -> tuple[Path, int]:
         """把原始材料追加归档到 data/raw/<source>/<session_id>.jsonl。
 
         D1 只追加不改写：同 session_id 调两次是追加不是覆盖。
         """
+        source = _validate_archive_segment(source, "source")
+        session_id = _validate_archive_segment(session_id, "session_id")
         archive_path = self.settings.data_dir / "raw" / source / f"{session_id}.jsonl"
-        archive_path.parent.mkdir(parents=True, exist_ok=True)
-        with archive_path.open("a", encoding="utf-8") as f:
-            for record in records:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        return archive_path
+        with interprocess_lock(self.settings.data_dir / "state" / "raw_archive.lock"):
+            archive_path.parent.mkdir(parents=True, exist_ok=True)
+            offset = 0
+            if archive_path.exists():
+                with archive_path.open("r", encoding="utf-8") as existing:
+                    offset = sum(1 for _ in existing)
+            with archive_path.open("a", encoding="utf-8") as f:
+                for record in records:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            return archive_path, offset
 
     def _add_conversation(
         self,
@@ -323,14 +365,17 @@ class MemoryService:
         extra_context: str | None = None,
         force_review: bool = False,
         archive: bool = True,
+        evidence_line_offset: int = 0,
     ) -> AddReport:
         # 先解析校验（非法对话不归档——不把垃圾写进 data/raw），再归档、再蒸馏：
         # 归档在 LLM 调用之前，LLM 不可用/超时时内容不丢，可事后重放
         conversation = parse_conversation_json(conversation_json)
         session_id = session_id or f"session-{datetime.now():%Y%m%dT%H%M%S}"
-        archive_path = (
-            str(self._archive_raw(conversation, source, session_id)) if archive else None
-        )
+        if archive:
+            archive_file, evidence_line_offset = self._archive_raw(conversation, source, session_id)
+            archive_path = str(archive_file)
+        else:
+            archive_path = None
         if self.llm is None:
             return AddReport(
                 mode="distill",
@@ -348,6 +393,7 @@ class MemoryService:
                 conversation, scope, source, session_id, self.llm,
                 data_dir=self.settings.data_dir,
                 extra_context=extra_context,
+                evidence_line_offset=evidence_line_offset,
             )
             gate_result = gate_candidates(distill_result.entries, self.settings.data_dir)
             report = reconcile(
@@ -462,6 +508,16 @@ class MemoryService:
                     else []
                 )
                 + [_pending_from_entry(e, reason) for e, reason in report.queued]
+                + [
+                    _pending_from_entry(self.store.get(entry_id), "变更传播判定需修订")
+                    for p in report.propagation
+                    for entry_id in p.needs_revision
+                ]
+                + [
+                    _pending_from_entry(self.store.get(entry_id), reason)
+                    for p in report.propagation
+                    for entry_id, reason in p.failed
+                ]
             ),
         )
 
@@ -544,6 +600,16 @@ class MemoryService:
                     for e in gate_result.queued
                 ]
                 + [_pending_from_entry(e, reason) for e, reason in report.queued]
+                + [
+                    _pending_from_entry(self.store.get(entry_id), "变更传播判定需修订")
+                    for p in report.propagation
+                    for entry_id in p.needs_revision
+                ]
+                + [
+                    _pending_from_entry(self.store.get(entry_id), reason)
+                    for p in report.propagation
+                    for entry_id, reason in p.failed
+                ]
             ),
         )
 
@@ -552,14 +618,17 @@ class MemoryService:
     def feedback(self, memory_id: str, helpful: bool, note: str | None = None) -> dict[str, Any]:
         """反馈调整 confidence：helpful 升一档，不 helpful 降一档；
         已是 low 再降就移出正式库、写入复核队列。"""
+        validate_entry_id(memory_id)
         entry = self.store.get(memory_id)  # 找不到抛 KeyError，fail-closed
         rung = _CONFIDENCE_LADDER.index(entry.confidence)
         if helpful:
             new_rung = min(rung + 1, len(_CONFIDENCE_LADDER) - 1)
-            updated = self.store.update(
-                entry.model_copy(update={"confidence": _CONFIDENCE_LADDER[new_rung]})
+            updated = self.writer.update(
+                MemoryEntry.model_validate(
+                    entry.model_dump(mode="python")
+                    | {"confidence": _CONFIDENCE_LADDER[new_rung]}
+                )
             )
-            self.index.upsert(updated, self.embedder.embed_texts([updated.index_text])[0])
             return {
                 "action": "confidence_raised",
                 "id": memory_id,
@@ -573,18 +642,30 @@ class MemoryService:
                 self.settings.data_dir,
                 reason=f"memory_feedback 不 helpful 且已为 low（note: {note or '无'}）",
             )
-            self.store.delete(memory_id)
-            self.index.delete(memory_id)
+            self.writer.delete(memory_id)
             return {
                 "action": "queued_for_review",
                 "id": memory_id,
                 "queue_file": str(files[0]),
                 "note": note,
             }
-        updated = self.store.update(
-            entry.model_copy(update={"confidence": _CONFIDENCE_LADDER[rung - 1]})
-        )
-        self.index.upsert(updated, self.embedder.embed_texts([updated.index_text])[0])
+        new_confidence = _CONFIDENCE_LADDER[rung - 1]
+        try:
+            candidate = MemoryEntry.model_validate(
+                entry.model_dump(mode="python") | {"confidence": new_confidence}
+            )
+        except ValueError:
+            files = write_review_queue(
+                [entry], self.settings.data_dir,
+                reason=f"负反馈要求降为 {new_confidence}，但会违反条目 schema，需人工复核",
+            )
+            return {
+                "action": "queued_for_review",
+                "id": memory_id,
+                "queue_file": str(files[0]),
+                "note": note,
+            }
+        updated = self.writer.update(candidate)
         return {
             "action": "confidence_lowered",
             "id": memory_id,
@@ -596,23 +677,24 @@ class MemoryService:
 
     def update(self, memory_id: str, new_content: str) -> dict[str, Any]:
         """更新记忆正文：先脱敏，再过评价门（指令性/残留/长度规则同样适用）。"""
+        validate_entry_id(memory_id)
         entry = self.store.get(memory_id)
         redacted, _hits = redact(new_content)
-        candidate = entry.model_copy(update={"content": redacted})
+        candidate = MemoryEntry.model_validate(
+            entry.model_dump(mode="python") | {"content": redacted}
+        )
         gate_result = gate_candidates([candidate])  # 不落盘，纯校验
         if gate_result.rejected:
             _, reason = gate_result.rejected[0]
             raise ValueError(f"评价门拒绝更新：{reason}")
-        updated = self.store.update(candidate)
-        self.index.upsert(updated, self.embedder.embed_texts([updated.index_text])[0])
+        updated = self.writer.update(candidate)
         return {"action": "updated", "id": memory_id, "version": updated.version}
 
     # ---- memory_forget ----
 
     def forget(self, memory_id: str) -> dict[str, Any]:
-        self.store.get(memory_id)  # 先确认存在，找不到 fail-closed
-        self.store.delete(memory_id)
-        self.index.delete(memory_id)
+        validate_entry_id(memory_id)
+        self.writer.delete(memory_id)
         return {"action": "deleted", "id": memory_id}
 
     # ---- memory_review_list / memory_review_resolve（M5 人工复核交互） ----
@@ -635,40 +717,43 @@ class MemoryService:
         """
         if action not in {"approve", "modify", "discard"}:
             raise ValueError(f"非法 action {action!r}，只支持 approve / modify / discard")
-        if action == "discard":
-            delete_review_item(self.settings.data_dir, queue_file)
-            return {"action": "discarded", "file": queue_file}
-        payload = load_review_item(self.settings.data_dir, queue_file)
-        if payload.get("entry") is None:
-            raise ValueError(
-                "该待办是无法构造条目的原始记录（raw_record），不能直接入库；"
-                "请人工整理后用 memory_add 写入，或用 discard 丢弃"
+        with review_queue_lock(self.settings.data_dir):
+            if action == "discard":
+                delete_review_item(self.settings.data_dir, queue_file)
+                return {"action": "discarded", "file": queue_file}
+            payload = load_review_item(self.settings.data_dir, queue_file)
+            if payload.get("entry") is None:
+                raise ValueError(
+                    "该待办是无法构造条目的原始记录（raw_record），不能直接入库；"
+                    "请人工整理后用 memory_add 写入，或用 discard 丢弃"
+                )
+            entry = MemoryEntry.model_validate(payload["entry"])
+            if action == "modify":
+                if not new_content or not new_content.strip():
+                    raise ValueError("action=modify 必须提供非空 new_content")
+                redacted, _hits = redact(new_content)
+                entry = MemoryEntry.model_validate(
+                    entry.model_dump(mode="python") | {"content": redacted}
+                )
+                gate_result = gate_candidates([entry])
+                if gate_result.rejected:
+                    _, reason = gate_result.rejected[0]
+                    raise ValueError(f"评价门拒绝入库：{reason}")
+            entry = MemoryEntry.model_validate(
+                entry.model_dump(mode="python") | {"last_verified": date.today()}
             )
-        entry = MemoryEntry.model_validate(payload["entry"])
-        if action == "modify":
-            if not new_content or not new_content.strip():
-                raise ValueError("action=modify 必须提供非空 new_content")
-            redacted, _hits = redact(new_content)
-            entry = entry.model_copy(update={"content": redacted})
-            gate_result = gate_candidates([entry])  # 不落盘，纯校验硬规则
-            if gate_result.rejected:
-                _, reason = gate_result.rejected[0]
-                raise ValueError(f"评价门拒绝入库：{reason}")
-        # 人工裁决即"已核实"：刷新核实时间（created_at 保留原值）
-        entry = entry.model_copy(update={"last_verified": date.today()})
-        try:
-            self.store.create(entry)
-        except MemoryStoreError as e:
-            raise ValueError(
-                f"入库失败：{e}（可先用 memory_forget / memory_update 处理冲突条目后重试）"
-            ) from e
-        self.index.upsert(entry, self.embedder.embed_texts([entry.index_text])[0])
-        delete_review_item(self.settings.data_dir, queue_file)
-        return {
-            "action": "approved" if action == "approve" else "modified",
-            "id": entry.id,
-            "file": queue_file,
-        }
+            try:
+                self.writer.create(entry)
+            except (MemoryStoreError, RuntimeError, ValueError) as e:
+                raise ValueError(
+                    f"入库失败：{e}（可先用 memory_forget / memory_update 处理冲突条目后重试）"
+                ) from e
+            delete_review_item(self.settings.data_dir, queue_file)
+            return {
+                "action": "approved" if action == "approve" else "modified",
+                "id": entry.id,
+                "file": queue_file,
+            }
 
     # ---- memory_wm_read / memory_wm_write / memory_wm_clear（M7a 工作记忆） ----
 
@@ -763,7 +848,9 @@ class MemoryService:
                 else (old.turn_watermark if old is not None else 0)
             ),
         )
-        saved = self.working_store.write(wm)
+        saved = self.working_store.write(
+            wm, expected_version=old.version if old is not None else 0
+        )
         return {"status": "ok", "version": saved.version, "redacted_fields": redacted_fields}
 
     def wm_clear(self, scope: str) -> dict[str, Any]:
@@ -794,6 +881,9 @@ class MemoryService:
            复核队列积压被拦截时整个 context 原样透出 blocked）。
         """
         scope = self._normalize_valid_scope(scope)
+        pending_count, blocked = self._review_gate_block(acknowledge_pending)
+        if blocked:
+            return blocked
         profile = build_system_context(scope, store=self.store, settings=self.settings)
         wm = self.working_store.read(scope)
         wm_block = (
@@ -806,7 +896,6 @@ class MemoryService:
             if wm is not None and current_turn is not None
             else False
         )
-        pending_count = len(list_review_queue(self.settings.data_dir))
         recall_block = ""
         if query is not None:
             result = self.search(query, scope=scope, k=k, acknowledge_pending=acknowledge_pending)
@@ -948,7 +1037,9 @@ class MemoryService:
         session_id = session_id or f"session-{datetime.now():%Y%m%dT%H%M%S}"
 
         # 3. 归档：data/raw/<source>/<session_id>.jsonl，只追加不改写（D1）
-        archive_path = self._archive_raw(archive_records, source, session_id)
+        archive_path, evidence_line_offset = self._archive_raw(
+            archive_records, source, session_id
+        )
 
         # 4. 蒸馏：无 LLM 时只归档，工作记忆保持原样
         if self.llm is None:
@@ -972,6 +1063,7 @@ class MemoryService:
         report = self._add_conversation(
             distill_input, scope, source, session_id, extra_context=extra_context,
             archive=False,  # 本会话已在第 3 步归档，避免同 session_id 重复追加
+            evidence_line_offset=evidence_line_offset,
         )
         if report.status != "ok":
             # 蒸馏未执行（LLM 临时故障）：归档已完成，工作记忆保持原样不清理，
@@ -987,12 +1079,31 @@ class MemoryService:
         todos_cleared = 0
         todos_kept = 0
         wm_hint = None
-        if wm is not None:
-            kept = [t for t in wm.todos if t.status == "pending"]
-            todos_cleared = len(wm.todos) - len(kept)
-            todos_kept = len(kept)
-            if todos_cleared:
-                wm = self.working_store.write(wm.model_copy(update={"todos": kept}))
+        # 只有至少一条候选实际入库或进入人工复核，才能认为 done todo 的结论
+        # 已有落点；全被评价门拒绝时保留工作记忆。
+        has_durable_result = (
+            not report.gate_rejected
+            or sum(report.reconcile.values()) > 0
+            or bool(report.pending_review)
+        )
+        if wm is not None and has_durable_result:
+            current_wm = self.working_store.read(scope)
+            if current_wm is not None:
+                original_done = {t.content for t in wm.todos if t.status == "done"}
+                kept = [
+                    t
+                    for t in current_wm.todos
+                    if not (t.status == "done" and t.content in original_done)
+                ]
+                todos_cleared = len(current_wm.todos) - len(kept)
+                todos_kept = len(kept)
+                if todos_cleared:
+                    wm = self.working_store.write(
+                        current_wm.model_copy(update={"todos": kept}),
+                        expected_version=current_wm.version,
+                    )
+                else:
+                    wm = current_wm
             if (
                 not wm.goal and not wm.decisions and not wm.variables
                 and not wm.todos and not wm.notes
@@ -1014,7 +1125,7 @@ class MemoryService:
 
 
 def build_server(service: MemoryService):
-    """把 MemoryService 注册成 MCP server 的十四个 tool。"""
+    """把 MemoryService 注册成 MCP server 的十五个 tool。"""
     from mcp.server.mcpserver import MCPServer
 
     server = MCPServer(
@@ -1090,6 +1201,16 @@ def build_server(service: MemoryService):
     )
     def memory_distill_prompt() -> dict:
         return service.distill_protocol()
+
+    @server.tool(
+        name="memory_consistency_check",
+        description=(
+            "只读检查 Markdown 记忆事实层与 SQLite 派生索引是否一致；"
+            "返回仅存在于任一侧的条目 id，不修改任何数据。"
+        ),
+    )
+    def memory_consistency_check() -> dict:
+        return service.consistency()
 
     @server.tool(
         name="memory_feedback",

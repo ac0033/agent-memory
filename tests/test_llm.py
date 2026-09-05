@@ -5,7 +5,7 @@ import json
 import pytest
 
 from agent_memory.config import Settings
-from agent_memory.llm import LLMClient, LLMError, OpenAILLMClient
+from agent_memory.llm import LLMClient, LLMError, OpenAILLMClient, ValidatingLLMClient
 
 
 class FakeLLM:
@@ -95,6 +95,28 @@ def test_complete_json_rejects_non_dict(monkeypatch):
     client, _ = _make_client(monkeypatch, ['[1, 2]', '{"ok": true}'])
     # 第一次返回数组（不是 object），重试后返回合法 object
     assert client.complete_json("s", "u", "schema") == {"ok": True}
+
+
+def test_validating_client_rejects_truthy_string_boolean():
+    class BadBoundaryLLM(FakeLLM):
+        def complete_json(self, system, user, schema_description):
+            return {"pass": "false", "reason": "wrong type"}
+
+    with pytest.raises(LLMError, match="pass 必须是 boolean"):
+        ValidatingLLMClient(BadBoundaryLLM()).complete_json(
+            "s", "u", '{"pass": true/false, "reason": "..."}'
+        )
+
+
+def test_api_exception_is_wrapped_as_llm_error(monkeypatch):
+    client, completions = _make_client(monkeypatch, ["unused"])
+
+    def fail(**_kwargs):
+        raise ConnectionError("offline")
+
+    monkeypatch.setattr(completions, "create", fail)
+    with pytest.raises(LLMError, match="ConnectionError"):
+        client.complete("s", "u")
 
 
 # ---------------------------------------------------------------- 磁盘缓存

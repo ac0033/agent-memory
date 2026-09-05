@@ -155,7 +155,7 @@ def get_distill_protocol() -> dict:
 
 def _build_entry(
     raw: dict, scope: str, source: str, session_id: str, n_turns: int | None,
-    result: DistillResult,
+    result: DistillResult, evidence_line_offset: int = 0,
 ) -> MemoryEntry:
     """把一条蒸馏 JSON 记录构造为 MemoryEntry（可能抛 ValidationError）。
 
@@ -203,10 +203,19 @@ def _build_entry(
         scope=scope,
         confidence=confidence,  # type: ignore[arg-type]
         source=source,
-        evidence=[
-            # evidence 指针：session_id + 来源 + 对话内 turn 区间
-            EvidenceRef(session_id=session_id, source=source, line_range=(start, end))
-        ],
+        # 宿主蒸馏没有随请求提交并归档原文，不能伪造一条看似可追溯的证据。
+        # 服务端蒸馏则把本批在追加式 JSONL 中的实际行偏移计入指针。
+        evidence=(
+            [
+                EvidenceRef(
+                    session_id=session_id,
+                    source=source,
+                    line_range=(start + evidence_line_offset, end + evidence_line_offset),
+                )
+            ]
+            if n_turns is not None
+            else []
+        ),
         created_at=today,
         last_verified=today,
     )
@@ -220,6 +229,7 @@ def distill_memories(
     llm: LLMClient,
     data_dir: Path | None = None,
     extra_context: str | None = None,
+    evidence_line_offset: int = 0,
 ) -> DistillResult:
     """把一段对话蒸馏成 0~N 条原子记忆候选。
 
@@ -235,9 +245,17 @@ def distill_memories(
     if not conversation:
         return result
 
-    user_prompt = _USER_TEMPLATE.format(conversation_text=format_conversation(conversation))
+    # raw 层仍保留原始证据；发往外部 LLM 的材料先脱敏，避免把凭据当作
+    # “蒸馏上下文”发送出去。
+    safe_conversation = [
+        {**turn, "content": redact(turn["content"])[0]} for turn in conversation
+    ]
+    user_prompt = _USER_TEMPLATE.format(
+        conversation_text=format_conversation(safe_conversation)
+    )
     if extra_context and extra_context.strip():
-        user_prompt += _EXTRA_CONTEXT_TEMPLATE.format(extra_context=extra_context.strip())
+        safe_context = redact(extra_context.strip())[0]
+        user_prompt += _EXTRA_CONTEXT_TEMPLATE.format(extra_context=safe_context)
 
     parsed = llm.complete_json(
         system=_SYSTEM_PROMPT,
@@ -245,7 +263,8 @@ def distill_memories(
         schema_description=_SCHEMA_DESCRIPTION,
     )
     return build_entries_from_distilled(
-        parsed, scope, source, session_id, len(conversation), data_dir, result=result
+        parsed, scope, source, session_id, len(conversation), data_dir, result=result,
+        evidence_line_offset=evidence_line_offset,
     )
 
 
@@ -257,6 +276,7 @@ def build_entries_from_distilled(
     n_turns: int | None,
     data_dir: Path | None = None,
     result: DistillResult | None = None,
+    evidence_line_offset: int = 0,
 ) -> DistillResult:
     """把蒸馏产出的 JSON（{"memories": [...]}）加工成候选条目（M9 抽出共用）。
 
@@ -267,18 +287,34 @@ def build_entries_from_distilled(
     """
     if result is None:
         result = DistillResult()
+    def redact_raw(value):
+        """Recursively redact rejected model output before it enters the review queue."""
+        if isinstance(value, str):
+            return redact(value)[0]
+        if isinstance(value, list):
+            return [redact_raw(item) for item in value]
+        if isinstance(value, dict):
+            return {str(key): redact_raw(item) for key, item in value.items()}
+        return value
+
     raw_memories = parsed.get("memories", [])
     if not isinstance(raw_memories, list):
         # 模型没按结构输出：整批无法逐条挽救，保留现场进复核队列
-        result.invalid_records.append((raw_memories, "memories 字段不是数组，整批无法解析"))
+        result.invalid_records.append(
+            (redact_raw(raw_memories), "memories 字段不是数组，整批无法解析")
+        )
         raw_memories = []
 
     for raw in raw_memories:
         try:
-            entry = _build_entry(raw, scope, source, session_id, n_turns, result)
+            entry = _build_entry(
+                raw, scope, source, session_id, n_turns, result, evidence_line_offset
+            )
         except (ValidationError, ValueError, TypeError, IndexError, KeyError) as e:
             # 规范化后仍不合法：不丢弃，进复核队列（保留原始记录与失败原因）
-            result.invalid_records.append((raw, f"构造 MemoryEntry 失败：{e}"))
+            result.invalid_records.append(
+                (redact_raw(raw), f"构造 MemoryEntry 失败：{e}")
+            )
             continue
         # 入库前脱敏：content 与 detail 都过 redact，命中照样入库但文本已脱敏
         redacted, hits = redact(entry.content)
@@ -315,6 +351,8 @@ def parse_conversation_json(conversation_json: str) -> list[dict]:
     if not isinstance(data, list) or not all(isinstance(t, dict) for t in data):
         raise ValueError("conversation_json 必须是 [{role, content}, ...] 的 JSON 数组")
     for i, turn in enumerate(data, start=1):
+        if turn.get("role") not in {"user", "assistant"}:
+            raise ValueError(f"第 {i} 个 turn 的 role 必须是 user 或 assistant")
         if not isinstance(turn.get("content"), str) or not turn["content"].strip():
             raise ValueError(f"第 {i} 个 turn 缺少非空 content")
     return data

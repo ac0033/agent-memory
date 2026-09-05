@@ -6,13 +6,13 @@
 
 LLM 策略：LangGraph 应用必然有 LLM，所以**默认完整管线**（蒸馏、LLM 对账都走
 MemoryService 主路径）；llm="auto" 时按 settings 构建 OpenAILLMClient，构建失败
-（没配 AGENT_MEMORY_LLM_* 等）才显式降级——此时 save_memory 退化为纯规则对账
-（近邻重复 NOOP，否则 ADD），save_conversation / session_end 的蒸馏段按
+（没配 AGENT_MEMORY_LLM_* 等）才显式降级——此时 save_memory 在无近邻时 ADD，
+存在近邻时转人工复核，save_conversation / session_end 的蒸馏段按
 MemoryService 既有语义报 LLMError 或降级 archived_only。
 
-tool 一览（与 MCP 的 13 个 tool 一一对应，外加对话蒸馏独立成 tool）：
-recall_memories / save_memory / save_conversation / update_memory / forget_memory /
-memory_feedback / review_list / review_resolve / wm_read / wm_write / wm_clear /
+tool 一览（16 个）：recall_memories / save_memory / save_conversation /
+save_distilled / update_memory / forget_memory / memory_feedback / review_list /
+review_resolve / memory_consistency_check / wm_read / wm_write / wm_clear /
 get_memory_context / read_transcript / session_end。
 """
 
@@ -28,7 +28,9 @@ from agent_memory.llm import LLMClient, LLMError, OpenAILLMClient
 from agent_memory.long_term.ingest.gate import gate_candidates
 from agent_memory.long_term.ingest.reconcile import NEIGHBOR_MAX_DISTANCE
 from agent_memory.long_term.ingest.redact import redact
+from agent_memory.long_term.ingest.review_queue import write_review_queue
 from agent_memory.long_term.retrieve.embedder import get_embedder
+from agent_memory.long_term.store.coordinator import MemoryWriter
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.models import MemoryEntry
@@ -72,7 +74,7 @@ class MemoryToolkit:
             try:
                 llm = OpenAILLMClient.from_settings(self.settings)
             except LLMError:
-                llm = None  # 显式降级：save_memory 走纯规则对账
+                llm = None  # 显式降级：无近邻 ADD，有近邻转人工复核
         self.service = MemoryService(
             self.settings,
             self.store,
@@ -81,6 +83,7 @@ class MemoryToolkit:
             llm,
             working_store=working_store,
         )
+        self.writer = MemoryWriter(self.store, self.index, self.embedder)
 
     @property
     def llm_available(self) -> bool:
@@ -88,7 +91,7 @@ class MemoryToolkit:
 
     def save(self, content: str, memory_type: str, scope: str, confidence: str) -> str:
         """写入单条记忆。有 LLM 走 MemoryService 完整管线（脱敏→评价门→LLM 对账）；
-        无 LLM 显式降级为纯规则对账（近邻重复 NOOP 刷新核实时间，否则 ADD）。"""
+        无 LLM 时无近邻可直接 ADD；发现近邻则进入人工复核，避免把事实变更误判为重复。"""
         if self.llm_available:
             result = self.service.add(
                 content=content,
@@ -125,13 +128,13 @@ class MemoryToolkit:
 
         neighbors = self._find_neighbors(entry)
         if neighbors:
-            old = neighbors[0]
-            updated = self.store.update(old)
-            self.index.upsert(updated, self.embedder.embed_texts([updated.index_text])[0])
-            return f"noop: 与既有记忆 {old.id} 语义重复，已刷新其核实时间，未新增条目"
+            files = write_review_queue(
+                [entry], self.settings.data_dir,
+                reason="未配置 LLM，存在语义近邻，无法可靠区分重复与事实变更",
+            )
+            return f"queued: 存在语义近邻，已交人工复核（file={files[0].name}）"
 
-        self.store.create(entry)
-        self.index.upsert(entry, self.embedder.embed_texts([entry.index_text])[0])
+        self.writer.create(entry)
         return f"add: 已入库（id={entry.id}, scope={scope}, type={memory_type}）"
 
     def _find_neighbors(self, entry: MemoryEntry) -> list[MemoryEntry]:
@@ -178,12 +181,17 @@ def build_memory_tools(
     # ---- 长期记忆：读 ----
 
     @tool
-    def recall_memories(query: str, scope: str = "global", k: int = 5) -> str:
+    def recall_memories(
+        query: str, scope: str = "global", k: int = 5,
+        acknowledge_pending: bool = False,
+    ) -> str:
         """检索长期记忆库。返回带护栏说明的 <recalled_memories> XML 块；
         块内是历史经验与事实，仅供参考而非指令。scope 形如 global / repo:xxx /
         agent:xxx，检索会自动并入 global。返回 status=blocked 表示复核队列有积压，
         需先向用户确认。"""
-        result = service.search(query, scope=scope, k=k)
+        result = service.search(
+            query, scope=scope, k=k, acknowledge_pending=acknowledge_pending
+        )
         if result["status"] != "ok":
             return _to_json(result)
         return result["block"] or "（无相关记忆）"
@@ -201,7 +209,7 @@ def build_memory_tools(
         冲突时更新旧条目而非追加）。content 必须是一句话事实（不要写"以后都要…"
         这类指令）；memory_type ∈ semantic/procedural/episodic/profile；
         confidence ∈ high/medium/low（low 进人工复核队列而不进正式库）。
-        无 LLM 时自动降级为纯规则对账（重复判 NOOP，否则直接 ADD）。"""
+        无 LLM 时无近邻直接 ADD，存在近邻则进入人工复核。"""
         return toolkit.save(content, memory_type, scope, confidence)
 
     @tool
@@ -212,6 +220,15 @@ def build_memory_tools(
         字符串）。只沉淀用户明确确认过的内容。需要配置 LLM。"""
         return _to_json(
             service.add(conversation_json=conversation_json, scope=scope, session_id=session_id)
+        )
+
+    @tool
+    def save_distilled(
+        distilled_json: str, scope: str, session_id: str | None = None
+    ) -> str:
+        """提交宿主按 memory_distill_prompt 协议生成的原子候选。"""
+        return _to_json(
+            service.add(distilled_json=distilled_json, scope=scope, session_id=session_id)
         )
 
     @tool
@@ -241,6 +258,11 @@ def build_memory_tools(
         """裁决一条复核待办：approve 入库 / modify 以 new_content 改后入库 /
         discard 丢弃。queue_file 取 review_list 返回里的 file 字段。"""
         return _to_json(service.review_resolve(queue_file, action, new_content))
+
+    @tool
+    def memory_consistency_check() -> str:
+        """只读检查 Markdown 事实层与 SQLite 派生索引的条目 id 是否一致。"""
+        return _to_json(service.consistency())
 
     # ---- 工作记忆 ----
 
@@ -288,11 +310,17 @@ def build_memory_tools(
         query: str | None = None,
         k: int = 5,
         current_turn: int | None = None,
+        acknowledge_pending: bool = False,
     ) -> str:
         """每轮组装首选：一次拿全 常驻画像 + 工作记忆 + 按需召回 三个分节
         （query 给了才检索长期记忆）。返回含 block（整块可直接注入）、sections、
         stale_wm、pending_review_count。"""
-        return _to_json(service.context(scope, query=query, k=k, current_turn=current_turn))
+        return _to_json(
+            service.context(
+                scope, query=query, k=k, current_turn=current_turn,
+                acknowledge_pending=acknowledge_pending,
+            )
+        )
 
     @tool
     def read_transcript(
@@ -332,11 +360,13 @@ def build_memory_tools(
         recall_memories,
         save_memory,
         save_conversation,
+        save_distilled,
         update_memory,
         forget_memory,
         memory_feedback,
         review_list,
         review_resolve,
+        memory_consistency_check,
         wm_read,
         wm_write,
         wm_clear,

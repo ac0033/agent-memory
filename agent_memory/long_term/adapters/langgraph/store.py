@@ -38,9 +38,10 @@ from agent_memory.long_term.ingest.gate import gate_candidates
 from agent_memory.long_term.ingest.redact import redact
 from agent_memory.long_term.retrieve.embedder import get_embedder
 from agent_memory.long_term.retrieve.hybrid import HybridSearcher
+from agent_memory.long_term.store.coordinator import MemoryWriter
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore, MemoryNotFoundError
-from agent_memory.models import MemoryEntry
+from agent_memory.models import MemoryEntry, is_valid_scope, normalize_scope
 
 NAMESPACE_ROOT = "memories"
 
@@ -56,7 +57,10 @@ def namespace_to_scope(namespace: tuple[str, ...]) -> str:
             f"namespace 必须是 ({NAMESPACE_ROOT!r}, <scope>) 形式，"
             f"例如 ('memories', 'repo:myproj')，收到: {namespace!r}"
         )
-    return namespace[1]
+    scope = normalize_scope(namespace[1])
+    if not is_valid_scope(scope):
+        raise ValueError(f"namespace 中的 scope 非法: {namespace[1]!r}")
+    return scope
 
 
 def scope_to_namespace(scope: str) -> tuple[str, str]:
@@ -107,6 +111,7 @@ class AgentMemoryStore(BaseStore):
         self.index = index or IndexDB(self.settings.data_dir / "index.db")
         self.embedder = embedder or get_embedder(self.settings)
         self.searcher = HybridSearcher(self.store, self.index, self.embedder, self.settings)
+        self.writer = MemoryWriter(self.store, self.index, self.embedder)
 
     # ---- batch：四种 Op 的分发 ----
 
@@ -132,28 +137,33 @@ class AgentMemoryStore(BaseStore):
     # ---- 各 Op 的处理 ----
 
     def _handle_get(self, op: GetOp) -> Item | None:
-        namespace_to_scope(op.namespace)  # 校验 namespace 约定，fail-closed
+        scope = namespace_to_scope(op.namespace)
         try:
             entry = self.store.get(op.key)
         except MemoryNotFoundError:
             return None
-        return _to_item(entry)
+        return _to_item(entry) if entry.scope == scope else None
 
     def _handle_put(self, op: PutOp) -> None:
         scope = namespace_to_scope(op.namespace)
         if op.value is None:
             # LangGraph 约定：value=None 即 delete
-            self.store.delete(op.key)  # 不存在时抛 KeyError，fail-closed
-            self.index.delete(op.key)
+            existing = self.store.get(op.key)
+            if existing.scope != scope:
+                raise KeyError(f"namespace {op.namespace!r} 下不存在 key {op.key!r}")
+            self.writer.delete(op.key)
             return None
 
         content = str(op.value.get("content", ""))
         redacted, _hits = redact(content)
+        detail = op.value.get("detail") or None
+        if detail is not None:
+            detail = redact(str(detail))[0]
         today = date.today()
         entry = MemoryEntry(
             id=op.key,
             content=redacted,
-            detail=op.value.get("detail") or None,
+            detail=detail,
             memory_type=op.value.get("memory_type", _DEFAULT_MEMORY_TYPE),
             scope=scope,
             confidence=op.value.get("confidence", _DEFAULT_CONFIDENCE),
@@ -175,20 +185,25 @@ class AgentMemoryStore(BaseStore):
         except MemoryNotFoundError:
             existing = None
         if existing is None:
-            self.store.create(entry)
+            self.writer.create(entry)
         else:
             # upsert 语义：已有条目走 update（version 自动 +1、刷新 last_verified）；
             # 新 value 未给的字段继承旧条目，避免 put 把元数据抹掉
-            entry = self.store.update(
-                entry.model_copy(
-                    update={
+            if existing.scope != scope:
+                raise ValueError(
+                    f"key {op.key!r} 已存在于 scope={existing.scope!r}，"
+                    "不能跨 scope/namespace 覆盖"
+                )
+            entry = self.writer.update(
+                MemoryEntry.model_validate(
+                    entry.model_dump(mode="python")
+                    | {
                         "created_at": existing.created_at,
                         "evidence": existing.evidence,
                         "detail": entry.detail if "detail" in op.value else existing.detail,
                     }
                 )
             )
-        self.index.upsert(entry, self.embedder.embed_texts([entry.index_text])[0])
         return None
 
     def _handle_search(self, op: SearchOp) -> list[SearchItem]:

@@ -56,6 +56,7 @@ def _passing_verify():
 
 def _apply(components, proposal, verify=None):
     _, store, index, embedder, settings = components
+    verify = _passing_verify() if verify is None else verify
     return apply_proposal(
         proposal, store, index, embedder, settings, verify_report=verify, now=NOW
     )
@@ -152,6 +153,18 @@ class TestApply:
             _apply(components, proposal, verify=failed)
         assert store.get("cold").content == "冷条目。"
         assert not (components[0] / "logs" / "evolution_audit.jsonl").exists()
+
+    def test_missing_verify_report_refuses_to_apply(self, entry_factory, components):
+        _, store, index, embedder, settings = components
+        _seed(store, index, embedder, entry_factory(entry_id="cold", content="冷条目。"))
+        proposal = _proposal([
+            EvolutionChange(
+                kind="archive", target_ids=["cold"], reason="归档", contract=_contract()
+            )
+        ])
+        with pytest.raises(ValueError, match="缺少三档验证报告"):
+            apply_proposal(proposal, store, index, embedder, settings, verify_report=None)
+        assert store.get("cold") is not None
 
 
 class TestRollback:

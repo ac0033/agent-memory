@@ -115,6 +115,9 @@ def gate_candidates(
     """
     result = GateResult()
     for entry in candidates:
+        # 调用方可能通过 model_copy 构造候选；评价门入口重新执行完整 schema，
+        # 防止超长正文、非法 confidence 等值被写入后反而无法读取。
+        entry = MemoryEntry.model_validate(entry.model_dump(mode="python"))
         # 1. 长度下限：脱敏后无实质内容的条目在 distill 已丢过一轮，这里兜底
         if len(entry.content.strip()) < MIN_CONTENT_CHARS:
             result.rejected.append(
@@ -123,6 +126,9 @@ def gate_candidates(
             continue
         # 2. 脱敏残留：对 content 再跑一遍命中检测，仍有命中的拒绝入库
         _, residual_hits = redact(entry.content)
+        if entry.detail:
+            _, detail_residual = redact(entry.detail)
+            residual_hits += detail_residual
         if residual_hits:
             result.rejected.append(
                 (entry, f"脱敏残留：content 仍命中敏感信息 {residual_hits}")
@@ -131,6 +137,10 @@ def gate_candidates(
         # 3. 指令性内容检测（D2 硬规则的兜底拦截；注入特征全类型拦截，
         #    开头祈使语气对 procedural 放行——操作约定天然是祈使句）
         instructional = check_instructional(entry.content, entry.memory_type)
+        if instructional is None and entry.detail:
+            detail_instructional = check_instructional(entry.detail, entry.memory_type)
+            if detail_instructional:
+                instructional = f"detail {detail_instructional}"
         if instructional:
             result.rejected.append((
                 entry,

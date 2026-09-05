@@ -59,6 +59,12 @@ def test_bootstrap_served_with_urls(client):
     assert "scope" in resp.text  # 引导里含作用域纪律速览
 
 
+@pytest.mark.parametrize("path", ["/SKILL.md", "/bootstrap", "/wm_blocks?scopes=global"])
+def test_static_routes_reject_untrusted_host(client, path):
+    resp = client.get(path, headers={"Host": "attacker.example"})
+    assert resp.status_code == 421
+
+
 def test_bootstrap_text_uses_given_host_port():
     text = build_bootstrap_text("192.168.1.5", 9000)
     assert "http://192.168.1.5:9000/mcp" in text

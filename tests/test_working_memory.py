@@ -5,6 +5,7 @@ import pytest
 from agent_memory.working.models import TodoItem, WorkingMemory
 from agent_memory.working.render import is_stale, render_working_memory_block
 from agent_memory.working.store import (
+    WorkingMemoryConflictError,
     WorkingMemoryNotFoundError,
     WorkingMemoryStore,
     WorkingMemoryStoreError,
@@ -76,6 +77,13 @@ class TestStore:
         wm_store.write(make_wm(goal="第一版"))
         saved = wm_store.write(make_wm(goal="第二版"))
         assert saved.version == 2
+        assert wm_store.read("global").goal == "第二版"
+
+    def test_stale_expected_version_is_rejected(self, wm_store):
+        first = wm_store.write(make_wm(goal="第一版"))
+        wm_store.write(make_wm(goal="第二版"), expected_version=first.version)
+        with pytest.raises(WorkingMemoryConflictError, match="版本冲突"):
+            wm_store.write(make_wm(goal="过期覆盖"), expected_version=first.version)
         assert wm_store.read("global").goal == "第二版"
 
     def test_corrupted_frontmatter_fails_closed(self, wm_store, tmp_path):

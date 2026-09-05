@@ -786,8 +786,7 @@ def test_add_distilled_full_pipeline(service):
     assert report["reconcile"]["add"] == 1
     assert report["archive_path"] is None  # 宿主蒸馏没有原文，不归档
     entry = service.store.get("db-choice")  # id 过规范化
-    assert entry.evidence[0].line_range == (2, 5)  # n_turns=None 不夹上界
-    assert entry.evidence[0].session_id == "s1"
+    assert entry.evidence == []  # 宿主候选没有服务端原文归档，不能伪造证据指针
 
 
 def test_add_distilled_works_without_llm(service):

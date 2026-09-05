@@ -20,6 +20,7 @@ from pathlib import Path
 
 import yaml
 
+from agent_memory.io_utils import atomic_write_text, interprocess_lock
 from agent_memory.models import MemoryEntry, normalize_entry_id
 
 
@@ -36,14 +37,15 @@ def _write_queue_payloads(payloads: list[dict], stems: list[str], data_dir: Path
     queue_dir = Path(data_dir) / "review_queue"
     queue_dir.mkdir(parents=True, exist_ok=True)
     files = []
-    for stem, payload in zip(stems, payloads, strict=True):
-        # 文件名哈希只覆盖稳定内容（不含 queued_at），保证重复排队覆盖同一文件
-        path = queue_dir / _queue_filename(stem, payload)
-        payload = {**payload, "queued_at": datetime.now().isoformat(timespec="seconds")}
-        path.write_text(
-            yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8"
-        )
-        files.append(path)
+    with interprocess_lock(Path(data_dir) / "state" / "review_queue.lock"):
+        for stem, payload in zip(stems, payloads, strict=True):
+            # 文件名哈希只覆盖稳定内容（不含 queued_at），保证重复排队覆盖同一文件
+            path = queue_dir / _queue_filename(stem, payload)
+            payload = {**payload, "queued_at": datetime.now().isoformat(timespec="seconds")}
+            atomic_write_text(
+                path, yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
+            )
+            files.append(path)
     return files
 
 
@@ -60,8 +62,8 @@ def write_review_queue_raw(
 ) -> list[Path]:
     """把无法构造为 MemoryEntry 的原始记录写入复核队列（distill 的非法产出等）。
 
-    records: (原始记录, 逐条原因)。原始记录按原样落盘，不做任何清洗——
-    复核队列的意义就是保留现场让人判断。
+    records: (已由上游脱敏的原始记录, 逐条原因)。复核队列保留脱敏后的结构化
+    现场供人工判断，绝不保存凭据原文。
     """
     payloads = [
         {"reason": f"{reason}：{item_reason}", "raw_record": raw}
@@ -140,4 +142,10 @@ def load_review_item(data_dir: Path, file_name: str) -> dict:
 
 def delete_review_item(data_dir: Path, file_name: str) -> None:
     """删除一个已处理完毕的队列文件。"""
-    _resolve_queue_path(data_dir, file_name).unlink()
+    with interprocess_lock(Path(data_dir) / "state" / "review_queue.lock"):
+        _resolve_queue_path(data_dir, file_name).unlink()
+
+
+def review_queue_lock(data_dir: Path):
+    """裁决流程使用的跨进程锁，保证同一待办只有一个裁决成功。"""
+    return interprocess_lock(Path(data_dir) / "state" / "review_queue.lock")
