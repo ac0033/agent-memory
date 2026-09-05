@@ -215,3 +215,70 @@ def test_update_triggers_propagation_to_dependents(entry_factory, components):
     with pytest.raises(KeyError):
         store.get("check-port-first")  # 依赖旧事实的 procedural 已被传播删除
     assert store.get("port-new") is not None  # 变更本身正常落库
+
+
+def test_decide_calls_run_concurrently(entry_factory, components):
+    """两阶段结构：第一阶段的 LLM 决策并发执行（写路径耗时大头，不能串行等）。
+
+    用记录线程 id 的 fake LLM 验证确实跑了多个线程；落库结果与串行版一致。
+    """
+    import threading
+
+    store, index, embedder, _ = components
+    _seed(
+        store, index, embedder,
+        entry_factory(entry_id="port-old", content="本项目 dev server 端口固定 8765。"),
+    )
+
+    thread_ids: set[int] = set()
+
+    class ThreadRecordingLLM:
+        def complete(self, system: str, user: str) -> str:
+            raise NotImplementedError
+
+        def complete_json(self, system: str, user: str, schema_description: str) -> dict:
+            thread_ids.add(threading.get_ident())
+            return {"action": "ADD", "target_id": None, "reason": "并发验证"}
+
+    candidates = [
+        entry_factory(entry_id=f"port-note-{i}", content=f"端口相关的第 {i} 条补充说明。")
+        for i in range(4)
+    ]
+    report = _reconcile(candidates, components, ThreadRecordingLLM())
+    assert report.counts()["add"] == 4
+    assert len(thread_ids) > 1  # 串行执行时全部调用都在同一线程
+
+
+# ---- M9：无 LLM 规则降级（llm=None）----
+
+
+def test_no_llm_add_when_no_neighbors(entry_factory, components):
+    """无 LLM 降级：无近邻的候选直接 ADD（纯规则，不需要 LLM）。"""
+    candidate = entry_factory(entry_id="new-one", content="本项目 dev server 端口固定 8765。")
+    report = _reconcile([candidate], components, None)
+    assert report.counts()["add"] == 1
+    store, _, _, _ = components
+    assert store.get("new-one").content == candidate.content
+
+
+def test_no_llm_neighbors_queued_not_crash(entry_factory, components):
+    """无 LLM 降级：有近邻时不猜关系，进复核队列（fail-safe）。
+
+    同时是 _add_direct 崩溃 bug 的回归测试：旧实现会对 None 调 complete_json
+    抛 AttributeError。
+    """
+    store, index, embedder, _ = components
+    _seed(
+        store, index, embedder,
+        entry_factory(entry_id="uv-entry", content="用户偏好用 uv 管理环境。"),
+    )
+    # 共享关键词 "uv" → cosine 距离 0，是近邻
+    candidate = entry_factory(entry_id="uv-new", content="用户确认用 uv 跑测试。")
+    report = _reconcile([candidate], components, None)
+    assert report.counts()["add"] == 0
+    assert len(report.queued) == 1
+    assert "未配置 LLM" in report.queued[0][1]
+    assert report.queued_files  # 进复核队列文件，不丢
+    with pytest.raises(KeyError):
+        store.get("uv-new")  # 未落库
+    assert store.get("uv-entry") is not None  # 既有条目不受影响

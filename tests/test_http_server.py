@@ -155,3 +155,77 @@ def test_mcp_search_gate_blocks_over_http(client, http_app, tmp_path, entry_fact
     payload = json.loads(resp.json()["result"]["content"][0]["text"])
     assert payload["status"] == "blocked"
     assert payload["pending_review_count"] == 1
+
+
+# ---- M9：/wm_blocks 路由（会话开头 hook 拉取工作记忆注入块）----
+
+
+@pytest.fixture
+def wm_client(tmp_path, fake_embedder):
+    from starlette.testclient import TestClient
+
+    settings = Settings(data_dir=tmp_path)
+    index = IndexDB(tmp_path / "index.db")
+    service = MemoryService(settings, MarkdownStore(tmp_path), index, fake_embedder, FakeLLM())
+    server = build_http_server(service, "127.0.0.1", 8765)
+    app = server.streamable_http_app(json_response=True, host="127.0.0.1")
+    with TestClient(app, base_url="http://127.0.0.1:8765") as c:
+        yield service, c
+    index.close()
+
+
+def test_wm_blocks_empty_returns_empty_200(wm_client):
+    _, client = wm_client
+    resp = client.get("/wm_blocks", params={"scopes": "global,repo:foo"})
+    assert resp.status_code == 200
+    assert resp.text == ""
+
+
+def test_wm_blocks_renders_non_empty_scopes(wm_client):
+    service, client = wm_client
+    service.wm_write(
+        scope="repo:demo",
+        goal="把登录模块迁移到 OAuth2",
+        todos=[{"content": "补集成测试", "status": "pending"}],
+        turn_watermark=3,
+    )
+    resp = client.get("/wm_blocks", params={"scopes": "global,repo:demo,agent:kimi-code"})
+    assert resp.status_code == 200
+    assert "### scope: repo:demo" in resp.text
+    assert "OAuth2" in resp.text
+    assert "补集成测试" in resp.text
+    # 空 scope 不出现
+    assert "### scope: global" not in resp.text
+    assert "### scope: agent:kimi-code" not in resp.text
+
+
+def test_wm_blocks_multiple_scopes_concatenated(wm_client):
+    service, client = wm_client
+    service.wm_write(scope="global", goal="全局目标")
+    service.wm_write(scope="agent:kimi-code", goal="agent 目标")
+    resp = client.get("/wm_blocks", params={"scopes": "global,agent:kimi-code"})
+    assert resp.status_code == 200
+    assert "### scope: global" in resp.text
+    assert "### scope: agent:kimi-code" in resp.text
+    assert resp.text.index("global") < resp.text.index("agent:kimi-code")  # 按请求顺序
+
+
+def test_wm_blocks_scope_normalized(wm_client):
+    service, client = wm_client
+    service.wm_write(scope="repo:llm-wiki", goal="wiki 项目目标")
+    # 下划线旧写法归一化为连字符后命中同一份工作记忆
+    resp = client.get("/wm_blocks", params={"scopes": "repo:llm_wiki"})
+    assert resp.status_code == 200
+    assert "### scope: repo:llm-wiki" in resp.text
+
+
+def test_wm_blocks_invalid_scope_400(wm_client):
+    _, client = wm_client
+    resp = client.get("/wm_blocks", params={"scopes": "badscope"})
+    assert resp.status_code == 400
+
+
+def test_wm_blocks_missing_scopes_400(wm_client):
+    _, client = wm_client
+    resp = client.get("/wm_blocks")
+    assert resp.status_code == 400

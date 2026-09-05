@@ -253,6 +253,28 @@ def test_archived_only_without_llm(tmp_path, fake_embedder):
 # ---------------------------------------------------------------- 边界与报错
 
 
+def test_archived_only_on_llm_failure(service):
+    """蒸馏中 LLM 临时故障（M8）：归档已完成，不清理 TODO，提示可重试。"""
+    from agent_memory.llm import LLMError
+
+    class FailingLLM(RecordingFakeLLM):
+        def complete_json(self, system: str, user: str, schema_description: str) -> dict:
+            raise LLMError("模拟蒸馏 LLM 连续失败")
+
+    service.llm = FailingLLM()
+    service.wm_write("repo:demo", todos=[{"content": "已完成", "status": "done"}])
+    out = service.session_end(
+        "repo:demo", conversation_json=json.dumps(_conversation(), ensure_ascii=False),
+        session_id="s1",
+    )
+    assert out["status"] == "archived_only"
+    assert "临时性故障" in out["warning"]
+    # 归档完成；清理未执行（done todo 原样保留），LLM 恢复后重跑即可
+    assert (service.settings.data_dir / "raw" / "mcp" / "s1.jsonl").exists()
+    wm = service.wm_read("repo:demo")["working_memory"]
+    assert [t["content"] for t in wm["todos"]] == ["已完成"]
+
+
 def test_no_working_memory_normal_flow(service):
     """无工作记忆：不 veto，正常归档 + 蒸馏，清理步骤跳过。"""
     out = service.session_end(

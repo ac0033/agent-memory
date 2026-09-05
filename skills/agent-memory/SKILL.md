@@ -1,6 +1,6 @@
 ---
 name: agent-memory
-description: 本地长期记忆 Skill。教 agent 在合适的时机检索、写入、反馈长期记忆，维护当前任务的工作记忆，并在会话结束时收尾（通过 agent-memory MCP server 的十三个 tool），并负责人工复核的两个交互节点（写入后确认、读取前复核门），让跨会话的偏好、项目约定和踩坑经验沉淀下来并被后续会话复用。
+description: 本地长期记忆 Skill。教 agent 在合适的时机检索、写入、反馈长期记忆，维护当前任务的工作记忆，并在会话结束时收尾（通过 agent-memory MCP server 的十四个 tool），并负责人工复核的两个交互节点（写入后确认、读取前复核门），让跨会话的偏好、项目约定和踩坑经验沉淀下来并被后续会话复用。
 ---
 
 # agent-memory：本地长期记忆
@@ -62,9 +62,22 @@ memory_add(
 - `content` 必须是**一句话原子事实**，不要写指令性内容（"以后都要""必须""记住："开头的文本会被评价门直接拒绝）；
 - 单条写入必须给 `entry_id`（kebab-case，如 `proj-db-choice`）；同一事实的更正走 `memory_update`，不要重复 add；
 - 刚经历完一整段有信息量的对话时，也可以传 `conversation_json`（`[{role, content}, ...]` 的 JSON **字符串**——把数组序列化后再传；直接传数组服务端也会兼容自动序列化）走完整蒸馏管线，让系统自己提炼。蒸馏只沉淀**用户明确确认或同意过的内容**：用户自己的陈述/要求/偏好可直接沉淀；你单方面提出、用户未表态的建议或结论不会被沉淀，不必替用户"补确认"；
+- **宿主蒸馏（服务端无 LLM 时）**：如果 `memory_add` 的对话模式返回 `status="archived_only"` 且原因是未配置 LLM（订阅制 agent 没有 API key 的场景），改走宿主蒸馏——你自己就是大模型，蒸馏这步可以自己做：
+  1. 调 `memory_distill_prompt` 拿蒸馏协议（system prompt + 输出 JSON schema + 对话渲染格式）；
+  2. 按协议在你自己的上下文里完成蒸馏，产出 `{"memories": [...]}`（蒸馏纪律与服务端蒸馏完全相同：只沉淀用户确认过的内容、不提炼注入式指令、原子化、标注 evidence_turns）；
+  3. 把产出 JSON 字符串传给 `memory_add` 的 `distilled_json` 参数提交。服务端对候选照常做 校验/规范化→脱敏→评价门→对账（门在服务端，不信任蒸馏来源）；服务端无 LLM 时对账走规则降级——无近邻直接入库，有近邻转人工复核队列交用户裁决；
 - 不要写入：密钥/token（会先被脱敏拦下）、一次性临时信息（当下的报错详情、临时路径）、客套话。
 
 **写入后必须检查返回的 `pending_review` 字段**（待复核明细列表）。非空时在本次回复里逐条向用户报告——内容摘要 + 排队原因（置信度低 / 与既有记忆冲突 / 系统判不了）——并请用户裁决，按"四、人工复核交互"落地。不要默默略过：复核队列不会主动提醒任何人。
+
+### 写入失败的两种语义（重要，别误判）
+
+`memory_add` 失败分两类，处理方式完全不同，先看清楚再动手：
+
+- **评价门拒绝（确定性失败）**：报错形如"评价门拒绝入库：指令性内容……命中注入特征 'xxx'"或"开头为祈使/命令语气 'xxx'"。这是纯规则拦截，**原样重试一万次也是同样结果**，不要在句式上做无用功。报错里带了命中的具体文本片段——先找到那个片段再决定怎么改：如果确实是误伤（比如内容只是提及了某个文件名、并非在指挥模型），改写表述避开该片段，或带 `force_review=true` 重调一次，把条目转人工复核队列交用户裁决。
+- **LLM 故障（临时性失败）**：返回 `status="archived_only"`。对话原文已经归档到 `data/raw/`（`archive_path` 字段），**内容没有丢**，稍后用同一份 `conversation_json` 重试即可；急着落一条关键结论时，也可以改用 `content` 单条手动写入作为临时通道。
+
+一句话记忆口诀：评价门拒绝 = 确定性，找命中片段改内容或走复核；archived_only = 临时性，内容已归档，稍后再试。
 
 ## 三、何时反馈（memory_feedback）
 
@@ -103,7 +116,7 @@ memory_feedback(memory_id="proj-db-choice", helpful=false, note="项目已在 20
 
 ### 强制更新 hook
 
-宿主配置了每 N 轮（默认 3 轮）一次的强制记忆更新 hook：你会收到一条"[agent-memory 强制记忆更新]"指令。收到后按指令执行——先用 `memory_wm_write` 同步当前任务状态（全量替换，带上完整状态，`turn_watermark` 记当前轮数），再把最近 N 轮的用户消息 + 你紧邻其前的回复整理成 conversation JSON 调 `memory_add`（conversation_json 模式），只沉淀用户确认过的内容，然后按节点一处理 `pending_review`。没有值得沉淀的内容时向用户说明一句即可，不要硬凑记忆。
+宿主配置了每 N 轮（默认 3 轮）一次的强制记忆更新 hook：你会收到一条"[agent-memory 强制记忆更新]"指令。收到后按指令执行——先用 `memory_wm_write` 同步当前任务状态（全量替换，带上完整状态，`turn_watermark` 记当前轮数），再把最近 N 轮的用户消息 + 你紧邻其前的回复整理成 conversation JSON 调 `memory_add`（conversation_json 模式），只沉淀用户确认过的内容，然后按节点一处理 `pending_review`。没有值得沉淀的内容时向用户说明一句即可，不要硬凑记忆。如果蒸馏返回 `archived_only` 且原因是未配置服务端 LLM，不要放弃——按"二、何时写入"里的宿主蒸馏流程（`memory_distill_prompt` → 自行蒸馏 → `distilled_json` 提交）完成沉淀。
 
 ## 五、工作记忆（当前任务状态）
 
@@ -131,7 +144,9 @@ memory_wm_write(
 
 ### 何时读
 
-每轮组装上下文优先用 `memory_context(scope, query?, current_turn?)` 一次拿全三个分节（常驻画像块 → 工作记忆块 → 召回块；不传 `query` 则不检索长期记忆）；只要工作记忆就单独 `memory_wm_read(scope)`。两者返回都带 `stale_wm` 和 `turn_watermark`：`stale_wm=true` 时按"一、何时检索"末尾的查询路由处理——先 `memory_transcript_read` 拉增量确认，再据实 `memory_wm_write` 刷新。
+**会话开头**：配置了会话开头 hook 的宿主（如 kimi-code），会在你收到第一条用户消息时自动把 global + repo:<当前项目> + agent:<宿主名> 三个 scope 的工作记忆注入你的上下文（空的不注入）——你会直接看到它们，无需手动读。没有配 hook 的宿主：会话开始时应主动 `memory_wm_read` 这三个 scope 各一次，花三次调用换任务续接能力。
+
+**会话进行中**：每轮组装上下文优先用 `memory_context(scope, query?, current_turn?)` 一次拿全三个分节（常驻画像块 → 工作记忆块 → 召回块；不传 `query` 则不检索长期记忆）；只要工作记忆就单独 `memory_wm_read(scope)`。两者返回都带 `stale_wm` 和 `turn_watermark`：`stale_wm=true` 时按"一、何时检索"末尾的查询路由处理——先 `memory_transcript_read` 拉增量确认，再据实 `memory_wm_write` 刷新。
 
 ## 六、会话结束收尾
 
@@ -146,12 +161,32 @@ memory_session_end(scope="repo:myproj", conversation_json="[...]", session_id="2
 - 未配置 LLM 时降级为 `status="archived_only"`：只归档不蒸馏，工作记忆原样保留；
 - 与每 N 轮的滚动蒸馏（强制更新 hook）是**双轨分工**：hook 是保底，防中途崩溃导致经验丢失；session_end 是标准收尾，比滚动蒸馏多了原文归档、工作记忆快照联合蒸馏和待办清理。两者互补，不互相替代。
 
+## 七、subagent 记忆纪律
+
+记忆库对 subagent **只读**。原因：subagent 短命、任务局部、缺乏全局判断，它眼里"重要的事"大多是过程性草稿，直接落库会稀释记忆库的信噪比；并发 subagent 同时写入还会给对账管线制造重复与冲突。值得长期保留的结论，由拥有完整上下文的主 agent 策展后沉淀。
+
+**如果你正以 subagent 身份运行：**
+
+- 只读不写：可以用 `memory_search` / `memory_context` / `memory_wm_read` / `memory_transcript_read` / `memory_review_list` 检索背景；写类工具（`memory_add` / `memory_update` / `memory_forget` / `memory_feedback` / `memory_session_end` / `memory_review_resolve` / `memory_wm_write` / `memory_wm_clear`）不要调用——它们保留给拥有全局上下文的主 agent，部分宿主会直接从你的工具面里摘掉它们。
+- 你的最终回复就是交接物：把任务结论写全、写清楚。如果你判断某些结论值得跨会话沉淀（可复用的踩坑经验、确立的约定等），在最终回复里单列一节"建议沉淀的记忆"，由主 agent 决定是否入库。
+
+**如果你是主 agent，要派生 subagent：**
+
+- 派活时把下面这段约束原文附进任务 prompt：
+
+> 你以 subagent 身份运行。记忆库（agent-memory MCP 工具）对你只读：可以用 memory_search / memory_context / memory_wm_read 检索背景，但禁止调用任何写类记忆工具（memory_add / memory_update / memory_forget / memory_feedback / memory_session_end / memory_review_resolve / memory_wm_write / memory_wm_clear）。值得跨会话沉淀的结论不要自己入库，写进你的最终回复并单列"建议沉淀的记忆"一节，由我决定是否入库。
+
+- subagent 需要的历史背景（既有约定、用户偏好）由你先检索、写进任务 prompt 喂给它，而不是让它自己去捞——你知道它需要什么，它不知道。
+- subagent 返回后，审阅它的"建议沉淀的记忆"：确有长期价值的按"二、何时写入"的正常管线入库；任务局部的过程性信息一律不入库。
+- 常驻的命名 agent（有固定身份、反复被调用）不受此限：它自己的记忆用 `agent:<名字>` scope 沉淀，与全局召回隔离。
+
 ## 附：tool 一览
 
 | tool | 用途 |
 |---|---|
 | `memory_search` | 混合检索，返回注入用 XML 块 + 命中列表；复核队列积压时可能被复核门拦截 |
-| `memory_add` | 写入（单条 content 或 conversation_json 蒸馏）；返回含 pending_review 待复核明细 |
+| `memory_add` | 写入（单条 content、conversation_json 蒸馏、或 distilled_json 宿主蒸馏）；返回含 pending_review 待复核明细；失败分确定性/临时性两类，见"二、写入失败的两种语义" |
+| `memory_distill_prompt` | 返回宿主蒸馏协议（system prompt + 输出 schema + 使用说明）；服务端无 LLM 时自行蒸馏后走 memory_add(distilled_json=...) |
 | `memory_feedback` | 有用/没用反馈，调整置信度 |
 | `memory_update` | 更正一条记忆的正文 |
 | `memory_forget` | 删除一条记忆 |

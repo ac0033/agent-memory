@@ -135,23 +135,49 @@ def format_conversation(conversation: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def get_distill_protocol() -> dict:
+    """蒸馏协议（M9 宿主蒸馏）：system prompt + schema + 对话渲染格式。
+
+    订阅制 agent（登录即用、无 API key）的宿主本身就是大模型：它拿到这份协议后
+    在自己的上下文里完成蒸馏，再把产出的 JSON 通过 memory_add(distilled_json=...)
+    提交回服务端。服务端对候选的处理与服务端蒸馏完全相同（校验/规范化→脱敏→
+    评价门→对账），信任模型不变——评价门本来就把蒸馏产出当不可信输入。
+    """
+    return {
+        "system_prompt": _SYSTEM_PROMPT,
+        "schema_description": _SCHEMA_DESCRIPTION,
+        "conversation_format": (
+            "把对话渲染为带 turn 编号的文本，每轮一行："
+            "[turn N] role: content（turn 从 1 开始编号）"
+        ),
+    }
+
+
 def _build_entry(
-    raw: dict, scope: str, source: str, session_id: str, n_turns: int, result: DistillResult
+    raw: dict, scope: str, source: str, session_id: str, n_turns: int | None,
+    result: DistillResult,
 ) -> MemoryEntry:
-    """把 LLM 输出的一条 JSON 记录构造为 MemoryEntry（可能抛 ValidationError）。
+    """把一条蒸馏 JSON 记录构造为 MemoryEntry（可能抛 ValidationError）。
 
     构造前先规范化可规范化的字段（反"丢弃式防御"）：
     - id 过 normalize_entry_id（LLM 常产出含点号/下划线/大写的 id）；
     - confidence 非法值降为 medium；
     - detail 超长截断到 DETAIL_MAX_CHARS（detail 是辅助扩写，截断不损原子事实）。
     content 超长不截断（截断会改变事实语义），交给上层进复核队列。
+
+    n_turns 是服务端蒸馏时的对话轮数，用于把 evidence_turns 夹进合法区间；
+    宿主蒸馏模式（distilled_json）传 None——服务端没有对话轮数，以宿主给的
+    evidence_turns 为准（start 仍保证 ≥1）。
     """
     if not isinstance(raw, dict):
         raise ValueError(f"单条蒸馏输出必须是 JSON object，收到: {type(raw).__name__}")
-    evidence_turns = raw.get("evidence_turns") or [1, n_turns]
+    evidence_turns = raw.get("evidence_turns") or [1, n_turns or 1]
     start, end = int(evidence_turns[0]), int(evidence_turns[-1])
-    start = max(1, min(start, n_turns))
-    end = max(start, min(end, n_turns))
+    start = max(1, start)
+    if n_turns is not None:
+        start = min(start, n_turns)
+        end = min(end, n_turns)
+    end = max(start, end)
     today = date.today()
     memory_type: MemoryType = raw.get("memory_type", "semantic")
     if memory_type not in _VALID_MEMORY_TYPES:
@@ -218,6 +244,29 @@ def distill_memories(
         user=user_prompt,
         schema_description=_SCHEMA_DESCRIPTION,
     )
+    return build_entries_from_distilled(
+        parsed, scope, source, session_id, len(conversation), data_dir, result=result
+    )
+
+
+def build_entries_from_distilled(
+    parsed: dict,
+    scope: str,
+    source: str,
+    session_id: str,
+    n_turns: int | None,
+    data_dir: Path | None = None,
+    result: DistillResult | None = None,
+) -> DistillResult:
+    """把蒸馏产出的 JSON（{"memories": [...]}）加工成候选条目（M9 抽出共用）。
+
+    服务端蒸馏（distill_memories）与宿主蒸馏（memory_add 的 distilled_json
+    模式）共用这条路径：规范化（id/confidence/detail）→ 构造 MemoryEntry →
+    脱敏 → 非法进复核队列。n_turns=None 表示 evidence_turns 不夹上界
+    （宿主蒸馏模式，服务端没有对话轮数）。
+    """
+    if result is None:
+        result = DistillResult()
     raw_memories = parsed.get("memories", [])
     if not isinstance(raw_memories, list):
         # 模型没按结构输出：整批无法逐条挽救，保留现场进复核队列
@@ -226,7 +275,7 @@ def distill_memories(
 
     for raw in raw_memories:
         try:
-            entry = _build_entry(raw, scope, source, session_id, len(conversation), result)
+            entry = _build_entry(raw, scope, source, session_id, n_turns, result)
         except (ValidationError, ValueError, TypeError, IndexError, KeyError) as e:
             # 规范化后仍不合法：不丢弃，进复核队列（保留原始记录与失败原因）
             result.invalid_records.append((raw, f"构造 MemoryEntry 失败：{e}"))

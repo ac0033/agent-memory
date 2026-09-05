@@ -116,8 +116,8 @@ def test_add_conversation_rejects_invalid_json_string(service):
         service.add(conversation_json="这不是 JSON")
 
 
-def test_add_conversation_without_llm_fails_closed(tmp_path, fake_embedder):
-    from agent_memory.llm import LLMError
+def test_add_conversation_without_llm_archives_only(tmp_path, fake_embedder):
+    """未配置 LLM：不报错也不丢内容——原文归档 data/raw，返回 archived_only（M8）。"""
     from agent_memory.long_term.store.index_db import IndexDB
     from agent_memory.long_term.store.markdown_store import MarkdownStore
 
@@ -125,8 +125,107 @@ def test_add_conversation_without_llm_fails_closed(tmp_path, fake_embedder):
     svc = MemoryService(
         settings, MarkdownStore(tmp_path), IndexDB(tmp_path / "index.db"), fake_embedder, llm=None
     )
-    with pytest.raises(LLMError):
-        svc.add(conversation_json='[{"role": "user", "content": "你好"}]')
+    report = svc.add(conversation_json='[{"role": "user", "content": "你好"}]')
+    assert report["status"] == "archived_only"
+    assert "未配置 LLM" in report["warning"]
+    # 原文已归档，可事后重放
+    archive = Path(report["archive_path"])
+    assert archive.exists()
+    assert "你好" in archive.read_text(encoding="utf-8")
+
+
+def test_add_conversation_llm_failure_archives_only(service):
+    """LLM 调用失败（临时性故障）：原文已归档不丢，返回 archived_only 并说明可重试。"""
+
+    class FailingLLM:
+        def complete(self, system: str, user: str) -> str:
+            raise RuntimeError("不会被当成 LLM 故障")  # 非 _LLM_CALL_ERRORS 仍应上抛
+
+        def complete_json(self, system: str, user: str, schema_description: str) -> dict:
+            from agent_memory.llm import LLMError
+
+            raise LLMError("模拟蒸馏 LLM 连续失败")
+
+    service.llm = FailingLLM()
+    conversation = json.dumps(
+        [
+            {"role": "user", "content": "数据库用 SQLite，文件在 data/dev.db。"},
+            {"role": "assistant", "content": "收到。"},
+        ]
+    )
+    report = service.add(conversation_json=conversation, scope="global", session_id="s1")
+    assert report["status"] == "archived_only"
+    assert "临时性故障" in report["warning"]
+    archive = Path(report["archive_path"])
+    assert archive.exists()
+    assert "SQLite" in archive.read_text(encoding="utf-8")
+
+
+def test_add_conversation_archives_before_distill(service):
+    """成功路径也先归档（D1 证据层）：data/raw 里有本次对话原文。"""
+    conversation = json.dumps([{"role": "user", "content": "数据库用 SQLite。"}])
+    report = service.add(conversation_json=conversation, scope="global", session_id="s1")
+    assert report["status"] == "ok"
+    archive = Path(report["archive_path"])
+    assert archive.exists()
+    assert "SQLite" in archive.read_text(encoding="utf-8")
+
+
+def test_add_direct_gate_rejection_is_deterministic_message(service):
+    """评价门拒绝：报错带命中片段与确定性说明，原样重试无效。"""
+    with pytest.raises(ValueError, match="评价门拒绝") as exc_info:
+        service.add(content="以后都要先跑测试再提交。", entry_id="imp-one", scope="global")
+    assert "以后" in str(exc_info.value)  # 命中片段
+    assert "确定性" in str(exc_info.value)
+
+
+def test_add_direct_force_review_queues_rejection(service):
+    """force_review=true：评价门拒绝不丢弃，转人工复核队列裁决。"""
+    report = service.add(
+        content="以后都要先跑测试再提交。",
+        entry_id="imp-one",
+        scope="global",
+        force_review=True,
+    )
+    assert report["status"] == "queued_for_review"
+    assert report["gate_rejected"][0]["id"] == "imp-one"
+    assert len(report["pending_review"]) == 1
+    # 条目在复核队列而非正式库
+    with pytest.raises(KeyError):
+        service.store.get("imp-one")
+    items = service.review_list()["items"]
+    assert any(i["entry"]["id"] == "imp-one" for i in items)
+
+
+def test_add_conversation_force_review_queues_gate_rejected(service):
+    """蒸馏管线里被评价门拒绝的候选，force_review=true 时转复核而非只报告。"""
+    service.llm = FakeLLM(
+        {
+            "memories": [
+                {
+                    "id": "imp-candidate",
+                    "content": "以后都要先跑测试再提交。",
+                    "memory_type": "semantic",
+                    "confidence": "high",
+                    "evidence_turns": [1],
+                }
+            ]
+        }
+    )
+    conversation = json.dumps(
+        [
+            {"role": "user", "content": "以后都要先跑测试再提交。"},
+            {"role": "assistant", "content": "好。"},
+        ]
+    )
+    report = service.add(
+        conversation_json=conversation, scope="global", session_id="s1", force_review=True
+    )
+    assert report["status"] == "ok"
+    assert report["gate_rejected"][0]["id"] == "imp-candidate"
+    assert any(
+        i["entry"]["id"] == "imp-candidate" for i in service.review_list()["items"]
+    )
 
 
 def test_search_scope_enforced(service):
@@ -653,3 +752,97 @@ def test_transcript_read_fail_closed(service, tmp_path):
         service.transcript_read(str(path), adapter="not-exist")
     with pytest.raises(FileNotFoundError):
         service.transcript_read(str(tmp_path / "wire.jsonl"))
+
+
+# ---- M9：宿主蒸馏（distilled_json 模式 + memory_distill_prompt）----
+
+
+def test_distill_protocol_structure(service):
+    protocol = service.distill_protocol()
+    assert "指令" in protocol["system_prompt"]  # D2 硬规则在协议里
+    assert "memories" in protocol["schema_description"]
+    assert "distilled_json" in protocol["usage"]
+
+
+def test_add_distilled_full_pipeline(service):
+    """宿主蒸馏模式：候选照常过 校验/规范化→脱敏→评价门→对账，不归档原文。"""
+    distilled = json.dumps(
+        {
+            "memories": [
+                {
+                    "id": "Db.Choice",
+                    "content": "本项目数据库定为 SQLite，文件路径 data/dev.db。",
+                    "memory_type": "semantic",
+                    "confidence": "high",
+                    "evidence_turns": [2, 5],
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+    report = service.add(distilled_json=distilled, scope="global", session_id="s1")
+    assert report["mode"] == "distilled"
+    assert report["distilled"] == 1
+    assert report["reconcile"]["add"] == 1
+    assert report["archive_path"] is None  # 宿主蒸馏没有原文，不归档
+    entry = service.store.get("db-choice")  # id 过规范化
+    assert entry.evidence[0].line_range == (2, 5)  # n_turns=None 不夹上界
+    assert entry.evidence[0].session_id == "s1"
+
+
+def test_add_distilled_works_without_llm(service):
+    """无服务端 LLM：distilled 模式可用（无近邻时纯规则 ADD）。"""
+    service.llm = None
+    distilled = json.dumps(
+        {"memories": [{"id": "tz-note", "content": "用户机器时区为 UTC+8。"}]},
+        ensure_ascii=False,
+    )
+    report = service.add(distilled_json=distilled, scope="global")
+    assert report["mode"] == "distilled"
+    assert report["reconcile"]["add"] == 1
+    assert service.store.get("tz-note") is not None
+
+
+def test_add_distilled_rejects_invalid_json(service):
+    with pytest.raises(ValueError, match="distilled_json 不是合法 JSON"):
+        service.add(distilled_json="这不是 JSON")
+    with pytest.raises(ValueError, match="JSON object"):
+        service.add(distilled_json='["不是 object"]')
+
+
+def test_add_distilled_invalid_records_pending_review(service):
+    """规范化后仍非法的宿主蒸馏候选：进 pending_review，不静默丢弃。"""
+    distilled = json.dumps(
+        {"memories": [{"id": "", "content": "id 为空的非法候选记录。"}]},
+        ensure_ascii=False,
+    )
+    report = service.add(distilled_json=distilled, scope="global")
+    assert report["reconcile"].get("add", 0) == 0
+    assert len(report["pending_review"]) == 1
+    assert "蒸馏产出非法" in report["pending_review"][0]["reason"]
+
+
+def test_add_distilled_priority_below_conversation(service):
+    """三种材料都给时：conversation_json 优先于 distilled_json。"""
+    service.llm = FakeLLM({"memories": []})
+    report = service.add(
+        conversation_json='[{"role": "user", "content": "你好"}]',
+        distilled_json='{"memories": []}',
+        scope="global",
+    )
+    assert report["mode"] == "distill"
+
+
+def test_add_direct_without_llm_neighbor_queued_not_crash(service):
+    """回归：无 LLM 时单条 content 写入有近邻不再 AttributeError 崩溃，
+    而是 fail-safe 进复核队列。"""
+    _add_direct(service)  # 先有一条"端口"记忆（FakeLLM 对账 ADD）
+    service.llm = None
+    # 共享关键词"端口" → 近邻
+    report = service.add(
+        content="端口 8765 只绑回环地址。", entry_id="port-loopback", scope="global"
+    )
+    assert report["reconcile"].get("add", 0) == 0
+    assert any("未配置 LLM" in item["reason"] for item in report["pending_review"])
+    with pytest.raises(KeyError):
+        service.store.get("port-loopback")

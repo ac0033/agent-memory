@@ -32,6 +32,10 @@ class Settings(BaseModel):
     llm_base_url: str | None = None
     llm_api_key: str | None = None
     llm_model: str | None = None
+    # LLM 调用韧性（M8）：单次 HTTP 超时与 openai 客户端内部重试上限。
+    # 交互式路径（MCP/HTTP server）可调小收紧最坏耗时；批量评估可调大换成功率
+    llm_timeout_seconds: float = Field(default=300.0, gt=0)
+    llm_max_retries: int = Field(default=2, ge=0)
 
     # OpenAI 兼容端点：评估评委用
     judge_llm_base_url: str | None = None
@@ -75,6 +79,8 @@ _ENV_KEYS: dict[str, str] = {
     "llm_base_url": "AGENT_MEMORY_LLM_BASE_URL",
     "llm_api_key": "AGENT_MEMORY_LLM_API_KEY",
     "llm_model": "AGENT_MEMORY_LLM_MODEL",
+    "llm_timeout_seconds": "AGENT_MEMORY_LLM_TIMEOUT_SECONDS",
+    "llm_max_retries": "AGENT_MEMORY_LLM_MAX_RETRIES",
     "judge_llm_base_url": "AGENT_MEMORY_JUDGE_LLM_BASE_URL",
     "judge_llm_api_key": "AGENT_MEMORY_JUDGE_LLM_API_KEY",
     "judge_llm_model": "AGENT_MEMORY_JUDGE_LLM_MODEL",

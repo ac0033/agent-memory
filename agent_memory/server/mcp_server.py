@@ -1,12 +1,18 @@
-"""MCP Server（M2/M5/M7a/M7b）：把记忆内核暴露为十三个 MCP tool，stdio 传输。
+"""MCP Server（M2/M5/M7a/M7b/M9）：把记忆内核暴露为十四个 MCP tool，stdio 传输。
 
-长期记忆 tool（七个）：
+长期记忆 tool（八个）：
 - memory_search：混合检索 + render_recall_block 渲染，scope 过滤在检索层强制
   （只查调用方给的 scope + global，global 由 HybridSearcher 自动并入）。
   M5 复核门：复核队列有积压时按 settings.review_gate 处置——ask 档拦截并等
   用户确认（acknowledge_pending=true 放行），strict 档一律拒读，off 不拦；
-- memory_add：conversation_json 走 蒸馏→评价门→对账 全管线；单条 content 走
-  脱敏→评价门→对账。返回各阶段报告 + pending_review 待复核明细（M5）；
+- memory_add：conversation_json 走 归档→蒸馏→评价门→对账 全管线；distilled_json
+  走宿主蒸馏（M9，候选照常过 校验/脱敏/评价门/对账，无服务端 LLM 也能用）；
+  单条 content 走 脱敏→评价门→对账。返回各阶段报告 + pending_review 待复核
+  明细（M5）。失败语义（M8）：评价门拒绝是确定性拦截（报错含命中片段，
+  原样重试无效；force_review=true 转人工复核）；LLM 失败是临时性故障
+  （原文已归档 data/raw，status=archived_only，可重试）；
+- memory_distill_prompt（M9）：返回宿主蒸馏协议（system prompt + 输出 schema +
+  使用说明），供无 API key 的订阅制 agent 自行蒸馏后走 distilled_json 提交；
 - memory_feedback：按反馈升降 confidence；降到 low 以下移出正式库、进复核队列；
 - memory_update：过脱敏 + 评价门后更新；
 - memory_forget：删除；
@@ -43,7 +49,12 @@ from typing import Any
 
 from agent_memory.config import Settings, get_settings
 from agent_memory.llm import LLMClient, LLMError, OpenAILLMClient
-from agent_memory.long_term.ingest.distill import distill_memories, parse_conversation_json
+from agent_memory.long_term.ingest.distill import (
+    build_entries_from_distilled,
+    distill_memories,
+    get_distill_protocol,
+    parse_conversation_json,
+)
 from agent_memory.long_term.ingest.gate import gate_candidates, write_review_queue
 from agent_memory.long_term.ingest.reconcile import reconcile
 from agent_memory.long_term.ingest.redact import redact
@@ -76,7 +87,13 @@ _SESSION_END_WM_SNAPSHOT_BUDGET_CHARS = 4000
 class AddReport:
     """memory_add 的分阶段报告。"""
 
-    mode: str  # "distill"（对话蒸馏）| "direct"（单条内容）
+    mode: str  # "distill"（对话蒸馏）| "distilled"（宿主蒸馏）| "direct"（单条内容）
+    # M8 写入结果状态：ok 正常入库；archived_only 原文已归档但蒸馏未执行
+    # （LLM 未配置/调用失败，内容不丢，可稍后重试）；queued_for_review
+    # 评价门拒绝后按 force_review=true 转人工复核
+    status: str = "ok"
+    archive_path: str | None = None  # 原文归档位置（data/raw/...）
+    warning: str | None = None  # 非 ok 状态的原因与建议的下一步
     distilled: int = 0
     normalized_ids: dict[str, str] = field(default_factory=dict)  # id 规范化：原 -> 新
     queued_invalid: int = 0  # 规范化后仍非法、进复核队列的条数
@@ -91,10 +108,30 @@ class AddReport:
     scope_reminder: str | None = None
 
 
+# LLM 调用类失败（临时性故障，区别于评价门这种确定性失败）：蒸馏/对账阶段
+# 抛这些异常时 memory_add 归档原文后降级 archived_only，而不是让内容丢失
+try:
+    from openai import APIError as _OpenAIAPIError
+
+    _LLM_CALL_ERRORS: tuple[type[Exception], ...] = (LLMError, _OpenAIAPIError)
+except ImportError:  # pragma: no cover - openai 是硬依赖，防御性兜底
+    _LLM_CALL_ERRORS = (LLMError,)
+
+
 _SCOPE_REMINDER = (
     "本次写入使用了默认 scope=global（全局共享，对所有项目可见）。"
     "若该记忆只与某个项目或某个 agent 相关，应显式指定 scope 为 "
     "repo:<项目名> 或 agent:<名字>；写错了可 memory_forget 后按正确 scope 重存。"
+)
+
+# 写类 tool 描述统一追加的 subagent 约束。工具描述是 agent 中立的提示词通道：
+# 任何宿主派生的 subagent，只要工具面里有这个 tool 就会看到这句。它是提示层
+# 兜底，真正的硬闸在宿主的 subagent 工具配置（如 kimi-code 的 disallowedTools，
+# 见 agents/coder.md）；服务端无法区分主 agent 与 subagent（共用同一 MCP
+# 连接），所以不在服务端做按调用方降级
+_SUBAGENT_WRITE_GUARD = (
+    "仅限主 agent 调用：subagent 禁止使用本工具——记忆库对 subagent 只读，"
+    "值得跨会话沉淀的结论请写进你的最终回复，由主 agent 决定是否入库。"
 )
 
 
@@ -109,7 +146,7 @@ def _pending_from_raw(raw: object, reason: str) -> dict:
 
 
 class MemoryService:
-    """十三个 tool 的业务实现。与 MCP 传输解耦，测试直接实例化调用。"""
+    """十四个 tool 的业务实现。与 MCP 传输解耦，测试直接实例化调用。"""
 
     def __init__(
         self,
@@ -201,20 +238,31 @@ class MemoryService:
         self,
         content: str | None = None,
         conversation_json: str | list | None = None,
+        distilled_json: str | None = None,
         scope: str | None = None,
         source: str = "mcp",
         session_id: str | None = None,
         entry_id: str | None = None,
         memory_type: str = "semantic",
         confidence: str = "high",
+        force_review: bool = False,
     ) -> dict[str, Any]:
-        """写入记忆。conversation_json 与 content 二选一（都给了以对话为准）。
+        """写入记忆。conversation_json > distilled_json > content 三选一。
 
         conversation_json 推荐传 [{role, content}, ...] 的 JSON 字符串；直接传
         list 也可以（服务端自动序列化）。其他类型报 ValueError 并提示正确格式。
 
+        distilled_json 是宿主蒸馏模式（M9）：宿主 agent 自己完成蒸馏后，把
+        {"memories": [...]} 的 JSON 字符串提交进来，候选照常过 校验/规范化→
+        脱敏→评价门→对账；服务端无 LLM 也能用（对账有近邻时转人工复核）。
+
         scope 应显式选择（M6 作用域纪律）：global 放跨项目通用知识，repo:<项目名>
         放项目相关，agent:<名字> 放 agent 自身相关。缺省回落 global 并附提醒。
+
+        失败语义（M8）：评价门拒绝是确定性规则拦截——原样重试结果不变，报错
+        会说明命中原因；force_review=true 时被拒条目不丢弃，转人工复核队列。
+        LLM 调用失败是临时性故障——对话原文会先归档到 data/raw（D1 只追加），
+        返回 status=archived_only，稍后重试同一份 conversation_json 即可。
         """
         scope_reminder = None
         if scope is None:
@@ -236,13 +284,35 @@ class MemoryService:
                 f"字符串（或等价的数组），收到的是 {type(conversation_json).__name__}"
             )
         if conversation_json:
-            report = self._add_conversation(conversation_json, scope, source, session_id)
+            report = self._add_conversation(
+                conversation_json, scope, source, session_id, force_review=force_review
+            )
+        elif distilled_json:
+            report = self._add_distilled(
+                distilled_json, scope, source, session_id, force_review=force_review
+            )
         else:
             if content is None:
-                raise ValueError("memory_add 需要 content 或 conversation_json 之一")
-            report = self._add_direct(content, scope, source, entry_id, memory_type, confidence)
+                raise ValueError(
+                    "memory_add 需要 content、conversation_json 或 distilled_json 之一"
+                )
+            report = self._add_direct(
+                content, scope, source, entry_id, memory_type, confidence, force_review
+            )
         report.scope_reminder = scope_reminder
         return asdict(report)
+
+    def _archive_raw(self, records: list[dict], source: str, session_id: str) -> Path:
+        """把原始材料追加归档到 data/raw/<source>/<session_id>.jsonl。
+
+        D1 只追加不改写：同 session_id 调两次是追加不是覆盖。
+        """
+        archive_path = self.settings.data_dir / "raw" / source / f"{session_id}.jsonl"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        with archive_path.open("a", encoding="utf-8") as f:
+            for record in records:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return archive_path
 
     def _add_conversation(
         self,
@@ -251,26 +321,116 @@ class MemoryService:
         source: str,
         session_id: str | None,
         extra_context: str | None = None,
+        force_review: bool = False,
+        archive: bool = True,
     ) -> AddReport:
-        if self.llm is None:
-            raise LLMError(
-                "未配置 LLM（AGENT_MEMORY_LLM_API_KEY），无法蒸馏对话；"
-                "可改用 content 参数走单条手动写入"
-            )
+        # 先解析校验（非法对话不归档——不把垃圾写进 data/raw），再归档、再蒸馏：
+        # 归档在 LLM 调用之前，LLM 不可用/超时时内容不丢，可事后重放
         conversation = parse_conversation_json(conversation_json)
         session_id = session_id or f"session-{datetime.now():%Y%m%dT%H%M%S}"
-        distill_result = distill_memories(
-            conversation, scope, source, session_id, self.llm,
+        archive_path = (
+            str(self._archive_raw(conversation, source, session_id)) if archive else None
+        )
+        if self.llm is None:
+            return AddReport(
+                mode="distill",
+                status="archived_only",
+                archive_path=archive_path,
+                warning=(
+                    "未配置 LLM（AGENT_MEMORY_LLM_API_KEY），对话原文已归档、未蒸馏；"
+                    "配置 LLM 后重试同一份 conversation_json 即可。无 API key 的宿主"
+                    "（订阅制 agent）可改走宿主蒸馏：调 memory_distill_prompt 拿蒸馏协议，"
+                    "自行蒸馏后以 distilled_json 参数重新提交"
+                ),
+            )
+        try:
+            distill_result = distill_memories(
+                conversation, scope, source, session_id, self.llm,
+                data_dir=self.settings.data_dir,
+                extra_context=extra_context,
+            )
+            gate_result = gate_candidates(distill_result.entries, self.settings.data_dir)
+            report = reconcile(
+                gate_result.passed, self.store, self.index, self.llm,
+                embedder=self.embedder, settings=self.settings,
+            )
+        except _LLM_CALL_ERRORS as e:
+            # 临时性故障（超时/限流/解析失败）：原文已归档不丢，明确告知可重试
+            return AddReport(
+                mode="distill",
+                status="archived_only",
+                archive_path=archive_path,
+                warning=(
+                    f"LLM 调用失败（{type(e).__name__}: {e}）。这是临时性故障："
+                    "对话原文已归档不会丢失，稍后重试同一份 conversation_json 即可"
+                ),
+            )
+        return self._distill_report(
+            "distill", archive_path, distill_result, gate_result, report, force_review
+        )
+
+    def _add_distilled(
+        self,
+        distilled_json: str,
+        scope: str,
+        source: str,
+        session_id: str | None,
+        force_review: bool = False,
+    ) -> AddReport:
+        """宿主蒸馏模式（M9）：宿主 agent 自己蒸馏，服务端只对候选过门。
+
+        与服务端蒸馏共用 build_entries_from_distilled（校验/规范化→脱敏），
+        之后照常 评价门→对账。服务端无 LLM 也能用：对账走 reconcile 的无 LLM
+        降级（无近邻直接 ADD，有近邻转人工复核）。该模式没有对话原文，不归档。
+        """
+        try:
+            parsed = json.loads(distilled_json)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"distilled_json 不是合法 JSON（{e}）；"
+                '期望格式：{"memories": [...]} 的 JSON 字符串，'
+                "结构见 memory_distill_prompt 返回的 schema_description"
+            ) from e
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                'distilled_json 必须是 {"memories": [...]} 的 JSON object 字符串，'
+                f"收到的是 {type(parsed).__name__}"
+            )
+        session_id = session_id or f"session-{datetime.now():%Y%m%dT%H%M%S}"
+        distill_result = build_entries_from_distilled(
+            parsed, scope, source, session_id, n_turns=None,
             data_dir=self.settings.data_dir,
-            extra_context=extra_context,
         )
         gate_result = gate_candidates(distill_result.entries, self.settings.data_dir)
         report = reconcile(
             gate_result.passed, self.store, self.index, self.llm,
             embedder=self.embedder, settings=self.settings,
         )
+        return self._distill_report(
+            "distilled", None, distill_result, gate_result, report, force_review
+        )
+
+    def _distill_report(
+        self,
+        mode: str,
+        archive_path: str | None,
+        distill_result,
+        gate_result,
+        report,
+        force_review: bool,
+    ) -> AddReport:
+        """distill / distilled 两种模式共用的报告组装（含 force_review 转复核）。"""
+        # force_review：评价门拒绝的候选不丢弃，转人工复核队列裁决
+        force_queued_files: list[Path] = []
+        if force_review and gate_result.rejected:
+            force_queued_files = write_review_queue(
+                [e for e, _ in gate_result.rejected],
+                self.settings.data_dir,
+                reason="评价门拒绝，按 force_review=true 转人工复核",
+            )
         return AddReport(
-            mode="distill",
+            mode=mode,
+            archive_path=archive_path,
             distilled=len(distill_result.entries),
             normalized_ids=distill_result.normalized_ids,
             queued_invalid=len(distill_result.invalid_records),
@@ -280,6 +440,10 @@ class MemoryService:
             ],
             gate_queued=[e.id for e in gate_result.queued],
             reconcile=report.counts(),
+            warning=(
+                f"{len(force_queued_files)} 条被评价门拒绝的候选已转人工复核队列"
+                if force_queued_files else None
+            ),
             pending_review=(
                 [
                     _pending_from_raw(raw, f"蒸馏产出非法：{item_reason}")
@@ -289,9 +453,32 @@ class MemoryService:
                     _pending_from_entry(e, "confidence=low，规则门分流")
                     for e in gate_result.queued
                 ]
+                + (
+                    [
+                        _pending_from_entry(e, f"评价门拒绝（force_review 转复核）：{reason}")
+                        for e, reason in gate_result.rejected
+                    ]
+                    if force_queued_files
+                    else []
+                )
                 + [_pending_from_entry(e, reason) for e, reason in report.queued]
             ),
         )
+
+    # ---- memory_distill_prompt ----
+
+    def distill_protocol(self) -> dict[str, Any]:
+        """返回宿主蒸馏协议（M9）：蒸馏 system prompt + 输出 schema + 使用说明。"""
+        protocol = get_distill_protocol()
+        protocol["usage"] = (
+            "宿主蒸馏流程：1. 把要沉淀的对话按 conversation_format 渲染成带 turn "
+            "编号的文本；2. 以 system_prompt 为指令、schema_description 为输出结构，"
+            "在你自己的上下文里完成蒸馏（只沉淀用户明确确认过的内容）；3. 把产出的 "
+            '{"memories": [...]} 以 JSON 字符串传给 memory_add 的 distilled_json '
+            "参数提交。服务端会对候选照常做 校验/规范化→脱敏→评价门→对账——"
+            "即使你这边蒸得不规范，服务端也有门兜底，但请尽量按 schema 输出。"
+        )
+        return protocol
 
     def _add_direct(
         self,
@@ -301,6 +488,7 @@ class MemoryService:
         entry_id: str | None,
         memory_type: str,
         confidence: str,
+        force_review: bool = False,
     ) -> AddReport:
         if not entry_id:
             raise ValueError("单条 content 写入必须提供 entry_id（kebab-case）")
@@ -318,8 +506,30 @@ class MemoryService:
         )
         gate_result = gate_candidates([entry], self.settings.data_dir)
         if gate_result.rejected:
-            _, reason = gate_result.rejected[0]
-            raise ValueError(f"评价门拒绝入库：{reason}")
+            rejected_entry, reason = gate_result.rejected[0]
+            if not force_review:
+                # 确定性规则拦截：报错里已含命中片段与"原样重试无效"说明
+                raise ValueError(f"评价门拒绝入库：{reason}")
+            # force_review：拒绝即分流而非丢弃，交人工复核裁决
+            write_review_queue(
+                [rejected_entry],
+                self.settings.data_dir,
+                reason=f"评价门拒绝，按 force_review=true 转人工复核：{reason}",
+            )
+            return AddReport(
+                mode="direct",
+                status="queued_for_review",
+                gate_rejected=[{"id": rejected_entry.id, "reason": reason}],
+                warning=(
+                    "评价门拒绝入库，已按 force_review=true 转人工复核队列；"
+                    "请用 memory_review_list 查看、memory_review_resolve 裁决"
+                ),
+                pending_review=[
+                    _pending_from_entry(
+                        rejected_entry, f"评价门拒绝（force_review 转复核）：{reason}"
+                    )
+                ],
+            )
         report = reconcile(
             gate_result.passed, self.store, self.index, self.llm,
             embedder=self.embedder, settings=self.settings,
@@ -738,11 +948,7 @@ class MemoryService:
         session_id = session_id or f"session-{datetime.now():%Y%m%dT%H%M%S}"
 
         # 3. 归档：data/raw/<source>/<session_id>.jsonl，只追加不改写（D1）
-        archive_path = self.settings.data_dir / "raw" / source / f"{session_id}.jsonl"
-        archive_path.parent.mkdir(parents=True, exist_ok=True)
-        with archive_path.open("a", encoding="utf-8") as f:
-            for record in archive_records:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        archive_path = self._archive_raw(archive_records, source, session_id)
 
         # 4. 蒸馏：无 LLM 时只归档，工作记忆保持原样
         if self.llm is None:
@@ -764,8 +970,18 @@ class MemoryService:
             else None
         ) or None
         report = self._add_conversation(
-            distill_input, scope, source, session_id, extra_context=extra_context
+            distill_input, scope, source, session_id, extra_context=extra_context,
+            archive=False,  # 本会话已在第 3 步归档，避免同 session_id 重复追加
         )
+        if report.status != "ok":
+            # 蒸馏未执行（LLM 临时故障）：归档已完成，工作记忆保持原样不清理，
+            # LLM 恢复后重跑本调用即可（同 session_id 归档是追加，不覆盖）
+            return {
+                "status": report.status,
+                "session_id": session_id,
+                "archive_path": str(archive_path),
+                "warning": report.warning,
+            }
 
         # 5. 清理已完成 TODO（结论已蒸馏沉淀；pending 保留，其余字段原样）
         todos_cleared = 0
@@ -798,7 +1014,7 @@ class MemoryService:
 
 
 def build_server(service: MemoryService):
-    """把 MemoryService 注册成 MCP server 的十三个 tool。"""
+    """把 MemoryService 注册成 MCP server 的十四个 tool。"""
     from mcp.server.mcpserver import MCPServer
 
     server = MCPServer(
@@ -825,46 +1041,77 @@ def build_server(service: MemoryService):
     @server.tool(
         name="memory_add",
         description=(
-            "写入记忆：对话走蒸馏管线，单条 content 走脱敏+对账。"
-            "conversation_json 推荐传 [{role, content}, ...] 的 JSON 字符串"
+            "写入记忆：对话走蒸馏管线，宿主蒸馏候选走 distilled_json，单条 content "
+            "走脱敏+对账。conversation_json 推荐传 [{role, content}, ...] 的 JSON 字符串"
             "（直接传数组也可以，服务端会自动序列化；其他类型会报错并提示格式）。"
+            "distilled_json 是宿主蒸馏模式：先用 memory_distill_prompt 拿蒸馏协议自行蒸馏，"
+            "再把 {\"memories\": [...]} 的 JSON 字符串提交进来（候选照常过服务端"
+            "校验/脱敏/评价门/对账，服务端无 LLM 也能用）。"
             "scope 应显式选择：跨项目通用知识用 global，项目相关用 repo:<项目名>，"
-            "agent 自身相关用 agent:<名字>；缺省回落 global 并附提醒"
+            "agent 自身相关用 agent:<名字>；缺省回落 global 并附提醒。"
+            "失败语义：评价门拒绝是确定性规则拦截（报错含命中片段，原样重试无效；"
+            "确认误伤可 force_review=true 转人工复核）；LLM 失败是临时性故障"
+            "（对话原文已归档 data/raw，返回 status=archived_only，稍后重试即可）。"
+            + _SUBAGENT_WRITE_GUARD
         ),
     )
     def memory_add(
         content: str | None = None,
         conversation_json: str | list | None = None,
+        distilled_json: str | None = None,
         scope: str | None = None,
         source: str = "mcp",
         session_id: str | None = None,
         entry_id: str | None = None,
         memory_type: str = "semantic",
         confidence: str = "high",
+        force_review: bool = False,
     ) -> dict:
         return service.add(
             content=content,
             conversation_json=conversation_json,
+            distilled_json=distilled_json,
             scope=scope,
             source=source,
             session_id=session_id,
             entry_id=entry_id,
             memory_type=memory_type,
             confidence=confidence,
+            force_review=force_review,
         )
 
     @server.tool(
+        name="memory_distill_prompt",
+        description=(
+            "返回宿主蒸馏协议：蒸馏用的 system prompt、输出 JSON schema、对话渲染格式"
+            "与使用说明。无服务端 LLM（订阅制 agent，无 API key）时，用它在自己的"
+            "上下文里完成对话蒸馏，再以 memory_add(distilled_json=...) 提交候选。"
+        ),
+    )
+    def memory_distill_prompt() -> dict:
+        return service.distill_protocol()
+
+    @server.tool(
         name="memory_feedback",
-        description="反馈记忆是否有用，调整置信度；降到 low 以下进人工复核队列",
+        description=(
+            "反馈记忆是否有用，调整置信度；降到 low 以下进人工复核队列。"
+            + _SUBAGENT_WRITE_GUARD
+        ),
     )
     def memory_feedback(memory_id: str, helpful: bool, note: str | None = None) -> dict:
         return service.feedback(memory_id, helpful, note)
 
-    @server.tool(name="memory_update", description="更新一条记忆的正文（过脱敏与评价门）")
+    @server.tool(
+        name="memory_update",
+        description="更新一条记忆的正文（过脱敏与评价门）。" + _SUBAGENT_WRITE_GUARD,
+    )
     def memory_update(memory_id: str, new_content: str) -> dict:
         return service.update(memory_id, new_content)
 
-    @server.tool(name="memory_forget", description="删除一条记忆（记忆层与索引同步删除）")
+    @server.tool(
+        name="memory_forget",
+        description="删除一条记忆（记忆层与索引同步删除）。" + _SUBAGENT_WRITE_GUARD,
+    )
     def memory_forget(memory_id: str) -> dict:
         return service.forget(memory_id)
 
@@ -879,7 +1126,8 @@ def build_server(service: MemoryService):
         name="memory_review_resolve",
         description=(
             "裁决一条复核待办：approve 确认入库 / modify 以 new_content 替换正文后入库 "
-            "/ discard 丢弃。queue_file 取 memory_review_list 返回里的 file 字段"
+            "/ discard 丢弃。queue_file 取 memory_review_list 返回里的 file 字段。"
+            + _SUBAGENT_WRITE_GUARD
         ),
     )
     def memory_review_resolve(
@@ -906,7 +1154,8 @@ def build_server(service: MemoryService):
             "会被置空，只想改一个字段也要把其余字段原样带上。所有文本过脱敏；"
             "不过评价门——待办事项天然是祈使句，属于正常内容。todos 可传"
             " [{content, status}, ...]（status 为 pending/done）或纯字符串列表"
-            "（按 pending）。turn_watermark 传当前对话轮次；未传保留旧值"
+            "（按 pending）。turn_watermark 传当前对话轮次；未传保留旧值。"
+            + _SUBAGENT_WRITE_GUARD
         ),
     )
     def memory_wm_write(
@@ -930,7 +1179,10 @@ def build_server(service: MemoryService):
 
     @server.tool(
         name="memory_wm_clear",
-        description="清空一个 scope 的工作记忆；本就不存在时返回 already empty，不算错误",
+        description=(
+            "清空一个 scope 的工作记忆；本就不存在时返回 already empty，不算错误。"
+            + _SUBAGENT_WRITE_GUARD
+        ),
     )
     def memory_wm_clear(scope: str) -> dict:
         return service.wm_clear(scope)
@@ -986,7 +1238,9 @@ def build_server(service: MemoryService):
             " 重试。对话材料二选一：conversation_json（[{role, content}, ...]"
             " 的 JSON 字符串或数组，agent 中立推荐，优先使用）或 log_path"
             "（agent 会话日志路径，走日志适配器解析，adapter 可缺省按文件名"
-            " 自动识别）。未配置 LLM 时只归档不蒸馏（status=archived_only）"
+            " 自动识别）。未配置 LLM 或 LLM 调用失败时只归档不蒸馏"
+            "（status=archived_only，LLM 恢复后重跑即可）。"
+            + _SUBAGENT_WRITE_GUARD
         ),
     )
     def memory_session_end(

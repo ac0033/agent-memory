@@ -271,3 +271,102 @@ def test_format_conversation_numbers_turns():
 
 def test_fake_llm_satisfies_protocol():
     assert isinstance(FakeLLM({}), LLMClient)
+
+
+# ---- M9：宿主蒸馏协议（get_distill_protocol / build_entries_from_distilled）----
+
+
+def test_distill_protocol_exposes_prompt_and_schema():
+    from agent_memory.long_term.ingest.distill import get_distill_protocol
+
+    protocol = get_distill_protocol()
+    assert "指令" in protocol["system_prompt"]  # D2 硬规则在协议里
+    assert "memories" in protocol["schema_description"]
+    assert "[turn N]" in protocol["conversation_format"]
+
+
+def test_build_entries_from_distilled_normalizes(tmp_path):
+    """宿主蒸馏候选与服务端蒸馏共用规范化：id 归一、confidence 合法值保留。"""
+    from agent_memory.long_term.ingest.distill import build_entries_from_distilled
+
+    result = build_entries_from_distilled(
+        {
+            "memories": [
+                {
+                    "id": "Python.Version.Upgrade",
+                    "content": "本项目 Python 版本升级为 3.12。",
+                    "confidence": "HIGH",
+                }
+            ]
+        },
+        "global",
+        "test",
+        "s1",
+        n_turns=None,
+        data_dir=tmp_path,
+    )
+    assert len(result.entries) == 1
+    entry = result.entries[0]
+    assert entry.id == "python-version-upgrade"
+    assert entry.confidence == "high"  # HIGH 小写化后合法，原样保留
+    assert result.normalized_ids == {"Python.Version.Upgrade": "python-version-upgrade"}
+
+
+def test_build_entries_no_turn_clamp_when_n_turns_none():
+    """n_turns=None（宿主蒸馏模式）：evidence_turns 不夹上界，start 仍保证 ≥1。"""
+    from agent_memory.long_term.ingest.distill import build_entries_from_distilled
+
+    result = build_entries_from_distilled(
+        {
+            "memories": [
+                {
+                    "id": "e1",
+                    "content": "本项目数据库定为 SQLite。",
+                    "evidence_turns": [3, 9],
+                },
+                {
+                    "id": "e2",
+                    "content": "用户的开发机是 Windows。",
+                    "evidence_turns": [0, 2],
+                },
+            ]
+        },
+        "global",
+        "test",
+        "s1",
+        n_turns=None,
+    )
+    assert result.entries[0].evidence[0].line_range == (3, 9)  # 不夹上界
+    assert result.entries[1].evidence[0].line_range == (1, 2)  # start 夹到 ≥1
+
+
+def test_build_entries_invalid_queued_not_dropped(tmp_path):
+    """规范化后仍非法的候选进复核队列，绝不静默丢弃。"""
+    from agent_memory.long_term.ingest.distill import build_entries_from_distilled
+
+    result = build_entries_from_distilled(
+        {"memories": [{"id": "", "content": "id 为空的非法候选记录。"}]},
+        "global",
+        "test",
+        "s1",
+        n_turns=None,
+        data_dir=tmp_path,
+    )
+    assert result.entries == []
+    assert len(result.invalid_records) == 1
+    assert len(result.queued_files) == 1
+    assert result.queued_files[0].exists()
+
+
+def test_build_entries_redacted_too_short_dropped():
+    from agent_memory.long_term.ingest.distill import build_entries_from_distilled
+
+    result = build_entries_from_distilled(
+        {"memories": [{"id": "short", "content": "端口 80"}]},
+        "global",
+        "test",
+        "s1",
+        n_turns=None,
+    )
+    assert result.entries == []
+    assert result.dropped_redacted == 1  # 脱敏后不足 10 字符，唯一保留的丢弃路径

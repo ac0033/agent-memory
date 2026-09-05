@@ -9,6 +9,7 @@
 
 import json
 import sqlite3
+import threading
 from datetime import date
 from pathlib import Path
 
@@ -28,7 +29,10 @@ class IndexDB:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         # check_same_thread=False：MCP server 在 worker 线程里执行 tool handler，
-        # 而连接在主线程创建；server 的调用是串行的，不存在并发访问
+        # 而连接在主线程创建；reconcile 第一阶段还会并发检索。sqlite3 连接本身
+        # 不支持并发调用（threadsafety=1），所以所有连接访问经 _lock 串行化
+        #（RLock：upsert 内部会调 delete）
+        self._lock = threading.RLock()
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.enable_load_extension(True)
         sqlite_vec.load(self.conn)
@@ -65,47 +69,49 @@ class IndexDB:
         """写入/更新一条记忆的 meta + 向量 + 全文索引。幂等：先删后插。"""
         if len(vector) != EMBEDDING_DIM:
             raise ValueError(f"向量维度 {len(vector)} 不是 {EMBEDDING_DIM}（bge-m3）")
-        self.delete(entry.id, missing_ok=True)
-        self.conn.execute(
-            "INSERT INTO memories_meta (id, scope, memory_type, confidence,"
-            " last_verified, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                entry.id,
-                entry.scope,
-                entry.memory_type,
-                entry.confidence,
-                entry.last_verified.isoformat(),
-                entry.created_at.isoformat(),
-            ),
-        )
-        self.conn.execute(
-            "INSERT INTO memories_vec (embedding, memory_id) VALUES (?, ?)",
-            (sqlite_vec.serialize_float32(vector), entry.id),
-        )
-        self.conn.execute(
-            "INSERT INTO memories_fts (id, content) VALUES (?, ?)",
-            # FTS 索引拼接文本（content + detail），提高召回；渲染仍用 content
-            (entry.id, entry.index_text),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.delete(entry.id, missing_ok=True)
+            self.conn.execute(
+                "INSERT INTO memories_meta (id, scope, memory_type, confidence,"
+                " last_verified, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    entry.id,
+                    entry.scope,
+                    entry.memory_type,
+                    entry.confidence,
+                    entry.last_verified.isoformat(),
+                    entry.created_at.isoformat(),
+                ),
+            )
+            self.conn.execute(
+                "INSERT INTO memories_vec (embedding, memory_id) VALUES (?, ?)",
+                (sqlite_vec.serialize_float32(vector), entry.id),
+            )
+            self.conn.execute(
+                "INSERT INTO memories_fts (id, content) VALUES (?, ?)",
+                # FTS 索引拼接文本（content + detail），提高召回；渲染仍用 content
+                (entry.id, entry.index_text),
+            )
+            self.conn.commit()
 
     def delete(self, entry_id: str, *, missing_ok: bool = False) -> None:
         """从三张表删除。条目不存在时默认报错（fail-closed）。"""
-        if not missing_ok and self.conn.execute(
-            "SELECT 1 FROM memories_meta WHERE id = ?", (entry_id,)
-        ).fetchone() is None:
-            raise KeyError(f"索引中不存在 id {entry_id!r}")
-        rowids = [
-            r[0]
-            for r in self.conn.execute(
-                "SELECT rowid FROM memories_vec WHERE memory_id = ?", (entry_id,)
-            )
-        ]
-        for rowid in rowids:
-            self.conn.execute("DELETE FROM memories_vec WHERE rowid = ?", (rowid,))
-        self.conn.execute("DELETE FROM memories_fts WHERE id = ?", (entry_id,))
-        self.conn.execute("DELETE FROM memories_meta WHERE id = ?", (entry_id,))
-        self.conn.commit()
+        with self._lock:
+            if not missing_ok and self.conn.execute(
+                "SELECT 1 FROM memories_meta WHERE id = ?", (entry_id,)
+            ).fetchone() is None:
+                raise KeyError(f"索引中不存在 id {entry_id!r}")
+            rowids = [
+                r[0]
+                for r in self.conn.execute(
+                    "SELECT rowid FROM memories_vec WHERE memory_id = ?", (entry_id,)
+                )
+            ]
+            for rowid in rowids:
+                self.conn.execute("DELETE FROM memories_vec WHERE rowid = ?", (rowid,))
+            self.conn.execute("DELETE FROM memories_fts WHERE id = ?", (entry_id,))
+            self.conn.execute("DELETE FROM memories_meta WHERE id = ?", (entry_id,))
+            self.conn.commit()
 
     @staticmethod
     def _scope_clause(scopes: list[str] | None) -> tuple[str, list[str]]:
@@ -125,21 +131,22 @@ class IndexDB:
         （传入当前 scope + global），保持候选顺序截断到 k。
         """
         fetch_k = k if not scopes else max(k * 4, 50)
-        rows = self.conn.execute(
-            "SELECT memory_id, distance FROM memories_vec"
-            " WHERE embedding MATCH ? AND k = ? ORDER BY distance",
-            (sqlite_vec.serialize_float32(query_vector), fetch_k),
-        ).fetchall()
-        if scopes:
-            placeholders = ", ".join("?" for _ in scopes)
-            allowed = {
-                r[0]
-                for r in self.conn.execute(
-                    f"SELECT id FROM memories_meta WHERE scope IN ({placeholders})",
-                    list(scopes),
-                )
-            }
-            rows = [r for r in rows if r[0] in allowed]
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT memory_id, distance FROM memories_vec"
+                " WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+                (sqlite_vec.serialize_float32(query_vector), fetch_k),
+            ).fetchall()
+            if scopes:
+                placeholders = ", ".join("?" for _ in scopes)
+                allowed = {
+                    r[0]
+                    for r in self.conn.execute(
+                        f"SELECT id FROM memories_meta WHERE scope IN ({placeholders})",
+                        list(scopes),
+                    )
+                }
+                rows = [r for r in rows if r[0] in allowed]
         return [(r[0], float(r[1])) for r in rows[:k]]
 
     def search_sparse(
@@ -153,17 +160,18 @@ class IndexDB:
         """
         escaped = query.replace('"', '""')
         scope_sql, params = self._scope_clause(scopes)
-        rows = self.conn.execute(
-            f"""
-            SELECT memories_fts.id, bm25(memories_fts) AS score
-            FROM memories_fts
-            JOIN memories_meta m ON m.id = memories_fts.id
-            WHERE memories_fts MATCH ?{scope_sql}
-            ORDER BY score
-            LIMIT ?
-            """,
-            (f'"{escaped}"', *params, k),
-        ).fetchall()
+        with self._lock:
+            rows = self.conn.execute(
+                f"""
+                SELECT memories_fts.id, bm25(memories_fts) AS score
+                FROM memories_fts
+                JOIN memories_meta m ON m.id = memories_fts.id
+                WHERE memories_fts MATCH ?{scope_sql}
+                ORDER BY score
+                LIMIT ?
+                """,
+                (f'"{escaped}"', *params, k),
+            ).fetchall()
         return [(r[0], float(r[1])) for r in rows]
 
     def rebuild_from_markdown(self, memory_dir: Path, embedder) -> int:
@@ -172,29 +180,32 @@ class IndexDB:
         embedder 需提供 embed_texts(list[str]) -> list[list[float]]。
         """
         memory_dir = Path(memory_dir)
-        self.conn.executescript(
-            "DELETE FROM memories_vec; DELETE FROM memories_fts; DELETE FROM memories_meta;"
-        )
-        files = sorted(memory_dir.glob("*/*.md")) if memory_dir.exists() else []
-        entries = [
-            entry_from_markdown(f.read_text(encoding="utf-8"), path=f) for f in files
-        ]
-        if entries:
-            vectors = embedder.embed_texts([e.index_text for e in entries])
-            for entry, vector in zip(entries, vectors, strict=True):
-                self.upsert(entry, vector)
-        self.conn.commit()
+        with self._lock:
+            self.conn.executescript(
+                "DELETE FROM memories_vec; DELETE FROM memories_fts; DELETE FROM memories_meta;"
+            )
+            files = sorted(memory_dir.glob("*/*.md")) if memory_dir.exists() else []
+            entries = [
+                entry_from_markdown(f.read_text(encoding="utf-8"), path=f) for f in files
+            ]
+            if entries:
+                vectors = embedder.embed_texts([e.index_text for e in entries])
+                for entry, vector in zip(entries, vectors, strict=True):
+                    self.upsert(entry, vector)
+            self.conn.commit()
         return len(entries)
 
     def count(self) -> int:
-        return self.conn.execute("SELECT COUNT(*) FROM memories_meta").fetchone()[0]
+        with self._lock:
+            return self.conn.execute("SELECT COUNT(*) FROM memories_meta").fetchone()[0]
 
     def get_meta(self, entry_id: str) -> dict | None:
-        row = self.conn.execute(
-            "SELECT id, scope, memory_type, confidence, last_verified, created_at"
-            " FROM memories_meta WHERE id = ?",
-            (entry_id,),
-        ).fetchone()
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT id, scope, memory_type, confidence, last_verified, created_at"
+                " FROM memories_meta WHERE id = ?",
+                (entry_id,),
+            ).fetchone()
         if row is None:
             return None
         return {
@@ -208,7 +219,8 @@ class IndexDB:
 
     def debug_dump(self) -> str:
         """调试用途：meta 表的 JSON 快照。"""
-        rows = self.conn.execute(
-            "SELECT id, scope, confidence FROM memories_meta ORDER BY id"
-        ).fetchall()
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id, scope, confidence FROM memories_meta ORDER BY id"
+            ).fetchall()
         return json.dumps(rows, ensure_ascii=False)

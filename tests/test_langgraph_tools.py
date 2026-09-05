@@ -7,11 +7,11 @@
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
 from agent_memory.config import Settings
-from agent_memory.llm import LLMError
 from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore
@@ -142,13 +142,18 @@ def test_save_invalid_memory_type_rejected(tools_degraded):
 
 
 def test_save_conversation_requires_llm(tools_degraded):
-    """降级模式下对话蒸馏路径显式报错（不是静默降级）。"""
-    tools, _ = tools_degraded
-    with pytest.raises(LLMError):
+    """降级模式下对话蒸馏不静默丢失：原文归档后返回 archived_only（M8）。"""
+    tools, settings = tools_degraded
+    out = json.loads(
         tools["save_conversation"].invoke(
             {"conversation_json": '[{"role": "user", "content": "测试蒸馏管线用例"}]',
              "scope": "global"}
         )
+    )
+    assert out["status"] == "archived_only"
+    assert "未配置 LLM" in out["warning"]
+    # 原文已归档，可事后重放
+    assert Path(out["archive_path"]).exists()
 
 
 # ---------------------------------------------------------------- 完整管线（fake LLM）

@@ -59,6 +59,8 @@ class OpenAILLMClient:
         api_key: str | None = None,
         model: str | None = None,
         cache_dir: Path | None = None,
+        timeout: float = 300.0,
+        max_retries: int = 2,
     ):
         if not api_key:
             raise LLMError(
@@ -71,9 +73,13 @@ class OpenAILLMClient:
         self.base_url = base_url or DEFAULT_BASE_URL
         self.model = model or DEFAULT_MODEL
         self.cache_dir = Path(cache_dir) if cache_dir is not None else None
-        # 显式超时 300s：openai 默认 600s 且内部重试 2 次，单次挂起最坏 30 分钟，
-        # 会拖死评估并发池；超时后 openai 客户端自带重试，语义不变
-        self._client = OpenAI(base_url=self.base_url, api_key=api_key, timeout=300.0)
+        # 显式超时 + 重试上限（默认 300s × 内部重试 2 次）：openai 默认 600s
+        # 超时且重试 2 次，单次挂起最坏 30 分钟，会拖死交互式调用与评估并发池。
+        # 交互式路径（MCP/HTTP server）可用 AGENT_MEMORY_LLM_TIMEOUT_SECONDS /
+        # AGENT_MEMORY_LLM_MAX_RETRIES 收紧最坏耗时
+        self._client = OpenAI(
+            base_url=self.base_url, api_key=api_key, timeout=timeout, max_retries=max_retries
+        )
 
     @classmethod
     def from_settings(
@@ -85,6 +91,8 @@ class OpenAILLMClient:
             api_key=settings.llm_api_key,
             model=settings.llm_model,
             cache_dir=cache_dir,
+            timeout=settings.llm_timeout_seconds,
+            max_retries=settings.llm_max_retries,
         )
 
     # ------------------------------------------------------------ 磁盘缓存

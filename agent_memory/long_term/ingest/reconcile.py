@@ -8,6 +8,14 @@
    不合法 → 不强行收敛，写入 data/review_queue 人工复核（fail-safe：
    宁可排队等人，也不让坏决策落库）。
 
+执行结构是两阶段：第一阶段把每条候选的"找近邻 + LLM 判决策"并发执行
+（LLM 调用是写路径的耗时大头，串行时 N 条候选是 N 倍模型往返，并发后
+总耗时≈最慢的一条——MCP 客户端超时不可配，写路径必须自己够快）；
+第二阶段按原顺序串行落库与变更传播。并发阶段只读（embedder 加锁、
+index 连接访问经 RLock 串行化——sqlite3 连接本身不支持并发调用）。语义变化：同批候选彼此不可见——
+同批两条语义重复的候选可能都判 ADD，由后续对账/进化循环收敛
+（distill 产出本来就要求原子且互不相同）。
+
 版本化语义：UPDATE 产生的新条目 version = 旧条目 + 1、supersedes 指向旧 id，
 旧条目从记忆层与索引同步删除（历史由新条目的 supersedes 指针与 evidence 承载）。
 
@@ -18,6 +26,7 @@ ingest.propagate.propagate_change——以被取代/删除的旧条目为 query 
 复核队列。只传播一跳，不级联。
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -120,7 +129,7 @@ class _Reconciler:
     def __init__(self, store, index, llm, embedder, settings):
         self.store: MarkdownStore = store
         self.index: IndexDB = index
-        self.llm: LLMClient = llm
+        self.llm: LLMClient | None = llm
         self.embedder = embedder
         self.settings: Settings = settings
         self.searcher = HybridSearcher(store, index, embedder, settings)
@@ -221,31 +230,57 @@ def reconcile(
     candidates: list[MemoryEntry],
     store: MarkdownStore,
     index: IndexDB,
-    llm: LLMClient,
+    llm: LLMClient | None,
     embedder=None,
     settings: Settings | None = None,
 ) -> ReconcileReport:
-    """对账主流程：逐条候选找近邻 → 决策 → 落库 / 进复核队列。"""
+    """对账主流程：并发判定（找近邻 + LLM 决策）→ 按原顺序串行落库 / 进复核队列。
+
+    llm=None（M9 无 LLM 降级）：跳过 LLM 判决策——无近邻的候选直接 ADD
+    （纯规则，不需要 LLM）；有近邻的候选进复核队列（ADD/UPDATE/DELETE/NOOP
+    的关系判断必须靠 LLM，fail-safe 不猜）。该路径不发生 UPDATE/DELETE，
+    因此也不做变更传播。注意这与 langgraph 适配器的 _rule_based_save
+    （近邻重复 NOOP 否则 ADD）是两套独立的降级语义：这里更保守，凡有近邻
+    一律交人工。
+    """
     settings = settings or get_settings()
     embedder = embedder or get_embedder(settings)
     r = _Reconciler(store, index, llm, embedder, settings)
     report = ReconcileReport()
+    if not candidates:
+        return report
 
-    for candidate in candidates:
-        queue_reason: str | None = None
+    # 第一阶段（并发）：每条候选独立找近邻 + LLM 判决策。
+    # pool.map 保持输入顺序，第二阶段按原顺序落库，报告顺序与串行版一致。
+    def judge(
+        candidate: MemoryEntry,
+    ) -> tuple[MemoryEntry, list[MemoryEntry], dict | None, str | None]:
         neighbors = r.find_neighbors(candidate)
         if not neighbors:
+            return candidate, neighbors, None, None  # decision=None 表示直接 ADD
+        if r.llm is None:
+            # 无 LLM 降级：有近邻时不猜关系，交人工复核（fail-safe）
+            return candidate, neighbors, None, "未配置 LLM，无法判定与既有记忆的关系"
+        try:
+            return candidate, neighbors, r.decide(candidate, neighbors), None
+        except LLMError as e:
+            # LLM 输出连续无法解析：不强行收敛，交人工复核（fail-safe）
+            return candidate, neighbors, None, str(e)
+
+    with ThreadPoolExecutor(max_workers=min(len(candidates), 8)) as pool:
+        judged = list(pool.map(judge, candidates))
+
+    # 第二阶段（串行）：落库 + 变更传播（传播要读落库后的状态，不能并发）
+    for candidate, neighbors, decision, llm_error in judged:
+        queue_reason: str | None = None
+        if llm_error is not None:
+            report.queued.append((candidate, f"LLM 决策不可用：{llm_error}"))
+            continue
+        if decision is None:
             try:
                 report.added.append(r.apply_add(candidate))
             except MemoryStoreError as e:
                 report.queued.append((candidate, f"ADD 落库失败：{e}"))
-            continue
-
-        try:
-            decision = r.decide(candidate, neighbors)
-        except LLMError as e:
-            # LLM 输出连续无法解析：不强行收敛，交人工复核（fail-safe）
-            report.queued.append((candidate, f"LLM 决策不可用：{e}"))
             continue
 
         action = decision["action"]

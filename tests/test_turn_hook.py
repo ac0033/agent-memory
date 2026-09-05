@@ -12,18 +12,21 @@ from pathlib import Path
 HOOK = Path(__file__).parent.parent / "scripts" / "memory_turn_hook.py"
 
 
-def _run_hook(data_dir: Path, session_id: str = "s1", interval: str = "3"):
+def _run_hook(data_dir: Path, session_id: str = "s1", interval: str = "3", debug: bool = False):
+    env = {
+        "AGENT_MEMORY_DATA_DIR": str(data_dir),
+        "AGENT_MEMORY_REVIEW_TURN_INTERVAL": interval,
+        "PATH": "",
+    }
+    if debug:
+        env["AGENT_MEMORY_HOOK_DEBUG"] = "1"
     return subprocess.run(
         [sys.executable, str(HOOK)],
         input=json.dumps({"hook_event_name": "Stop", "session_id": session_id}),
         capture_output=True,
         text=True,
         encoding="utf-8",  # hook 输出统一为 UTF-8（宿主按 UTF-8 读取）
-        env={
-            "AGENT_MEMORY_DATA_DIR": str(data_dir),
-            "AGENT_MEMORY_REVIEW_TURN_INTERVAL": interval,
-            "PATH": "",
-        },
+        env=env,
     )
 
 
@@ -84,3 +87,20 @@ def test_corrupt_counter_fails_open(tmp_path):
     counter_file.write_text("{broken", encoding="utf-8")
     assert _run_hook(tmp_path).returncode == 0
     assert _count(tmp_path) == 1
+
+
+def test_debug_log_records_payload(tmp_path):
+    # AGENT_MEMORY_HOOK_DEBUG=1：每次 Stop 事件的 payload 追加到 logs/hook_debug.jsonl
+    assert _run_hook(tmp_path, session_id="dbg", debug=True).returncode == 0
+    log = tmp_path / "logs" / "hook_debug.jsonl"
+    assert log.exists()
+    record = json.loads(log.read_text(encoding="utf-8").strip())
+    assert record["payload"]["session_id"] == "dbg"
+    assert record["payload"]["hook_event_name"] == "Stop"
+    assert "ts" in record
+
+
+def test_debug_off_writes_nothing(tmp_path):
+    # 缺省不写调试日志
+    assert _run_hook(tmp_path).returncode == 0
+    assert not (tmp_path / "logs" / "hook_debug.jsonl").exists()

@@ -23,6 +23,9 @@ class TestDefaults:
         assert s.judge_llm_model is None
         assert s.recall_budget_chars == 2000
         assert s.stale_days == 90
+        # M8 LLM 调用韧性
+        assert s.llm_timeout_seconds == 300.0
+        assert s.llm_max_retries == 2
         # M4a 整理循环阈值
         assert s.evolve_interval_days == 7
         assert s.evolve_new_entries_threshold == 50
@@ -125,6 +128,16 @@ class TestEnvOverrides:
         s = get_settings(env={"AGENT_MEMORY_WORKING_MEMORY_BUDGET_CHARS": "600"})
         assert s.working_memory_budget_chars == 600
 
+    def test_llm_resilience_overrides(self):
+        s = get_settings(
+            env={
+                "AGENT_MEMORY_LLM_TIMEOUT_SECONDS": "120",
+                "AGENT_MEMORY_LLM_MAX_RETRIES": "1",
+            }
+        )
+        assert s.llm_timeout_seconds == 120.0
+        assert s.llm_max_retries == 1
+
     def test_unrelated_env_vars_ignored(self):
         s = get_settings(env={"AGENT_MEMORY_UNKNOWN_THING": "x", "PATH": "/usr/bin"})
         assert s == Settings()
@@ -160,3 +173,13 @@ class TestFailClosed:
     def test_invalid_working_memory_budget_chars(self, bad):
         with pytest.raises(ValidationError):
             get_settings(env={"AGENT_MEMORY_WORKING_MEMORY_BUDGET_CHARS": bad})
+
+    @pytest.mark.parametrize("bad", ["0", "-1", "abc"])
+    def test_invalid_llm_timeout_seconds(self, bad):
+        with pytest.raises(ValidationError):
+            get_settings(env={"AGENT_MEMORY_LLM_TIMEOUT_SECONDS": bad})
+
+    @pytest.mark.parametrize("bad", ["-1", "abc", "2.5"])
+    def test_invalid_llm_max_retries(self, bad):
+        with pytest.raises(ValidationError):
+            get_settings(env={"AGENT_MEMORY_LLM_MAX_RETRIES": bad})

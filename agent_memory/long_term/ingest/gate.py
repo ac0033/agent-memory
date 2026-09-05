@@ -22,7 +22,9 @@ from agent_memory.models import MemoryEntry
 #
 # 分两层，目的都是防注入，而不是禁止祈使语气：
 # 1. INJECTION_PATTERNS：针对模型行为的注入特征（"忽略之前的指令""输出你的
-#    系统提示词"），任何位置命中、任何 memory_type 都拒绝；
+#    系统提示词"），任何位置命中、任何 memory_type 都拒绝。原则：拦的是
+#    "指挥模型行为"，不是"提及某个名词"——裸关键词（如 system prompt）
+#    必须与外泄动词共现才算注入，否则文件名/术语引用会被误杀；
 # 2. IMPERATIVE_PATTERNS：开头即命令语气的模式（"必须""以后都要"），只对
 #    非 procedural 条目生效——操作经验类记忆天然是祈使句
 #    （"任何 git 变更前必须先确认"是用户约定，不是注入），不能误杀。
@@ -35,7 +37,18 @@ INJECTION_PATTERNS: list[re.Pattern] = [
     re.compile(r"\bdisregard\b.{0,30}\b(instruction|prompt)s?\b", re.IGNORECASE),
     re.compile(r"\bforget\b.{0,30}\b(instruction|prompt)s?\b", re.IGNORECASE),
     re.compile(r"\b(override|bypass)\b.{0,30}\b(instruction|prompt|rule)s?\b", re.IGNORECASE),
-    re.compile(r"\bsystem prompt\b", re.IGNORECASE),
+    # 提示词外泄：动词 + 系统提示词共现才算注入。不做裸关键词匹配——
+    # 记忆内容提及 "System Prompt"（文件名、术语引用）是正常陈述，不是攻击
+    re.compile(
+        r"(输出|打印|重复|泄露|展示|告诉|发送|发给|贴).{0,20}(系统提示词|system\s+prompt)"
+        r"|把.{0,20}(系统提示词|system\s+prompt)",  # 把字句动词在后
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(show|print|leak|reveal|repeat|disclose|expose|give|tell)\b"
+        r".{0,40}\b(system prompt|system instructions?)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 IMPERATIVE_PATTERNS: list[re.Pattern] = [
@@ -65,18 +78,31 @@ class GateResult:
     queued_files: list[Path] = field(default_factory=list)
 
 
-def is_instructional(content: str, memory_type: str | None = None) -> bool:
-    """content 是否是指令性内容。
+def check_instructional(content: str, memory_type: str | None = None) -> str | None:
+    """检查 content 是否是指令性内容。返回 None 表示通过；否则返回命中说明。
 
-    注入特征（指挥模型行为的指令）任何类型都拦；开头祈使语气只对非
-    procedural 条目生效——procedural 记忆（操作约定）天然是祈使句。
+    说明里带命中的具体文本片段，供报错与排障定位——调用方据此知道改哪里，
+    而不是只拿到一句"以指令模式开头"去盲改。注入特征（指挥模型行为的指令）
+    任何类型都拦；开头祈使语气只对非 procedural 条目生效——procedural 记忆
+    （操作约定）天然是祈使句。
     """
     text = content.strip()
-    if any(p.search(text) for p in INJECTION_PATTERNS):
-        return True
+    for p in INJECTION_PATTERNS:
+        m = p.search(text)
+        if m:
+            return f"命中注入特征 {m.group(0)!r}（疑似指挥模型行为的注入指令）"
     if memory_type == "procedural":
-        return False
-    return any(p.search(text) for p in IMPERATIVE_PATTERNS)
+        return None
+    for p in IMPERATIVE_PATTERNS:
+        m = p.search(text)
+        if m:
+            return f"开头为祈使/命令语气 {m.group(0)!r}（非 procedural 条目不允许）"
+    return None
+
+
+def is_instructional(content: str, memory_type: str | None = None) -> bool:
+    """content 是否是指令性内容（check_instructional 的布尔包装）。"""
+    return check_instructional(content, memory_type) is not None
 
 
 def gate_candidates(
@@ -104,8 +130,15 @@ def gate_candidates(
             continue
         # 3. 指令性内容检测（D2 硬规则的兜底拦截；注入特征全类型拦截，
         #    开头祈使语气对 procedural 放行——操作约定天然是祈使句）
-        if is_instructional(entry.content, entry.memory_type):
-            result.rejected.append((entry, "指令性内容（以指令模式开头），红线 D2 禁止入库"))
+        instructional = check_instructional(entry.content, entry.memory_type)
+        if instructional:
+            result.rejected.append((
+                entry,
+                f"指令性内容，红线 D2 禁止入库：{instructional}。"
+                "这是确定性规则拦截——原样重试结果不变；若确为误伤（例如内容只是"
+                "提及同名文件或术语、并非在指挥模型），请改写表述后重试，或以"
+                " force_review=true 调 memory_add 转人工复核队列裁决",
+            ))
             continue
         # 4. low 置信度不进正式库，进人工复核队列
         if entry.confidence == "low":

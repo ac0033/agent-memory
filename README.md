@@ -175,8 +175,8 @@ Claude Code / Kimi Code 的 MCP 配置片段：
 }
 ```
 
-五个 tool 起步（M5 起扩为七个、M7 起扩为十三个，见下文 M5 / M7 用法）：`memory_search`（混合检索 + XML 注入块，scope 过滤在服务端强制）、
-`memory_add`（对话 JSON 走蒸馏管线 / 单条 content 走脱敏+对账）、
+五个 tool 起步（M5 起扩为七个、M7 起扩为十三个、M9 起扩为十四个，见下文各节用法）：`memory_search`（混合检索 + XML 注入块，scope 过滤在服务端强制）、
+`memory_add`（对话 JSON 走蒸馏管线 / 单条 content 走脱敏+对账 / distilled_json 走宿主蒸馏）、
 `memory_feedback`（升降置信度，降到 low 以下进复核队列）、
 `memory_update`（过脱敏+评价门后更新）、`memory_forget`（删除）。
 
@@ -308,7 +308,7 @@ agent 应逐条向用户报告并请其裁决（SKILL.md 有对应流程）。
 ### HTTP 常驻服务
 
 stdio 模式由宿主把 server 拉成子进程、随会话生灭；HTTP 模式是一个长期运行的本机服务，
-任何能发 HTTP 请求的 agent 宿主注册一个 URL 即得全部十三个 tool：
+任何能发 HTTP 请求的 agent 宿主注册一个 URL 即得全部十四个 tool：
 
 ```bash
 uv run python -m agent_memory.server.http_server
@@ -316,7 +316,9 @@ uv run python -m agent_memory.server.http_server
 # 覆盖：AGENT_MEMORY_HTTP_HOST / AGENT_MEMORY_HTTP_PORT
 ```
 
-服务另有两个静态路由：`/SKILL.md`（提示层全文）和 `/bootstrap`（接入引导指令）。
+服务另有三个静态路由：`/SKILL.md`（提示层全文）、`/bootstrap`（接入引导指令）和
+`/wm_blocks`（工作记忆注入块，`?scopes=a,b,c` 返回各 scope 的非空渲染块，纯读，
+供会话开头 hook 免 MCP 握手拉取，见 M9 用法）。
 新 agent 接入只需把 `/bootstrap` 的内容给它：注册 `http://127.0.0.1:8765/mcp`
 （传输类型 streamable-http）+ 读取并遵循 `/SKILL.md`，不需要复制任何文件。
 
@@ -356,6 +358,31 @@ wire.jsonl，按文件名自动识别格式）解析成干净的轮次序列（u
 记忆里已完成的待办。工作记忆里还有 pending 待办时会 veto（归档/蒸馏/清理都不执行），确认结束
 传 `force=true`。它与每 N 轮的滚动蒸馏 hook 是双轨分工：hook 保底防中途崩溃丢失，session_end
 做标准收尾。
+
+## M9 用法
+
+### 宿主蒸馏（无 API key 的订阅制 agent）
+
+服务端蒸馏依赖 OpenAI 兼容 API（`AGENT_MEMORY_LLM_API_KEY`）。订阅制 agent（登录即用、
+没有 API key）的宿主本身就是大模型，蒸馏可以自己做：
+
+1. `memory_distill_prompt()` 拿蒸馏协议（system prompt + 输出 JSON schema + 对话渲染格式）；
+2. 宿主在自己的上下文里按协议蒸馏，产出 `{"memories": [...]}`；
+3. `memory_add(distilled_json=...)` 提交——候选照常过服务端的 校验/规范化→脱敏→评价门→对账，
+   门在服务端、不信任蒸馏来源。
+
+无服务端 LLM 时对账走规则降级：无近邻直接 ADD，有近邻进人工复核队列（关系判断必须靠 LLM，
+fail-safe 不猜）。`memory_add` 的对话模式在无 LLM 时返回 `archived_only`，warning 里会指引
+改走宿主蒸馏。
+
+### 会话开头自动注入工作记忆
+
+`scripts/memory_session_context_hook.py` 是宿主中立的"首条用户消息"hook：每个 session 第一次
+触发时向 HTTP 服务拉 `global` + `repo:<当前目录名>` + `agent:<宿主名>` 三个 scope 的工作记忆
+渲染块（`/wm_blocks` 路由），非空则写 stdout 注入上下文；空的 scope 不注入。kimi-code 挂
+`UserPromptSubmit` 事件（stdout 追加进上下文），注册见 `scripts/install_kimi_code.sh`；
+其他宿主用等价事件挂接，宿主名用 `AGENT_MEMORY_AGENT_NAME` 环境变量区分（缺省 kimi-code）。
+`AGENT_MEMORY_WM_HOOK=off` 整体关闭；hook 全程 fail-open，服务不可达静默放行。
 
 ## 三条架构红线
 

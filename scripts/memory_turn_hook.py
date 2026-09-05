@@ -10,6 +10,11 @@
 data_dir 解析与记忆系统一致：AGENT_MEMORY_DATA_DIR 环境变量，缺省
 ~/.agent-memory/data。hook 按宿主惯例 fail-open：任何异常都不拦截对话。
 
+调试开关：AGENT_MEMORY_HOOK_DEBUG=1 时把每次 Stop 事件的 payload 追加到
+<data_dir>/logs/hook_debug.jsonl，用于实测 Stop 是否对 subagent 轮次触发、
+payload 里有没有可区分 subagent 的字段（实测结论决定要不要加 subagent 跳过
+逻辑）。同样 fail-open，写失败不影响计数与拦截。
+
 注意：该 hook 注册在用户级 config.toml 后对所有项目的会话生效；hook 只负责
 "到点必须做"的时机保证，"做什么、怎么沉淀"由指令文本 + 蒸馏管线规则决定。
 """
@@ -17,6 +22,7 @@ data_dir 解析与记忆系统一致：AGENT_MEMORY_DATA_DIR 环境变量，缺�
 import json
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Windows 上 Python 的 stdout/stderr 被管道捕获时默认用系统区域编码（中文系统
@@ -37,7 +43,9 @@ _INSTRUCTION = """[agent-memory 强制记忆更新]
    推荐传 JSON 字符串（把数组序列化后再传；直接传数组服务端也会兼容）。
    只沉淀用户明确确认
    或同意过的内容：用户自己的陈述/要求/偏好可直接沉淀；你单方面提出而
-   用户未表态的建议、方案、结论一律不沉淀；
+   用户未表态的建议、方案、结论一律不沉淀。若蒸馏返回 archived_only 且
+   原因是未配置服务端 LLM：改走宿主蒸馏——调 memory_distill_prompt 拿
+   蒸馏协议，自行蒸馏后以 memory_add(distilled_json=...) 提交；
 4. 若返回的 pending_review 非空，逐条向用户报告（内容 + 排队原因）并请其
    裁决：approve 入库 / modify 修改后入库 / discard 丢弃，用
    memory_review_resolve 落地；
@@ -69,6 +77,18 @@ def main() -> int:
     data_dir = Path(
         os.environ.get("AGENT_MEMORY_DATA_DIR", "~/.agent-memory/data")
     ).expanduser()
+
+    # 调试开关（fail-open）：把每次 Stop 事件的 payload 落盘，供实测分析
+    if os.environ.get("AGENT_MEMORY_HOOK_DEBUG") == "1":
+        try:
+            debug_dir = data_dir / "logs"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            record = {"ts": datetime.now(UTC).isoformat(), "payload": payload}
+            with (debug_dir / "hook_debug.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
     counter_file = data_dir / "state" / "turn_counter.json"
     try:
         counter_file.parent.mkdir(parents=True, exist_ok=True)
