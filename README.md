@@ -8,7 +8,25 @@
 
 接入步骤与各宿主适配器支持情况见 **[docs/agent-integration.md](docs/agent-integration.md)**（含宿主 runtime 职责清单）。
 
-## 当前状态：M7（完成）
+## 当前能力
+
+当前代码已包含 M8/M9 的写入失败保护、宿主蒸馏与工作记忆注入，并提供记忆层/索引的一致性检查。以下入口可直接对应到源码：
+
+| 能力 | 入口与行为 |
+|---|---|
+| 长期、工作与短期记忆 | Markdown 长期记忆、按 scope 保存的工作状态、宿主会话日志适配 |
+| MCP 接入 | [服务实现](agent_memory/server/mcp_server.py) 注册 15 个工具，stdio 与 HTTP 共用业务实现 |
+| LangGraph 接入 | [适配器](agent_memory/long_term/adapters/langgraph/tools.py) 提供 17 个工具，读写通过统一 MemoryService |
+| 宿主蒸馏 | `memory_distill_prompt` 返回协议，宿主生成候选后用 `memory_add(distilled_json=...)` 提交；服务端仍执行校验、脱敏、评价门与对账 |
+| 人工复核 | 待办通过 review list / resolve 处理；读取按 review_gate 执行 |
+| 一致性检查 | `memory_consistency_check` 只读比较 Markdown 记忆层与 SQLite 派生索引 |
+| 会话接续 | `memory_context` 组装上下文，`memory_session_end` 归档；HTTP 的 `/wm_blocks` 可供宿主注入工作记忆 |
+
+缺少服务端 LLM 时，宿主蒸馏候选仍可提交；无近邻可新增，有近邻需人工复核，不会把重复判断当作已经完成。完整配置见 [接入指南](docs/agent-integration.md)。
+
+## 里程碑记录
+
+下列 M0–M7 内容记录各阶段交付，工具数量和验证结果是对应阶段的历史记录；当前接口以以上入口和源码为准。
 
 M0 只交付项目骨架与核心 schema：
 
@@ -73,12 +91,12 @@ M5 交付人工复核交互节点 + 强制更新 hook：
   `memory_add` 返回 `pending_review` 待复核明细；
 - 蒸馏 prompt 新增"用户确认资格"硬规则：assistant 单方面提出、用户未明确确认的建议/方案/结论不沉淀；
 - `scripts/memory_turn_hook.py`：kimi-code Stop hook，按 session 计轮，每 N 轮拦截本轮结束并
-  注入蒸馏指令（材料 = 每轮用户消息 + 紧邻的 assistant 回复），已注册进用户级 `~/.kimi-code/config.toml`。
+  注入蒸馏指令（材料 = 每轮用户消息 + 紧邻的 assistant 回复），可由使用者注册到宿主配置；克隆仓库本身不会安装 hook。
 
 M6 交付 HTTP 常驻服务 + 作用域纪律：
 
 - `agent_memory/server/http_server.py`：streamable-http 常驻服务，默认只绑 127.0.0.1:8765
-  （回环地址天然免鉴权），在 MCP 端点上叠加 `/SKILL.md`（提示层全文分发）与 `/bootstrap`
+  （默认仅供本机访问），在 MCP 端点上叠加 `/SKILL.md`（提示层全文分发）与 `/bootstrap`
   （新 agent 接入引导指令）两个静态路由；对方 agent 一条引导指令即可接入，不再需要复制文件；
 - 作用域纪律（共用一套库、多 agent 多项目混用）：SKILL.md 新增 scope 选择规则（共性进 global、
   项目进 repo:<名>、拿不准先问用户），`memory_add` 的 scope 缺省回落 global 但返回附
@@ -122,6 +140,8 @@ agent-memory/
 ## 快速开始
 
 ```bash
+git clone https://github.com/ac0033/agent-memory.git
+cd agent-memory
 uv sync          # 创建虚拟环境并安装依赖
 uv run pytest    # 跑测试
 uv run ruff check .
@@ -324,11 +344,8 @@ uv run python -m agent_memory.server.http_server
 
 ### Windows 常驻（计划任务）
 
-`scripts/start_http_server.cmd` 是启动包装脚本：异常退出等待 60 秒后拉起，最多 3 次；
-3 连败写 `data/state/http_server_FAILED.txt` 失败标记交人工；日志在
-`data/logs/http_server.log`。`scripts/register_task_s4u.ps1` 注册登录触发的计划任务
-（S4U 后台模式，完全无窗口），需管理员权限运行。**两个脚本都必须保持纯 ASCII**
-（cmd.exe 按 GBK 读 .cmd、PowerShell 5.1 按 ANSI 读无 BOM 的 .ps1，非 ASCII 会损坏解析）。
+本仓库不分发含个人部署路径的 `scripts/start_http_server.cmd` 和 `scripts/register_task_s4u.ps1`。可先按上面的 HTTP 命令启动服务，再根据自己的目录与账户配置后台运行；克隆源码不会自动创建计划任务或修改宿主配置。
+
 
 ## M7 用法
 
