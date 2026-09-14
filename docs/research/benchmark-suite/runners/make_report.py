@@ -2,8 +2,9 @@
 
 用法（仓库根目录）：
   .venv/Scripts/python.exe docs/research/benchmark-suite/runners/make_report.py \
-      --base data/logs/memcompass/t-base --v2 data/logs/memcompass/t-v2 \
-      --ablation data/logs/memcompass/t-abl-no-surface data/logs/memcompass/t-abl-no-archive \
+      --base data/logs/memcompass/t2-base --v2 data/logs/memcompass/t2-v2 \
+      --controls data/logs/memcompass/t2-ctrl-a data/logs/memcompass/t2-ctrl-b \
+      --ablation data/logs/memcompass/t2-abl-no-surface data/logs/memcompass/t2-abl-no-archive \
       --skeleton <骨架.md> --conclusions <结论.md> --cases <案例.md> --out <报告.md>
 
 骨架里的 {{PROFILE_TEST}} / {{SUBSETS_TEST}} / {{ALL_SPLITS}} / {{ABLATION}} / {{JUDGE_AGREEMENT}} /
@@ -47,6 +48,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", type=Path, required=True)
     ap.add_argument("--v2", type=Path, required=True)
+    ap.add_argument("--controls", type=Path, nargs="*", default=[],
+                    help="对照组运行（no_memory、oracle、naive_rag 等），与基线、优化版合并后一起与 am_base 配对比较")
     ap.add_argument("--ablation", type=Path, nargs="*", default=[])
     ap.add_argument("--judge-agreement", type=Path, default=None, help="judge_agreement.py 的输出文件")
     ap.add_argument("--skeleton", type=Path, required=True)
@@ -54,10 +57,12 @@ def main() -> int:
     ap.add_argument("--cases", type=Path, default=None)
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
-    tmp = args.out.parent / "_parts"
-    tmp.mkdir(parents=True, exist_ok=True)
-    test_sub, test_prof = body(report([args.base, args.v2], "am_base", "test", tmp / "test.md"))
-    all_sub, all_prof = body(report([args.base, args.v2], "am_base", None, tmp / "all.md"))
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp(prefix="mc-report-"))
+    main_runs = [args.base, args.v2, *args.controls]
+    test_sub, test_prof = body(report(main_runs, "am_base", "test", tmp / "test.md"))
+    all_sub, all_prof = body(report(main_runs, "am_base", None, tmp / "all.md"))
     abl = []
     for d in args.ablation:
         import json
