@@ -107,6 +107,28 @@ def test_render_unchanged_for_old_entries_and_hints_for_new():
     assert 'completeness="gist"' in new and "eval/s1 第 3–4 行" in new and "不一致" in new
 
 
+def test_retro_hint_only_when_an_older_version_was_superseded():
+    # 首次记下的季度 OKR：生效日（季度初）早于记录日，但并没有"旧说法"可言
+    e = make_entry().model_copy(
+        update={"created_at": date(2026, 8, 12), "valid_from": date(2026, 7, 1)}
+    )
+    plain = render_memory(SearchResult(e, 1.0, 1.0, 1, 1, e.content))
+    assert "追溯更正" not in plain
+    old = VersionRecord(
+        content="站会每周一 10:00", valid_from=date(2026, 8, 3), recorded_at=date(2026, 8, 3)
+    )
+    h = e.model_copy(update={"history": [old]})
+    corrected = render_memory(SearchResult(h, 1.0, 1.0, 1, 1, h.content))
+    assert "追溯更正" in corrected and "变更史" in corrected
+
+
+def test_distill_prompt_counts_relayed_answers_as_user_source():
+    # P15 只拦网帖、传言、粘贴材料；用户转述知情方（法务等）的明确答复由用户背书，照常沉淀
+    from agent_memory.long_term.ingest.distill import _SYSTEM_PROMPT
+
+    assert "用户转述" in _SYSTEM_PROMPT and "source_type 填 user" in _SYSTEM_PROMPT
+
+
 def test_patch_meta_keeps_version_and_last_verified(store):
     e = make_entry(last_verified=date(2026, 8, 1))
     store.create(e)

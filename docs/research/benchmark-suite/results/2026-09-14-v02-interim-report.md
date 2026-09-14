@@ -1,5 +1,7 @@
 # agent-memory v0.2 前后对比：MemCompass v0.2 中期报告（2026-09-14，只含 pr 子集）
 
+> **已被取代**：正式报告见 `2026-09-14-v02-report.md`（8 个子集，答题器改为 DeepSeek 官方 `deepseek-flash`）。本报告保留作过程记录，数字不与正式结果合并。
+
 > **状态：中期。** 正式对比（8 个子集、test 切分 164 条）因 LLM 额度耗尽没有跑完；本报告只含额度耗尽前完成、并确认未受影响的 mc-proactive-recall（K7、K8）用例。正式报告等补跑后生成（`2026-09-14-v02-report.md`）。
 > 基线 `am_base`：agent-memory `bb1c19f`（HEAD 的 git worktree）｜优化版 `am_v2`：工作区 v0.2 代码（运行期间冻结）。
 > 答题器与被测系统内部 LLM：`deepseek-v4-flash-0731`｜评委：`qwen3.8-max`（异源，温度 0）｜种子 1｜切分 test。

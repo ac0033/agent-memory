@@ -42,9 +42,11 @@ def _v2_attrs(e) -> str:
 def _v2_hints(e) -> str:
     """把完整度、核验结果和变更史写成紧跟正文的提示（P27 / P13 / P19）。"""
     hints = []
-    if e.valid_from and e.valid_from < e.created_at:
+    if e.valid_from and e.valid_from < e.created_at and e.history:
         # 追溯更正：事实从 valid_from 起成立，但直到 created_at 才被记下——
-        # "当时我们以为是什么"要按记录时间回答，"当时实际是什么"按有效时间回答
+        # "当时我们以为是什么"要按记录时间回答，"当时实际是什么"按有效时间回答。
+        # 只在确有被取代的旧版本时提示：首次记下的普通事实（如季度 OKR 从季度初生效）
+        # 生效日也早于记录日，但并不存在"之前的记录里仍是旧说法"（MemCompass fg-0002）
         hints.append(
             f"追溯更正：{e.created_at.isoformat()} 才记录，"
             f"按有效时间自 {e.valid_from.isoformat()} 起成立；"
