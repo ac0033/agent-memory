@@ -578,8 +578,29 @@ def main() -> int:
         n_h, n_q = export_aml(items, args.export_aml, args.include_heldout)
         print(f"已导出 AML 形状：{n_h} 个 Add 请求体，{n_q} 道题 → {args.export_aml}"
               + ("（含 held-out）" if args.include_heldout else "（不含 held-out）"))
+    report_verification(items)
     print("结果：", "通过" if not rep.errors else f"{len(rep.errors)} 个错误")
     return 1 if rep.errors else 0
+
+
+def report_verification(items) -> None:
+    """人工核验覆盖率：以 datasets/verification.yaml 为准（用例文件本身不改写）。"""
+    f = ROOT / "datasets" / "verification.yaml"
+    if not f.exists():
+        print("人工核验：没有 datasets/verification.yaml，覆盖率 0")
+        return
+    covered: set[str] = set()
+    all_ids = [it["id"] for it in items]
+    for entry in yaml.safe_load(f.read_text(encoding="utf-8")) or []:
+        if entry.get("verdict") != "pass":
+            continue
+        scope = entry.get("applies_to")
+        covered |= set(all_ids) if scope == "all" else {str(x) for x in (scope or [])}
+    parts = []
+    for sp in ("test", "heldout", "dev"):
+        ids = [it["id"] for it in items if it["split"] == sp]
+        parts.append(f"{sp} {sum(i in covered for i in ids)}/{len(ids)}")
+    print("人工核验（datasets/verification.yaml）：" + "，".join(parts))
 
 
 if __name__ == "__main__":

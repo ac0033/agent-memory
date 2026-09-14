@@ -22,8 +22,8 @@ from pathlib import Path
 import yaml
 
 HERE = Path(__file__).resolve().parent
-SUITE = HERE.parent
-REPO = SUITE.parents[2]
+SUITE = HERE.parent  # docs/research/benchmark-suite（草稿）或 evals/memcompass（迁入后的冻结副本）
+REPO = next(p for p in HERE.parents if (p / "pyproject.toml").exists())
 DATASETS = SUITE / "datasets"
 FILES = ("examples.yaml", "migrated.yaml", "generated.yaml")
 OUT_ROOT = REPO / "data" / "logs" / "memcompass"
