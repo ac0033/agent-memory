@@ -29,3 +29,6 @@ Thumbs.db
 # 本机部署脚本（含个人路径，仅作者本机使用，不随仓库发布）
 scripts/start_http_server.cmd
 scripts/register_task_s4u.ps1
+
+# 核验台生成物（含全部用例，含 held-out）
+docs/research/benchmark-suite/tools/review/index.html

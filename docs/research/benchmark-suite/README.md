@@ -77,7 +77,9 @@ v1.0 目标规模仍以各数据卡为准（合计约 1,300 条）；v0.2 的规
     data/logs/memcompass/<run_a> data/logs/memcompass/<run_b> --per-kind 40
 ```
 
-模型配置（`mc_common.DEFAULTS`）：答题器与被测系统内部 LLM 为 DeepSeek 家族的 `deepseek-v4-flash-0731`（阿里云 token-plan 端点；2026-09-14 DeepSeek 官方账户余额耗尽后改用）；评委为 **异源** 的 `qwen3.8-max`（同一端点），可选第二评委 `glm-5.2`。密钥只从 `--env-file` 读取，不打印。
+模型配置（`mc_common.DEFAULTS`）：答题器与被测系统内部 LLM 为 DeepSeek 官方的 `deepseek-flash`（agent-memory 的生产默认）；评委为 **异源** 的 `qwen3.8-max`（阿里云 token-plan 端点），可选第二评委 `glm-5.2`。两个端点分摊额度。密钥只从 `--env-file` 读取，不打印。任务默认按子集轮流排队（`--order interleave`），额度中断时每个子集都有进度。
+
+人工核验：`tools/review/build_review.py` 把全部用例注入 `tools/review/template.html`，生成单文件核验台（左栏筛选，右栏看历史、探针与金标，逐条标"通过 / 有问题 / 拿不准"并写备注）；`--flags` 可附上评测运行得出的自动体检提示。
 
 ## 6. 客观性与公正性的做法（对应公开评测集的通行方法）
 

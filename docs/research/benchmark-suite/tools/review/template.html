@@ -1,0 +1,702 @@
+<title>MemCompass 核验台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600&display=swap">
+<style>
+:root {
+  --ground: #f3f4ef;
+  --sheet: #fbfbf8;
+  --raised: #ffffff;
+  --ink: #1d211f;
+  --muted: #646b66;
+  --faint: #8b928c;
+  --rule: #d8dcd3;
+  --rule-strong: #b9bfb5;
+  --accent: #2b5c9e;
+  --accent-soft: #e3ebf6;
+  --pass: #2f7a4b;
+  --pass-soft: #e2f0e6;
+  --issue: #b03a2e;
+  --issue-soft: #f6e3e0;
+  --unsure: #a77a12;
+  --unsure-soft: #f5ecd4;
+  --flash: #fff1b8;
+  --shadow: 0 1px 0 rgba(29, 33, 31, .06), 0 6px 18px rgba(29, 33, 31, .06);
+  --serif: "Noto Serif SC", "Songti SC", "SimSun", serif;
+  --sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #131614; --sheet: #1a1e1c; --raised: #202523; --ink: #e3e7e1; --muted: #9aa29c; --faint: #7a827c;
+    --rule: #2d3430; --rule-strong: #414a45; --accent: #86aee4; --accent-soft: #1f2d40;
+    --pass: #6dc08d; --pass-soft: #1b3024; --issue: #ec8a7c; --issue-soft: #3a211d; --unsure: #e0b75a; --unsure-soft: #352b15;
+    --flash: #4a4220; --shadow: 0 1px 0 rgba(0, 0, 0, .3), 0 6px 18px rgba(0, 0, 0, .25);
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #131614; --sheet: #1a1e1c; --raised: #202523; --ink: #e3e7e1; --muted: #9aa29c; --faint: #7a827c;
+  --rule: #2d3430; --rule-strong: #414a45; --accent: #86aee4; --accent-soft: #1f2d40;
+  --pass: #6dc08d; --pass-soft: #1b3024; --issue: #ec8a7c; --issue-soft: #3a211d; --unsure: #e0b75a; --unsure-soft: #352b15;
+  --flash: #4a4220; --shadow: 0 1px 0 rgba(0, 0, 0, .3), 0 6px 18px rgba(0, 0, 0, .25);
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--ground); color: var(--ink);
+  font: 400 14.5px/1.7 var(--sans); -webkit-font-smoothing: antialiased;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--mono); font-size: .92em; }
+
+/* ---------- 顶栏 ---------- */
+.top {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 28px;
+  padding-block: 12px; padding-inline: 20px;
+  border-bottom: 1px solid var(--rule); background: var(--sheet);
+}
+.brand { display: flex; align-items: baseline; gap: 10px; }
+.brand h1 { margin: 0; font: 600 19px/1.2 var(--serif); letter-spacing: .02em; }
+.brand .ver { font: 500 11.5px var(--mono); color: var(--muted); }
+.progress { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-left: auto; }
+.meter { display: grid; gap: 3px; min-width: 128px; }
+.meter .lab { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--muted); }
+.meter .lab b { color: var(--ink); font: 500 12px var(--mono); font-variant-numeric: tabular-nums; }
+.meter .bar { height: 5px; border-radius: 3px; background: var(--rule); overflow: hidden; display: flex; }
+.meter .bar i { display: block; height: 100%; }
+.meter .bar .p { background: var(--pass); }
+.meter .bar .x { background: var(--issue); }
+.meter .bar .u { background: var(--unsure); }
+.sync { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.sync.warn { color: var(--issue); }
+
+/* ---------- 双栏 ---------- */
+.desk { display: grid; grid-template-columns: minmax(250px, 310px) minmax(0, 1fr); height: calc(100% - 58px); }
+.rail { border-right: 1px solid var(--rule); display: flex; flex-direction: column; min-height: 0; background: var(--ground); }
+.filters { display: grid; gap: 10px; padding: 14px 16px 12px; border-bottom: 1px solid var(--rule); }
+.seg { display: flex; border: 1px solid var(--rule-strong); border-radius: 6px; overflow: hidden; }
+.seg button { flex: 1; border: 0; background: transparent; padding: 4px 6px; font-size: 12.5px; cursor: pointer; color: var(--muted); }
+.seg button + button { border-left: 1px solid var(--rule-strong); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--sheet); }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip {
+  border: 1px solid var(--rule-strong); background: transparent; border-radius: 999px;
+  padding: 1px 9px; font-size: 12px; cursor: pointer; color: var(--muted);
+}
+.chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.chip .n { font: 500 11px var(--mono); margin-left: 4px; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.row2 select, .filters input[type="search"] {
+  width: 100%; border: 1px solid var(--rule-strong); border-radius: 6px; background: var(--sheet);
+  padding: 4px 8px; font-size: 12.5px;
+}
+.count { font-size: 12px; color: var(--muted); }
+.list { list-style: none; margin: 0; padding: 4px 0 24px; overflow-y: auto; flex: 1; min-height: 0; }
+.list li button {
+  display: grid; grid-template-columns: 18px 1fr auto; gap: 8px; align-items: center; width: 100%;
+  border: 0; background: transparent; text-align: left; padding: 6px 16px; cursor: pointer;
+}
+.list li button:hover { background: var(--sheet); }
+.list li button[aria-current="true"] { background: var(--sheet); box-shadow: inset 3px 0 0 var(--accent); }
+.list .id { font: 500 12.5px var(--mono); }
+.list .ty { display: block; font-size: 11.5px; color: var(--muted); line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list .sp { font: 500 10.5px var(--mono); color: var(--faint); text-transform: uppercase; letter-spacing: .06em; }
+.mark { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; font: 700 10px var(--sans); border: 1.5px solid var(--rule-strong); color: transparent; }
+.mark.pass { border-color: var(--pass); background: var(--pass); color: var(--sheet); }
+.mark.issue { border-color: var(--issue); background: var(--issue); color: var(--sheet); }
+.mark.unsure { border-color: var(--unsure); background: var(--unsure-soft); color: var(--unsure); }
+.mark.flag { box-shadow: 0 0 0 2px var(--ground), 0 0 0 3.5px var(--unsure); }
+
+/* ---------- 用例单 ---------- */
+.main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.sheet-scroll { overflow-y: auto; flex: 1; min-height: 0; padding-block: 24px 40px; padding-inline: 28px; }
+.sheet { max-width: 880px; margin: 0 auto; display: grid; gap: 26px; }
+.head { display: grid; gap: 8px; }
+.eyebrow { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); }
+.eyebrow .split { font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .08em; padding: 0 7px; border: 1px solid var(--rule-strong); border-radius: 4px; color: var(--ink); }
+.eyebrow .split.test { border-color: var(--accent); color: var(--accent); }
+.head h2 { margin: 0; font: 600 24px/1.3 var(--serif); text-wrap: balance; }
+.head h2 .mono { font-size: .72em; color: var(--muted); margin-left: 10px; font-weight: 500; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag { font: 500 11.5px var(--mono); padding: 0 7px; border-radius: 4px; background: var(--rule); color: var(--ink); }
+.tag.k { background: var(--accent-soft); color: var(--accent); }
+
+.brief {
+  background: var(--raised); border: 1px solid var(--rule); border-radius: 8px; box-shadow: var(--shadow);
+  padding: 14px 18px; display: grid; gap: 6px;
+}
+.brief h3 { margin: 0; font-size: 13px; font-weight: 700; color: var(--accent); letter-spacing: .04em; }
+.brief ol { margin: 0; padding-left: 1.3em; display: grid; gap: 3px; max-width: 70ch; }
+.flagbox { border-color: var(--unsure); background: var(--unsure-soft); }
+.flagbox h3 { color: var(--unsure); }
+
+section.part { display: grid; gap: 12px; }
+section.part > h3 {
+  margin: 0; font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: .12em;
+  display: flex; align-items: center; gap: 10px;
+}
+section.part > h3::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+
+.session { border-left: 2px solid var(--rule-strong); padding-left: 14px; display: grid; gap: 6px; }
+.session .sh { font: 500 12px var(--mono); color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.msg { display: grid; grid-template-columns: 40px 42px 1fr; gap: 8px; align-items: baseline; padding: 2px 6px; border-radius: 5px; margin-left: -6px; }
+.msg .ix { font: 500 11.5px var(--mono); color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
+.msg .who { font-size: 12px; color: var(--muted); }
+.msg.user .who { color: var(--ink); font-weight: 500; }
+.msg .txt { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 72ch; }
+.msg.ev { background: var(--accent-soft); }
+.msg.ev .ix { color: var(--accent); }
+.msg.flash { animation: flash 1.4s ease-out; }
+@keyframes flash { from { background: var(--flash); } }
+.src { font: 500 10.5px var(--mono); color: var(--unsure); border: 1px solid var(--unsure); border-radius: 3px; padding: 0 4px; margin-right: 6px; }
+.event { font-size: 12px; color: var(--muted); padding-left: 56px; display: flex; align-items: center; gap: 8px; }
+.event::before, .event::after { content: ""; height: 1px; background: var(--rule-strong); flex: 0 0 18px; }
+.event::after { flex: 1; }
+
+.mems { display: grid; gap: 6px; }
+.mem { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; padding: 8px 12px; border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); }
+.mem .mh { display: flex; flex-wrap: wrap; gap: 4px 10px; font: 500 11.5px var(--mono); color: var(--muted); }
+.mem.bg { opacity: .72; }
+.mem.target { border-color: var(--accent); }
+.mem .role { font-family: var(--sans); font-size: 11px; padding: 0 6px; border-radius: 3px; background: var(--rule); color: var(--ink); }
+.mem.target .role { background: var(--accent); color: var(--sheet); }
+
+.probe { border: 1px solid var(--rule); border-radius: 8px; background: var(--sheet); overflow: hidden; }
+.probe .ph { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 8px 14px; border-bottom: 1px solid var(--rule); font: 500 12px var(--mono); color: var(--muted); background: var(--ground); }
+.probe .ph b { color: var(--ink); }
+.probe .pb { padding: 12px 14px; display: grid; gap: 12px; }
+.query { margin: 0; font-size: 15.5px; line-height: 1.65; padding-left: 12px; border-left: 3px solid var(--ink); max-width: 70ch; }
+.answer { padding: 8px 12px; border-radius: 6px; background: var(--pass-soft); max-width: 72ch; }
+.answer .k { font-size: 11.5px; font-weight: 700; color: var(--pass); letter-spacing: .06em; display: block; }
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 0; }
+.kv dt { font: 500 12px var(--mono); color: var(--muted); padding-top: 2px; }
+.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.kv dd .kv { margin-top: 2px; }
+ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 2px; max-width: 72ch; }
+ul.good li::marker { color: var(--pass); }
+ul.bad li::marker { color: var(--issue); }
+.lbl { font-size: 11.5px; font-weight: 700; letter-spacing: .06em; color: var(--muted); display: block; margin-bottom: 2px; }
+.lbl.good { color: var(--pass); }
+.lbl.bad { color: var(--issue); }
+.evref {
+  font: 500 11.5px var(--mono); border: 1px solid var(--accent); color: var(--accent); background: transparent;
+  border-radius: 4px; padding: 0 6px; cursor: pointer; margin: 0 4px 2px 0;
+}
+.evref:hover { background: var(--accent-soft); }
+.pill { font: 500 11.5px var(--mono); padding: 0 6px; border-radius: 4px; border: 1px solid var(--rule-strong); display: inline-block; margin: 0 4px 2px 0; }
+.yes { color: var(--pass); }
+.no { color: var(--muted); }
+.pre { font: 12px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; color: var(--muted); }
+
+/* ---------- 判定栏 ---------- */
+.verdict {
+  border-top: 1px solid var(--rule); background: var(--sheet);
+  padding-block: 10px; padding-inline: 28px;
+}
+.verdict-in { max-width: 880px; margin: 0 auto; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px 14px; align-items: start; }
+.vbtns { display: flex; gap: 6px; }
+.vbtn {
+  border: 1.5px solid var(--rule-strong); background: var(--raised); border-radius: 6px; padding: 5px 12px;
+  font-size: 13.5px; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 6px; white-space: nowrap;
+}
+.vbtn kbd { font: 500 10.5px var(--mono); color: var(--faint); }
+.vbtn.pass[aria-pressed="true"] { border-color: var(--pass); background: var(--pass); color: var(--sheet); }
+.vbtn.issue[aria-pressed="true"] { border-color: var(--issue); background: var(--issue); color: var(--sheet); }
+.vbtn.unsure[aria-pressed="true"] { border-color: var(--unsure); background: var(--unsure-soft); color: var(--unsure); }
+.vbtn[aria-pressed="true"] kbd { color: inherit; opacity: .75; }
+#note {
+  width: 100%; min-height: 36px; max-height: 140px; resize: vertical; border: 1px solid var(--rule-strong); border-radius: 6px;
+  background: var(--raised); padding: 6px 10px; font-size: 13.5px; line-height: 1.55;
+}
+.nav { display: flex; gap: 6px; align-items: center; }
+.nav button { border: 1px solid var(--rule-strong); background: transparent; border-radius: 6px; padding: 5px 10px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+.vstate { grid-column: 1 / -1; font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.vstate .err { color: var(--issue); }
+.empty { padding: 60px 20px; text-align: center; color: var(--muted); }
+
+@media (max-width: 860px) {
+  html, body { height: auto; }
+  .desk { display: block; height: auto; }
+  .rail { border-right: 0; border-bottom: 1px solid var(--rule); }
+  .list { max-height: 36vh; }
+  .sheet-scroll { overflow: visible; padding-inline: 16px; }
+  .verdict { position: sticky; bottom: 0; padding-inline: 16px; }
+  .verdict-in { grid-template-columns: 1fr; }
+  .top { padding-inline: 16px; }
+  .progress { margin-left: 0; }
+  .msg { grid-template-columns: 30px 36px 1fr; }
+  .event { padding-left: 40px; }
+}
+@media (prefers-reduced-motion: reduce) { .msg.flash { animation: none; } }
+</style>
+
+<header class="top">
+  <div class="brand"><h1>MemCompass 核验台</h1><span class="ver" id="ver"></span></div>
+  <div class="progress" id="progress"></div>
+  <span class="sync" id="sync">连接共享存储中…</span>
+</header>
+
+<div class="desk">
+  <aside class="rail" aria-label="用例列表">
+    <div class="filters">
+      <div class="seg" role="group" aria-label="切分" id="splitSeg"></div>
+      <div class="chips" id="subsetChips" role="group" aria-label="子集"></div>
+      <div class="row2">
+        <select id="statusSel" aria-label="核验状态">
+          <option value="all">全部状态</option>
+          <option value="todo">未核验</option>
+          <option value="pass">通过</option>
+          <option value="issue">有问题</option>
+          <option value="unsure">拿不准</option>
+          <option value="flag">有自动标记</option>
+        </select>
+        <input type="search" id="q" placeholder="搜 id / 类型 / 内容" aria-label="搜索">
+      </div>
+      <div class="count" id="count"></div>
+    </div>
+    <ul class="list" id="list"></ul>
+  </aside>
+
+  <main class="main">
+    <div class="sheet-scroll" id="scroll"><article class="sheet" id="sheet"></article></div>
+    <div class="verdict">
+      <div class="verdict-in">
+        <div class="vbtns" role="group" aria-label="核验结论">
+          <button class="vbtn pass" id="vPass" data-v="pass" aria-pressed="false">通过 <kbd>1</kbd></button>
+          <button class="vbtn issue" id="vIssue" data-v="issue" aria-pressed="false">有问题 <kbd>2</kbd></button>
+          <button class="vbtn unsure" id="vUnsure" data-v="unsure" aria-pressed="false">拿不准 <kbd>3</kbd></button>
+        </div>
+        <textarea id="note" rows="1" placeholder="备注：哪里有问题、应该怎么改（选“有问题”时请写）"></textarea>
+        <div class="nav">
+          <button id="prev" aria-label="上一条">↑ 上一条</button>
+          <button id="next" aria-label="下一条">下一条 ↓</button>
+        </div>
+        <div class="vstate" id="vstate"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script id="data" type="application/json">__DATA__</script>
+<script>
+(() => {
+  "use strict";
+  const DATA = JSON.parse(document.getElementById("data").textContent);
+  const ITEMS = DATA.items;
+  const FLAGS = DATA.flags || {};
+  const SUBSETS = [
+    ["mc-proactive-recall", "pr", "主动回忆"], ["mc-completeness-alignment", "ca", "完整性与对齐"],
+    ["mc-asof-temporal", "at", "时间与变化"], ["mc-forget-request", "fg", "遗忘请求"],
+    ["mc-memory-poisoning", "mp", "记忆投毒"], ["mc-task-state", "ts", "任务状态"],
+    ["mc-present-fidelity", "pf", "当下保真"], ["mc-cross-agent", "xa", "跨 agent"],
+  ];
+  const SUB = Object.fromEntries(SUBSETS.map(([k, s, n]) => [k, { short: s, name: n }]));
+  const SPLITS = [["test", "test"], ["heldout", "held-out"], ["dev", "dev"], ["all", "全部"]];
+  const CHECK = {
+    "mc-proactive-recall": [
+      "在当前请求下，这条记忆是否属于“不提就会出错 / 提了明显有帮助”？“应浮现 / 不应浮现”的标注站得住吗？",
+      "多轮用例：最早可以浮现、最晚必须浮现的轮次（earliest / max）是否合理？",
+      "背景记忆（灰色）里，有没有意外也能回答问题、或让负例变成正例的内容？",
+      "负例是否只和正例差关键一点（最小对比），而不是一眼就能看出无关？",
+    ],
+    "mc-completeness-alignment": [
+      "关键细节到底在记忆里，还是只在原文会话里？与 expected 的 backfill / confirm / queue 标注一致吗？",
+      "模拟用户的回答与原文一致吗？“不可恢复”类确实在记忆和原文里都查不到细节吗？",
+      "rubric 的“必须做到”是否合理，不要求系统做不可能的事？",
+    ],
+    "mc-asof-temporal": [
+      "用日历核对日期、星期和区间计算（金标由程序算出，但规格可能写错）。",
+      "as_of 与 time_axis（valid = 事实实际生效的时间；record = 当时记录里的样子）是否与标准答案对应？",
+      "追溯更正题：答案是否区分了“当时的记录”和“事后更正的事实”？",
+    ],
+    "mc-forget-request": [
+      "要删的内容与要保留的内容边界清楚吗？用户的遗忘请求能唯一指向被删内容吗？",
+      "must_not_reveal（硬标记）是否只来自被删内容？软标记会不会误伤正常回答？",
+      "“忘后重告”题：用户重新告知后，期望的回答合理吗？",
+    ],
+    "mc-memory-poisoning": [
+      "攻击是否真实（嵌入指令、低可信来源、延迟触发），而不是一眼可识破的稻草人？",
+      "良性对照与攻击的表层是否相似，且确实应该被采纳？",
+      "poison_markers 是否只会出现在被投毒的回答里，不会误伤正确回答？",
+    ],
+    "mc-task-state": [
+      "按对话逐条重放，最终状态（目标、约束、已完成、下一步、未决问题、关键变量）与金标一致吗？",
+      "过时项（stale_items）与串任务项（contamination_items）标得对吗？",
+    ],
+    "mc-present-fidelity": [
+      "必须保留的细节是否确实出现在前文，并且逐字一致？",
+      "填充与压缩事件的位置合理吗？不可答题是否确实无法从前文得出？",
+    ],
+    "mc-cross-agent": [
+      "目标宿主、作用域与期望注入（must_inject）是否一致？",
+      "must_not_inject 是否确实属于其他作用域或已被取代？并发写入的先后与期望结果一致吗？",
+    ],
+  };
+  const KEYNAME = {
+    answer: "标准答案", nuggets: "要点", pitfalls: "陷阱", evidence: "证据", labels: "标注",
+    essential: "必须做到", trigger: "触发", tools: "可用工具", expected: "期望", rubric: "评分要点",
+    simulated_user: "模拟用户", unattended: "无人值守", from_probe: "对应探针", difficulty: "难度",
+    provenance: "来源", template_id: "模板", group: "组", legacy_id: "旧 id", generator: "生成器",
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const safeGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+  const safeSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* 忽略 */ } };
+
+  // ---------------- 状态 ----------------
+  const pref = (() => { try { return JSON.parse(safeGet("mc-review-pref") || "{}"); } catch { return {}; } })();
+  const state = {
+    split: pref.split || "test",
+    subsets: new Set(pref.subsets || []),
+    status: "all",
+    q: "",
+    current: null,
+  };
+  const reviews = {};          // id -> {verdict, note, updated}
+  const store = { mode: "pending", db: null, pending: {}, errors: 0 };
+
+  const splitRank = { test: 0, heldout: 1, dev: 2 };
+  const subRank = Object.fromEntries(SUBSETS.map(([k], i) => [k, i]));
+  ITEMS.sort((a, b) => (splitRank[a.split] - splitRank[b.split]) || (subRank[a.subset] - subRank[b.subset]) || a.id.localeCompare(b.id));
+  const BY_ID = Object.fromEntries(ITEMS.map((x) => [x.id, x]));
+  const HAY = Object.fromEntries(ITEMS.map((x) => [x.id, JSON.stringify(x).toLowerCase()]));
+
+  function statusOf(id) { return reviews[id]?.verdict || "todo"; }
+  function filtered() {
+    const q = state.q.trim().toLowerCase();
+    return ITEMS.filter((x) =>
+      (state.split === "all" || x.split === state.split) &&
+      (!state.subsets.size || state.subsets.has(x.subset)) &&
+      (state.status === "all" || (state.status === "flag" ? !!FLAGS[x.id] : statusOf(x.id) === state.status)) &&
+      (!q || HAY[x.id].includes(q)));
+  }
+
+  // ---------------- 顶栏进度 ----------------
+  function renderProgress() {
+    const out = [];
+    for (const [sp, lab] of SPLITS.slice(0, 3)) {
+      const xs = ITEMS.filter((x) => x.split === sp);
+      const c = { pass: 0, issue: 0, unsure: 0 };
+      xs.forEach((x) => { const v = statusOf(x.id); if (c[v] !== undefined) c[v]++; });
+      const done = c.pass + c.issue + c.unsure;
+      const w = (n) => (xs.length ? (100 * n) / xs.length : 0).toFixed(2) + "%";
+      out.push(`<div class="meter" title="通过 ${c.pass} · 有问题 ${c.issue} · 拿不准 ${c.unsure}">
+        <div class="lab"><span>${lab}</span><b>${done}/${xs.length}${c.issue ? ` · <span style="color:var(--issue)">${c.issue} 有问题</span>` : ""}</b></div>
+        <div class="bar"><i class="p" style="width:${w(c.pass)}"></i><i class="x" style="width:${w(c.issue)}"></i><i class="u" style="width:${w(c.unsure)}"></i></div></div>`);
+    }
+    $("progress").innerHTML = out.join("");
+  }
+
+  // ---------------- 左栏 ----------------
+  function renderFilters() {
+    $("splitSeg").innerHTML = SPLITS.map(([k, lab]) =>
+      `<button type="button" data-split="${k}" aria-pressed="${state.split === k}">${lab}</button>`).join("");
+    const base = ITEMS.filter((x) => state.split === "all" || x.split === state.split);
+    $("subsetChips").innerHTML = SUBSETS.map(([k, s, n]) => {
+      const n1 = base.filter((x) => x.subset === k).length;
+      return `<button type="button" class="chip" data-sub="${k}" aria-pressed="${state.subsets.has(k)}" title="${esc(k)}">${esc(n)}<span class="n">${n1}</span></button>`;
+    }).join("");
+    const flagOpt = $("statusSel").querySelector('option[value="flag"]');
+    flagOpt.hidden = !Object.keys(FLAGS).length;
+  }
+
+  function renderList() {
+    const xs = filtered();
+    $("count").textContent = `${xs.length} 条` + (xs.length ? `，未核验 ${xs.filter((x) => statusOf(x.id) === "todo").length}` : "");
+    $("list").innerHTML = xs.map((x) => {
+      const v = statusOf(x.id);
+      const glyph = { pass: "✓", issue: "✕", unsure: "?" }[v] || "";
+      return `<li><button type="button" data-id="${x.id}" aria-current="${state.current === x.id}">
+        <span class="mark ${v}${FLAGS[x.id] ? " flag" : ""}" aria-label="${{ pass: "通过", issue: "有问题", unsure: "拿不准" }[v] || "未核验"}">${glyph}</span>
+        <span><span class="id">${esc(x.id)}</span><span class="ty">${esc(x.type)}${x.subtype ? " / " + esc(x.subtype) : ""}</span></span>
+        <span class="sp">${esc(x.split === "heldout" ? "h-o" : x.split)}</span></button></li>`;
+    }).join("") || `<li class="empty">没有符合条件的用例</li>`;
+  }
+
+  // ---------------- 通用渲染 ----------------
+  function atText(at) {
+    if (!at || typeof at !== "object") return esc(at ?? "");
+    if (at.new_session) return "新会话";
+    if (at.after_session) return `会话 ${esc(at.after_session)} 之后`;
+    if (at.session && at.after_message !== undefined) return `会话 ${esc(at.session)} 第 #${esc(at.after_message)} 条消息之后`;
+    return esc(JSON.stringify(at));
+  }
+  function scalar(v) {
+    if (v === true) return `<span class="yes">是</span>`;
+    if (v === false) return `<span class="no">否</span>`;
+    if (v === null || v === undefined) return `<span class="no">—</span>`;
+    return esc(v);
+  }
+  function value(v) {
+    if (Array.isArray(v)) {
+      if (!v.length) return `<span class="no">（空）</span>`;
+      if (v.every((x) => typeof x !== "object" || x === null)) {
+        const short = v.every((x) => String(x).length <= 24);
+        return short ? v.map((x) => `<span class="pill">${esc(x)}</span>`).join("")
+                     : `<ul class="plain">${v.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
+      }
+      return v.map((x) => (x && typeof x === "object" && !Array.isArray(x) ? kv(x) : value(x))).join("");
+    }
+    if (v && typeof v === "object") return kv(v);
+    return scalar(v);
+  }
+  function kv(obj) {
+    const ks = Object.keys(obj);
+    if (!ks.length) return `<span class="no">（空）</span>`;
+    return `<dl class="kv">${ks.map((k) => `<dt>${esc(KEYNAME[k] ? KEYNAME[k] + " " : "")}<span class="mono">${esc(k)}</span></dt><dd>${value(obj[k])}</dd>`).join("")}</dl>`;
+  }
+  function evidence(evs) {
+    return evs.map((e) => `<button type="button" class="evref" data-ev="${esc(e.session_id)}-${esc(e.message_index)}">${esc(e.session_id)} #${esc(e.message_index)}</button>`).join("");
+  }
+
+  // ---------------- 用例单 ----------------
+  function renderSheet(x) {
+    if (!x) { $("sheet").innerHTML = `<div class="empty">左侧没有可显示的用例</div>`; return; }
+    const sub = SUB[x.subset] || { name: x.subset };
+    const evSet = new Set();
+    const targets = new Set();
+    for (const p of x.probes || []) {
+      for (const e of p.gold?.evidence || []) evSet.add(`${e.session_id}-${e.message_index}`);
+      for (const t of p.gold?.labels?.target_memory_ids || []) targets.add(t);
+    }
+    const caps = x.capabilities || {};
+    const meta = x.meta || {};
+    const parts = [];
+
+    parts.push(`<header class="head">
+      <div class="eyebrow"><span class="split ${esc(x.split)}">${esc(x.split === "heldout" ? "held-out" : x.split)}</span>
+        <span>${esc(sub.name)} · <span class="mono">${esc(x.subset)}</span></span>
+        ${meta.group ? `<span>组 <span class="mono">${esc(meta.group)}</span></span>` : ""}
+        ${meta.template_id ? `<span>模板 <span class="mono">${esc(meta.template_id)}</span></span>` : ""}</div>
+      <h2>${esc(x.type)}${x.subtype ? " / " + esc(x.subtype) : ""}<span class="mono">${esc(x.id)}</span></h2>
+      <div class="tags">${(caps.primary || []).map((k) => `<span class="tag k">${esc(k)}</span>`).join("")}
+        ${(caps.secondary || []).map((k) => `<span class="tag">${esc(k)}</span>`).join("")}
+        ${(x.tracks || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div>
+    </header>`);
+
+    if (FLAGS[x.id]) {
+      parts.push(`<div class="brief flagbox"><h3>自动体检提示</h3><ol>${[].concat(FLAGS[x.id]).map((f) => `<li>${esc(f)}</li>`).join("")}</ol></div>`);
+    }
+    parts.push(`<div class="brief"><h3>这一类用例重点核对</h3><ol>${(CHECK[x.subset] || []).map((c) => `<li>${esc(c)}</li>`).join("")}</ol></div>`);
+
+    const sessions = x.history?.sessions || [];
+    if (sessions.length) {
+      parts.push(`<section class="part"><h3>历史会话</h3>${sessions.map((s) => {
+        const evs = {};
+        for (const e of s.events || []) (evs[e.after_message] ||= []).push(e);
+        const rows = [];
+        (s.messages || []).forEach((m, i) => {
+          const key = `${s.session_id}-${i}`;
+          rows.push(`<div class="msg ${m.role === "user" ? "user" : "asst"}${evSet.has(key) ? " ev" : ""}" id="msg-${esc(key)}">
+            <span class="ix">#${i}</span><span class="who">${m.role === "user" ? "用户" : m.role === "assistant" ? "助手" : esc(m.role)}</span>
+            <span class="txt">${m.source ? `<span class="src">${esc(m.source)}</span>` : ""}${esc(m.content)}</span></div>`);
+          for (const e of evs[i] || []) {
+            const t = e.kind === "filler" ? `插入 ${esc(e.n_turns ?? "")} 轮填充对话（${esc(e.pool ?? "")}）`
+              : e.kind === "compaction" ? `上下文压缩（${esc(e.compactor ?? "")}）` : esc(JSON.stringify(e));
+            rows.push(`<div class="event">${t}</div>`);
+          }
+        });
+        const head = [s.session_id, String(s.date ?? "").replace("T", " ").slice(0, 16), s.host && s.host !== "generic" ? s.host : "", s.scope || ""].filter(Boolean);
+        return `<div class="session"><div class="sh">${head.map((h) => `<span>${esc(h)}</span>`).join("")}</div>${rows.join("")}</div>`;
+      }).join("")}</section>`);
+    }
+
+    const mems = x.history?.preloaded_memories || [];
+    if (mems.length) {
+      parts.push(`<section class="part"><h3>预置记忆 · ${mems.length} 条</h3><div class="mems">${mems.map((m) => {
+        const bg = m.role === "background";
+        const tg = targets.has(m.id);
+        const rest = Object.fromEntries(Object.entries(m).filter(([k]) => !["id", "content", "memory_type", "source_session", "role"].includes(k)));
+        return `<div class="mem${bg ? " bg" : ""}${tg ? " target" : ""}">
+          <div class="mh"><span>${esc(m.id)}</span><span>${esc(m.memory_type || "")}</span>${m.source_session ? `<span>来自 ${esc(m.source_session)}</span>` : ""}
+          ${tg ? `<span class="role">目标</span>` : bg ? `<span class="role">背景</span>` : ""}</div>
+          <div>${esc(m.content)}</div>${Object.keys(rest).length ? kv(rest) : ""}</div>`;
+      }).join("")}</div></section>`);
+    }
+
+    for (const p of x.probes || []) {
+      const g = p.gold || {};
+      const other = Object.fromEntries(Object.entries(g).filter(([k]) => !["answer", "nuggets", "pitfalls", "evidence", "labels"].includes(k)));
+      parts.push(`<section class="part"><h3>探针 ${esc(p.probe_id)}</h3><div class="probe">
+        <div class="ph"><span>类型 <b>${esc(p.kind)}</b></span><span>时点 <b>${atText(p.at)}</b></span>
+          ${p.reference_time ? `<span>参考时间 <b>${esc(String(p.reference_time).replace("T", " ").slice(0, 16))}</b></span>` : ""}
+          ${p.contract ? `<span>协议 <b>${esc(p.contract)}</b></span>` : ""}</div>
+        <div class="pb">
+          <p class="query">${esc(p.query)}</p>
+          ${g.answer ? `<div class="answer"><span class="k">标准答案</span>${esc(g.answer)}</div>` : ""}
+          ${g.nuggets?.length ? `<div><span class="lbl good">要点（回答应覆盖）</span><ul class="plain good">${g.nuggets.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></div>` : ""}
+          ${g.pitfalls?.length ? `<div><span class="lbl bad">陷阱（出现即扣分）</span><ul class="plain bad">${g.pitfalls.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></div>` : ""}
+          ${g.evidence?.length ? `<div><span class="lbl">证据（点击定位原文）</span>${evidence(g.evidence)}</div>` : ""}
+          ${g.labels ? `<div><span class="lbl">标注</span>${kv(g.labels)}</div>` : ""}
+          ${Object.keys(other).length ? kv(other) : ""}
+        </div></div></section>`);
+    }
+
+    const b = x.behavior;
+    if (b) {
+      const blocks = [];
+      if (b.trigger) {
+        const t = b.trigger;
+        const turns = (t.turns || []).map((m) => `<div class="msg user"><span class="ix"></span><span class="who">${m.role === "user" ? "用户" : esc(m.role || "")}</span><span class="txt">${esc(m.content ?? m)}</span></div>`).join("");
+        blocks.push(`<div><span class="lbl">触发${t.date ? ` · ${esc(t.date)}` : ""}</span>${t.context ? `<div>${esc(t.context)}</div>` : ""}${turns}</div>`);
+      }
+      if (b.simulated_user?.replies?.length) {
+        blocks.push(`<div><span class="lbl">模拟用户会这样回答</span><ul class="plain">${b.simulated_user.replies.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>`);
+      }
+      if (b.rubric) {
+        if (b.rubric.essential?.length) blocks.push(`<div><span class="lbl good">必须做到</span><ul class="plain good">${b.rubric.essential.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>`);
+        if (b.rubric.pitfalls?.length) blocks.push(`<div><span class="lbl bad">不能出现</span><ul class="plain bad">${b.rubric.pitfalls.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>`);
+      }
+      const rest = Object.fromEntries(Object.entries(b).filter(([k]) => !["trigger", "simulated_user", "rubric"].includes(k)));
+      if (Object.keys(rest).length) blocks.push(kv(rest));
+      parts.push(`<section class="part"><h3>行为评测</h3><div class="probe"><div class="pb">${blocks.join("")}</div></div></section>`);
+    }
+
+    const m2 = Object.fromEntries(Object.entries(meta).filter(([k]) => !["group", "template_id", "verified_by"].includes(k)));
+    parts.push(`<section class="part"><h3>元数据</h3>${kv(m2)}</section>`);
+    $("sheet").innerHTML = parts.join("");
+    $("scroll").scrollTop = 0;
+  }
+
+  // ---------------- 判定栏 ----------------
+  function renderVerdict() {
+    const r = reviews[state.current] || {};
+    for (const b of document.querySelectorAll(".vbtn")) b.setAttribute("aria-pressed", String(r.verdict === b.dataset.v));
+    if (document.activeElement !== $("note")) $("note").value = r.note || "";
+    const bits = [];
+    if (r.updated) bits.push(`上次保存 ${new Date(r.updated).toLocaleString("zh-CN", { hour12: false })}`);
+    bits.push("快捷键：J / K 切换，1 / 2 / 3 判定，N 写备注");
+    $("vstate").innerHTML = bits.map((t) => `<span>${esc(t)}</span>`).join("") + (store.lastError ? `<span class="err">${esc(store.lastError)}</span>` : "");
+  }
+
+  function select(id, { focusList = false } = {}) {
+    if (!BY_ID[id]) return;
+    state.current = id;
+    if (location.hash.slice(1) !== id) history.replaceState(null, "", "#" + id);
+    renderSheet(BY_ID[id]);
+    renderVerdict();
+    for (const b of $("list").querySelectorAll("button[data-id]")) {
+      const on = b.dataset.id === id;
+      b.setAttribute("aria-current", String(on));
+      if (on) { b.scrollIntoView({ block: "nearest" }); if (focusList) b.focus(); }
+    }
+  }
+  function step(d) {
+    const xs = filtered();
+    if (!xs.length) return;
+    const i = xs.findIndex((x) => x.id === state.current);
+    const j = i < 0 ? 0 : Math.min(xs.length - 1, Math.max(0, i + d));
+    select(xs[j].id);
+  }
+
+  // ---------------- 存储 ----------------
+  function setSync(text, warn = false) { const el = $("sync"); el.textContent = text; el.classList.toggle("warn", warn); }
+  function persist(id) {
+    const rec = reviews[id];
+    if (store.mode === "db") {
+      store.db.doc("reviews/" + id).set(rec).then(() => { store.lastError = ""; if (id === state.current) renderVerdict(); })
+        .catch((e) => { store.lastError = `保存失败（${e?.code || "unknown"}）：稍后再点一次判定按钮重试`; renderVerdict(); });
+    } else if (store.mode === "local") {
+      safeSet("mc-review-local", JSON.stringify(reviews));
+    } else {
+      store.pending[id] = rec;
+    }
+  }
+  function save(id, patch) {
+    const x = BY_ID[id];
+    reviews[id] = { ...(reviews[id] || {}), ...patch, subset: x.subset, split: x.split, updated: new Date().toISOString() };
+    persist(id);
+    renderProgress(); renderList(); renderVerdict();
+  }
+
+  async function connect() {
+    let db = null;
+    try { db = window.claude?.use ? await window.claude.use("db") : null; } catch { db = null; }
+    if (!db) {
+      store.mode = "local";
+      try { Object.assign(reviews, JSON.parse(safeGet("mc-review-local") || "{}")); } catch { /* 忽略 */ }
+      for (const id of Object.keys(store.pending)) reviews[id] = store.pending[id];
+      safeSet("mc-review-local", JSON.stringify(reviews));
+      setSync("未连接共享存储：结论只保存在本浏览器", true);
+      renderProgress(); renderList(); renderVerdict();
+      return;
+    }
+    store.db = db; store.mode = "db";
+    for (const id of Object.keys(store.pending)) persist(id);
+    store.pending = {};
+    setSync("已连接共享存储，结论实时保存");
+    db.collection("reviews").onSnapshot((snap) => {
+      for (const d of snap.docs) {
+        const body = d.data();
+        if (body) reviews[d.id] = { ...body };
+      }
+      for (const ch of snap.docChanges()) if (ch.type === "removed") delete reviews[ch.doc.id];
+      renderProgress(); renderList(); renderVerdict();
+    }, (e) => setSync(`共享存储断开（${e?.code || "unknown"}）：刷新页面重连`, true));
+  }
+
+  // ---------------- 事件 ----------------
+  function savePref() { safeSet("mc-review-pref", JSON.stringify({ split: state.split, subsets: [...state.subsets] })); }
+  $("splitSeg").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-split]"); if (!b) return;
+    state.split = b.dataset.split; savePref(); renderFilters(); renderList();
+    const xs = filtered(); if (xs.length && !xs.some((x) => x.id === state.current)) select(xs[0].id);
+  });
+  $("subsetChips").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-sub]"); if (!b) return;
+    const k = b.dataset.sub; state.subsets.has(k) ? state.subsets.delete(k) : state.subsets.add(k);
+    savePref(); renderFilters(); renderList();
+    const xs = filtered(); if (xs.length && !xs.some((x) => x.id === state.current)) select(xs[0].id);
+  });
+  $("statusSel").addEventListener("change", (e) => { state.status = e.target.value; renderList(); });
+  $("q").addEventListener("input", (e) => { state.q = e.target.value; renderList(); });
+  $("list").addEventListener("click", (e) => { const b = e.target.closest("button[data-id]"); if (b) select(b.dataset.id); });
+  $("sheet").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-ev]"); if (!b) return;
+    const el = document.getElementById("msg-" + b.dataset.ev);
+    if (el) { el.scrollIntoView({ block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
+  });
+  document.querySelector(".vbtns").addEventListener("click", (e) => {
+    const b = e.target.closest(".vbtn"); if (!b || !state.current) return;
+    const cur = reviews[state.current]?.verdict;
+    save(state.current, { verdict: cur === b.dataset.v ? null : b.dataset.v, note: $("note").value });
+  });
+  let noteTimer = null;
+  $("note").addEventListener("input", () => {
+    clearTimeout(noteTimer);
+    const id = state.current;
+    noteTimer = setTimeout(() => save(id, { note: $("note").value }), 700);
+  });
+  $("note").addEventListener("blur", () => {
+    if (noteTimer) { clearTimeout(noteTimer); noteTimer = null; if (state.current && (reviews[state.current]?.note || "") !== $("note").value) save(state.current, { note: $("note").value }); }
+  });
+  $("prev").addEventListener("click", () => step(-1));
+  $("next").addEventListener("click", () => step(1));
+  document.addEventListener("keydown", (e) => {
+    const t = e.target;
+    if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT" || t.tagName === "SELECT")) {
+      if (e.key === "Escape") t.blur();
+      return;
+    }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "j" || e.key === "ArrowDown") { e.preventDefault(); step(1); }
+    else if (e.key === "k" || e.key === "ArrowUp") { e.preventDefault(); step(-1); }
+    else if (e.key === "1" || e.key === "2" || e.key === "3") { $({ 1: "vPass", 2: "vIssue", 3: "vUnsure" }[e.key]).click(); }
+    else if (e.key === "n") { e.preventDefault(); $("note").focus(); }
+  });
+
+  // ---------------- 启动 ----------------
+  $("ver").textContent = `${ITEMS.length} 条用例 · 构建于 ${DATA.built}`;
+  renderFilters();
+  renderProgress();
+  renderList();
+  const fromHash = decodeURIComponent(location.hash.slice(1));
+  const first = BY_ID[fromHash] ? fromHash : (filtered()[0] || ITEMS[0]).id;
+  if (BY_ID[fromHash] && !filtered().some((x) => x.id === fromHash)) { state.split = "all"; renderFilters(); renderList(); }
+  select(first);
+  connect();
+})();
+</script>

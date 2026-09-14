@@ -9,6 +9,7 @@
    **2026-09-14 变更**：第一轮 dev+test 运行（答题器 `deepseek-flash`，官方 API）在跑到约 3% 时因 DeepSeek 账户余额耗尽（HTTP 402）中断，已作废（`full-base`、`full-v2` 等目录只作冒烟记录）；正式运行改为**只跑 test 切分**、答题器与被测系统内部 LLM 统一换成 token-plan 端点上的 `deepseek-v4-flash-0731`，基线与优化版用同一模型从头重跑（`t-base`、`t-v2`、`t-abl-*`）。为控制成本，对照组去掉了 oracle 与 am_base_ra。
    **2026-09-14 第二次中断**：14:32 左右 token-plan 的周额度耗尽（`insufficient_quota`，2026-09-21 00:43 UTC 重置）。评委 qwen3.8-max、第二评委 glm-5.2 与答题器都在这个额度上，`t-base`、`t-v2` 此后的任务全部报错，已停止；消融未跑。只有 mc-proactive-recall 的部分 test 用例在额度耗尽前完成，据此写了**中期报告**（只含 pr）。有效行的筛选规则写在中期报告 §2；原始 results.jsonl 保留不改。
    **补跑方案**（额度重置或用户充值后）：用新的 run id（`t2-base`、`t2-v2`、`t2-abl-*`）从头跑同样的命令——成功过的 LLM 调用都在磁盘缓存里，会原样重放、不耗额度；失败的调用没有缓存，会重新请求。同时最多 2 个进程（每个约 3.5 GB 内存）。命令见 `../README.md` §5，完成后用 `runners/make_report.py` 生成正式报告。
+   **2026-09-14 第三次变更（正式运行）**：用户确认 token-plan 已恢复、DeepSeek 官方可用。正式运行恢复原协议：答题器与被测系统内部 LLM 为 DeepSeek 官方 `deepseek-flash`，评委 qwen3.8-max 走 token-plan（两端分摊额度）；`t2-base`、`t2-v2` 先只跑两版 agent-memory（最关键的前后对比先跑完），对照组（no_memory、full_context、naive_rag、阈值版、oracle、am_base_ra）单独一次运行 `t2-ctrl`，再跑消融。中期报告的 `t-*` 运行用的是另一个答题器模型，只作为中期记录，不与正式结果合并。
 3. **统计**：比例给 Wilson 95% 区间；与 `am_base` 的配对比较用 McNemar 精确检验 + 配对 bootstrap 95% 区间；n < 20 标注"只看方向"。每个设置 1 个种子（成本所限），种子方差未估计。
 4. **评委**：qwen3.8-max（与答题器 DeepSeek 异源），温度 0；评委之间的一致性用 glm-5.2 抽样重判（`runners/judge_agreement.py`），不替代人工一致性研究。
 5. **消融**（A 轨）：在 test 切分上关闭单个机制重跑（`mc_run.py --am-disable <能力>`），看对应能力的主指标变化。
