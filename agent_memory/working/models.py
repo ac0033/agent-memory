@@ -34,6 +34,24 @@ class TodoItem(BaseModel):
         return v.strip()
 
 
+class SubTask(BaseModel):
+    """同一 scope 里并行推进的其他任务（v0.2，P07）：各自一份状态，互不串线。"""
+
+    name: str
+    goal: str = ""
+    constraints: list[str] = Field(default_factory=list)
+    todos: list[TodoItem] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    variables: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("name")
+    @classmethod
+    def name_non_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("subtask name 不能为空")
+        return v.strip()
+
+
 class WorkingMemory(BaseModel):
     """一个 scope 的当前任务状态。全量替换语义：没有部分更新。"""
 
@@ -43,6 +61,10 @@ class WorkingMemory(BaseModel):
     variables: dict[str, str] = Field(default_factory=dict)  # 任务变量（键值均为文本）
     todos: list[TodoItem] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)  # 未决问题 / 阻塞
+    # v0.2（P07）：约束、未决问题单列；并行的其他任务放 subtasks
+    constraints: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    subtasks: list[SubTask] = Field(default_factory=list)
     # 新鲜度水位：本份状态已更新到第几轮对话；current_turn > watermark 即视为可能滞后
     turn_watermark: int = Field(default=0, ge=0)
     version: int = Field(default=1, ge=1)

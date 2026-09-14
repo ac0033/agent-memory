@@ -32,6 +32,13 @@ def test_from_settings_missing_key_fails_closed():
         OpenAILLMClient.from_settings(Settings())
 
 
+def test_default_model_is_deepseek_flash():
+    """默认模型名对齐 DeepSeek 官方 canonical 清单（deepseek-flash）。"""
+    from agent_memory.llm import DEFAULT_MODEL
+
+    assert DEFAULT_MODEL == "deepseek-flash"
+
+
 class _FakeMessage:
     def __init__(self, content):
         self.content = content
@@ -152,7 +159,7 @@ def test_cache_miss_on_different_model(monkeypatch, tmp_path):
     client, completions = _make_client(monkeypatch, ["m1", "m2"])
     client.cache_dir = tmp_path
     assert client.complete("s", "u") == "m1"
-    client.model = "deepseek-v4-flash"
+    client.model = "deepseek-v4-pro"
     assert client.complete("s", "u") == "m2"
     assert completions.calls == 2
 

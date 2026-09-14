@@ -21,12 +21,66 @@ def _escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _v2_attrs(e) -> str:
+    """v0.2 字段的属性：只在有值时出现，老条目的渲染结果不变。"""
+    attrs = ""
+    if e.valid_from or e.valid_to:
+        vf = e.valid_from.isoformat() if e.valid_from else ""
+        vt = e.valid_to.isoformat() if e.valid_to else ""
+        attrs += f' valid="{vf}~{vt}"'
+    if e.completeness:
+        attrs += f' completeness="{e.completeness}"'
+    if e.verify_flag:
+        attrs += f' verify="{e.verify_flag}"'
+    if e.source_type and e.source_type != "user":
+        attrs += f' source_type="{e.source_type}"'
+    if attrs or e.history:
+        attrs += f' recorded="{e.created_at.isoformat()}"'
+    return attrs
+
+
+def _v2_hints(e) -> str:
+    """把完整度、核验结果和变更史写成紧跟正文的提示（P27 / P13 / P19）。"""
+    hints = []
+    if e.valid_from and e.valid_from < e.created_at:
+        # 追溯更正：事实从 valid_from 起成立，但直到 created_at 才被记下——
+        # "当时我们以为是什么"要按记录时间回答，"当时实际是什么"按有效时间回答
+        hints.append(
+            f"追溯更正：{e.created_at.isoformat()} 才记录，"
+            f"按有效时间自 {e.valid_from.isoformat()} 起成立；"
+            f"{e.created_at.isoformat()} 之前的记录里仍是旧说法"
+        )
+    if e.history:
+        parts = []
+        for h in e.history:
+            span = f"{h.valid_from.isoformat() if h.valid_from else '?'}起" if h.valid_from else ""
+            rec = f"，{h.recorded_at.isoformat()}记录" if h.recorded_at else ""
+            parts.append(f"{span}{h.content}{rec}".strip())
+        hints.append("变更史：" + "；".join(parts))
+    if e.verify_flag == "mismatch":
+        hints.append("⚠ 回读核验发现与原文不一致，使用前请回溯原文")
+    if e.completeness == "gist":
+        ev = e.evidence[0] if e.evidence else None
+        where = ""
+        if ev is not None:
+            where = f"原文在 {ev.source}/{ev.session_id}"
+            if ev.line_range:
+                where += f" 第 {ev.line_range[0]}–{ev.line_range[1]} 行"
+            where += "，"
+        hints.append(
+            f"仅要点，细节不全；{where}"
+            "需要细节时用 memory_archive_read / memory_archive_search 取回"
+        )
+    return ("（" + "；".join(hints) + "）") if hints else ""
+
+
 def render_memory(result: SearchResult) -> str:
     """渲染单条 <memory> 元素。"""
     e = result.entry
     return (
         f'<memory type="{e.memory_type}" scope="{e.scope}" confidence="{e.confidence}"'
-        f' last_verified="{e.last_verified.isoformat()}">{_escape(e.content)}</memory>'
+        f' last_verified="{e.last_verified.isoformat()}"{_v2_attrs(e)}>'
+        f"{_escape(e.content + _v2_hints(e))}</memory>"
     )
 
 

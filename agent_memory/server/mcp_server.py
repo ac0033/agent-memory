@@ -1,4 +1,4 @@
-"""MCP Server：把记忆内核暴露为十五个 MCP tool，stdio 传输。
+"""MCP Server：把记忆内核暴露为二十五个 MCP tool（v0.2 新增十个，见文末），stdio 传输。
 
 长期记忆 tool（八个）：
 - memory_search：混合检索 + render_recall_block 渲染，scope 过滤在检索层强制
@@ -74,7 +74,9 @@ from agent_memory.long_term.retrieve.resident import build_system_context
 from agent_memory.long_term.store.coordinator import MemoryWriter
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore, MemoryStoreError
+from agent_memory.long_term.store.raw_index import RawIndex, session_meta_path
 from agent_memory.models import MemoryEntry, is_valid_scope, normalize_scope, validate_entry_id
+from agent_memory.server.service_v2 import V2ServiceMixin, render_raw_hits
 from agent_memory.short_term.adapter import detect_adapter, get_adapter
 from agent_memory.working.models import TodoItem, WorkingMemory
 from agent_memory.working.render import is_stale, render_working_memory_block
@@ -112,6 +114,8 @@ class AddReport:
     pending_review: list[dict] = field(default_factory=list)
     # M6：scope 缺省时的作用域提醒（显式传了 scope 则为 None）
     scope_reminder: str | None = None
+    # v0.2：本次写入顺带执行的遗忘请求（删除条数、擦除的原文行数；不含被删内容）
+    forgotten: list[dict] = field(default_factory=list)
 
 
 # LLM 调用类失败（临时性故障，区别于评价门这种确定性失败）：蒸馏/对账阶段
@@ -160,8 +164,8 @@ def _validate_archive_segment(value: str, field_name: str) -> str:
     return value
 
 
-class MemoryService:
-    """十五个 MCP tool 的业务实现。与传输解耦，测试直接实例化调用。"""
+class MemoryService(V2ServiceMixin):
+    """MCP tool 的业务实现（v0.2 能力在 V2ServiceMixin）。与传输解耦，测试直接实例化调用。"""
 
     def __init__(
         self,
@@ -181,6 +185,8 @@ class MemoryService:
         self.working_store = working_store or WorkingMemoryStore(settings.data_dir)
         self.searcher = HybridSearcher(store, index, embedder, settings)
         self.writer = MemoryWriter(store, index, embedder)
+        # v0.2 P03：原文归档的派生检索索引（data/raw_index.db，可由 data/raw 重建）
+        self.raw_index = RawIndex(settings.data_dir / "raw_index.db")
 
     def consistency(self) -> dict[str, Any]:
         """只读检查 Markdown 正式层与派生索引是否一致。"""
@@ -246,6 +252,11 @@ class MemoryService:
             return blocked
         results = self.searcher.search(query, scopes=[scope], k=k, track_retrieval=True)
         block = render_recall_block(results, self.settings.recall_budget_chars)
+        # v0.2 P23：命中"只有要点 / 核验不一致"的记忆时，附上它们引用的原文片段
+        archive_hits = self._raw_fallback(query, results)
+        raw_block = render_raw_hits(archive_hits, title="raw_evidence")
+        if raw_block:
+            block = f"{block}\n{raw_block}" if block else raw_block
         hits = [
             {
                 "id": r.entry.id,
@@ -255,6 +266,8 @@ class MemoryService:
                 "memory_type": r.entry.memory_type,
                 "confidence": r.entry.confidence,
                 "last_verified": r.entry.last_verified.isoformat(),
+                "completeness": r.entry.completeness,
+                "verify_flag": r.entry.verify_flag,
                 "score": round(r.score, 6),
             }
             for r in results
@@ -264,6 +277,10 @@ class MemoryService:
             "pending_review_count": pending_count,
             "block": block,
             "hits": hits,
+            "archive_hits": [
+                {"source": h.source, "session_id": h.session_id, "line": h.line, "text": h.content}
+                for h in archive_hits
+            ],
         }
 
     # ---- memory_add ----
@@ -280,8 +297,13 @@ class MemoryService:
         memory_type: str = "semantic",
         confidence: str = "high",
         force_review: bool = False,
+        session_date: str | None = None,
+        host: str | None = None,
     ) -> dict[str, Any]:
         """写入记忆。conversation_json > distilled_json > content 三选一。
+
+        v0.2：session_date（会话日期）作为记录时间与蒸馏的时间参照（P19）；
+        host（宿主名）写进原文归档的会话元数据。
 
         conversation_json 推荐传 [{role, content}, ...] 的 JSON 字符串；直接传
         list 也可以（服务端自动序列化）。其他类型报 ValueError 并提示正确格式。
@@ -320,7 +342,8 @@ class MemoryService:
             )
         if conversation_json:
             report = self._add_conversation(
-                conversation_json, scope, source, session_id, force_review=force_review
+                conversation_json, scope, source, session_id, force_review=force_review,
+                session_date=session_date, host=host,
             )
         elif distilled_json:
             report = self._add_distilled(
@@ -337,14 +360,31 @@ class MemoryService:
         report.scope_reminder = scope_reminder
         return asdict(report)
 
-    def _archive_raw(self, records: list[dict], source: str, session_id: str) -> tuple[Path, int]:
+    def _archive_raw(
+        self,
+        records: list[dict],
+        source: str,
+        session_id: str,
+        *,
+        session_date: str | None = None,
+        scope: str | None = None,
+        host: str | None = None,
+    ) -> tuple[Path, int]:
         """把原始材料追加归档到 data/raw/<source>/<session_id>.jsonl。
 
         D1 只追加不改写：同 session_id 调两次是追加不是覆盖。
+        v0.2：P02 归档前先脱敏（本地永久保存的归档不再含明文凭据）；会话元数据（日期、作用域、
+        宿主）写进同名 .meta.json；归档后写入原文检索索引（P03，派生、可重建，索引失败不影响归档）。
         """
         source = _validate_archive_segment(source, "source")
         session_id = _validate_archive_segment(session_id, "session_id")
         archive_path = self.settings.data_dir / "raw" / source / f"{session_id}.jsonl"
+        safe_records = [
+            {**r, "content": redact(r["content"])[0]}
+            if isinstance(r, dict) and isinstance(r.get("content"), str) else r
+            for r in records
+        ]
+        meta_path = session_meta_path(archive_path)
         with interprocess_lock(self.settings.data_dir / "state" / "raw_archive.lock"):
             archive_path.parent.mkdir(parents=True, exist_ok=True)
             offset = 0
@@ -352,11 +392,31 @@ class MemoryService:
                 with archive_path.open("r", encoding="utf-8") as existing:
                     offset = sum(1 for _ in existing)
             with archive_path.open("a", encoding="utf-8") as f:
-                for record in records:
+                for record in safe_records:
                     f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
-            return archive_path, offset
+            if not meta_path.exists() and (session_date or scope or host):
+                meta_path.write_text(
+                    json.dumps({"date": str(session_date)[:10] if session_date else None,
+                                "scope": scope, "host": host}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+        meta: dict = {}
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                meta = {}
+        try:
+            self.raw_index.add(
+                source, session_id, offset + 1,
+                [r for r in safe_records if isinstance(r, dict)], self.embedder,
+                date=meta.get("date"), scope=meta.get("scope"), host=meta.get("host"),
+            )
+        except Exception as exc:  # noqa: BLE001  派生索引可重建：失败只告警，不影响归档
+            print(f"[agent-memory] 原文索引写入失败（可 rebuild）：{exc}", file=sys.stderr)
+        return archive_path, offset
 
     def _add_conversation(
         self,
@@ -369,13 +429,23 @@ class MemoryService:
         archive: bool = True,
         evidence_line_offset: int = 0,
         evidence_line_map: list[int] | None = None,
+        session_date: str | None = None,
+        host: str | None = None,
     ) -> AddReport:
         # 先解析校验（非法对话不归档——不把垃圾写进 data/raw），再归档、再蒸馏：
         # 归档在 LLM 调用之前，LLM 不可用/超时时内容不丢，可事后重放
         conversation = parse_conversation_json(conversation_json)
         session_id = session_id or f"session-{datetime.now():%Y%m%dT%H%M%S}"
+        day = None
+        if session_date:
+            try:
+                day = date.fromisoformat(str(session_date)[:10])
+            except ValueError as e:
+                raise ValueError(f"session_date 非法：{session_date!r}（应为 YYYY-MM-DD）") from e
         if archive:
-            archive_file, evidence_line_offset = self._archive_raw(conversation, source, session_id)
+            archive_file, evidence_line_offset = self._archive_raw(
+                conversation, source, session_id, session_date=session_date, scope=scope, host=host
+            )
             archive_path = str(archive_file)
         else:
             archive_path = None
@@ -398,12 +468,23 @@ class MemoryService:
                 extra_context=extra_context,
                 evidence_line_offset=evidence_line_offset,
                 evidence_line_map=evidence_line_map,
+                session_date=day,
             )
             gate_result = gate_candidates(distill_result.entries, self.settings.data_dir)
             report = reconcile(
                 gate_result.passed, self.store, self.index, self.llm,
                 embedder=self.embedder, settings=self.settings,
             )
+            # v0.2 K12：执行蒸馏识别出的遗忘请求（用户明确提出，只删指定片段）
+            forgotten = []
+            dialog = "\n".join(f"{t['role']}: {t['content']}" for t in conversation)
+            for fr in distill_result.forget_requests:
+                forgotten.append(self.forget_request(
+                    fr["description"], scope, request_dialog=dialog,
+                    request_ref=f"{source}/{session_id}", request_date=day,
+                ))
+            # 完整度在蒸馏时自评（distill 第 8 条）；不走蒸馏的条目（预置、导入、单条写入）
+            # 由 annotate_completeness 对照原文补做核验，这里不再额外调用 LLM。
         except _LLM_CALL_ERRORS as e:
             # 临时性故障（超时/限流/解析失败）：原文已归档不丢，明确告知可重试
             return AddReport(
@@ -415,9 +496,17 @@ class MemoryService:
                     "对话原文已归档不会丢失，稍后重试同一份 conversation_json 即可"
                 ),
             )
-        return self._distill_report(
+        result = self._distill_report(
             "distill", archive_path, distill_result, gate_result, report, force_review
         )
+        result.forgotten = forgotten
+        return result
+
+    def _completeness_unknown(self, entry_id: str) -> bool:
+        try:
+            return self.store.get(entry_id).completeness is None
+        except KeyError:
+            return False
 
     def _add_distilled(
         self,
@@ -885,6 +974,8 @@ class MemoryService:
         todos: list[dict | str] | None = None,
         notes: list[str] | None = None,
         turn_watermark: int | None = None,
+        constraints: list[str] | None = None,
+        open_questions: list[str] | None = None,
     ) -> dict[str, Any]:
         """全量替换写入工作记忆（不是合并：未传的字段就是空）。
 
@@ -923,6 +1014,8 @@ class MemoryService:
             variables={_redact(k): _redact(v) for k, v in (variables or {}).items()},
             todos=todo_items,
             notes=[_redact(n) for n in notes or []],
+            constraints=[_redact(c) for c in constraints or []],
+            open_questions=[_redact(q) for q in open_questions or []],
             turn_watermark=(
                 turn_watermark
                 if turn_watermark is not None
@@ -1213,7 +1306,7 @@ class MemoryService:
 
 
 def build_server(service: MemoryService):
-    """把 MemoryService 注册成 MCP server 的十五个 tool。"""
+    """把 MemoryService 注册成 MCP server 的二十五个 tool。"""
     from mcp.server.mcpserver import MCPServer
 
     server = MCPServer(
@@ -1470,6 +1563,128 @@ def build_server(service: MemoryService):
             session_id=session_id,
             force=force,
         )
+
+    # ---------------------------------------------------------------- v0.2 新工具
+
+    @server.tool(
+        name="memory_archive_search",
+        description=(
+            "检索历史会话的原文归档（关键词 + 语义），返回带出处（来源/会话/行号/日期）的原文片段。"
+            "记忆只有要点、需要细节，或者怀疑记忆记错了（渲染里标了“仅要点”“与原文不一致”）时，"
+            "先用它回溯原文再行动。session_id 可限定在某个会话里查。"
+        ),
+    )
+    def memory_archive_search(
+        query: str, scope: str = "global", k: int = 5, session_id: str | None = None
+    ) -> dict:
+        return service.archive_search(query, scope=scope, k=k, session_id=session_id)
+
+    @server.tool(
+        name="memory_archive_read",
+        description=(
+            "读取一个已归档会话的原文（可用 around_line 只取某行附近）。"
+            "source/session_id 取自检索结果或记忆的出处。"
+        ),
+    )
+    def memory_archive_read(
+        source: str, session_id: str, around_line: int | None = None, window: int = 30
+    ) -> dict:
+        return service.archive_read(source, session_id, around_line=around_line, window=window)
+
+    @server.tool(
+        name="memory_archive_sync",
+        description=(
+            "持续归档：把宿主会话日志里上次之后的新轮次增量复制进原文归档（先脱敏，只追加）。"
+            "宿主日志会被定期清理，建议在压缩前、会话中定期调用。" + _SUBAGENT_WRITE_GUARD
+        ),
+    )
+    def memory_archive_sync(log_path: str, adapter: str | None = None, source: str | None = None,
+                            session_id: str | None = None, scope: str | None = None) -> dict:
+        return service.archive_sync(
+            log_path, adapter=adapter, source=source, session_id=session_id, scope=scope
+        )
+
+    @server.tool(
+        name="memory_surface",
+        description=(
+            "主动联想：给出用户当前消息（和之前几轮），由记忆副手判断有没有“不提就可能出错或遗漏”"
+            "的历史，"
+            "或原理相通、值得点明的旧知识；精确率优先，没有就返回空。返回的块附带关联提示，应在回"
+            "复中用上。"
+        ),
+    )
+    def memory_surface(message: str, scope: str = "global", recent_turns: list[str] | None = None,
+                       date: str | None = None) -> dict:
+        return service.surface(message, scope=scope, recent_turns=recent_turns, date=date)
+
+    @server.tool(
+        name="memory_confirm_enqueue",
+        description=(
+            "把需要用户确认的事项写入待确认队列（无人值守、用户不在线时使用）：写清复述的理解"
+            "（目标、范围、约束、验收）与候选方案；只把需要确认的部分挂起，其余照常处理。"
+        ),
+    )
+    def memory_confirm_enqueue(message: str, scope: str = "global", restatement: dict | None = None,
+                               task: str | None = None) -> dict:
+        return service.confirm_enqueue(message, scope=scope, restatement=restatement, task=task)
+
+    @server.tool(name="memory_confirm_list", description="列出待确认队列里尚未处理的事项。")
+    def memory_confirm_list() -> dict:
+        return service.confirm_list()
+
+    @server.tool(
+        name="memory_confirm_resolve",
+        description=(
+            "处理一条待确认事项：decision 为 approve / reject / modify，reply 写用户的答复。"
+            + _SUBAGENT_WRITE_GUARD
+        ),
+    )
+    def memory_confirm_resolve(
+        confirmation_id: str, decision: str, reply: str | None = None
+    ) -> dict:
+        return service.confirm_resolve(confirmation_id, decision, reply)
+
+    @server.tool(
+        name="memory_wm_refresh",
+        description=(
+            "服务端整理工作记忆：把最近几轮对话（[{role, content}] 数组或 JSON 字符串）交给记忆服"
+            "务，"
+            "由它更新目标、约束、待办、未决问题与并行任务（旧取值替换、闲聊不写入）。"
+            + _SUBAGENT_WRITE_GUARD
+        ),
+    )
+    def memory_wm_refresh(
+        scope: str, conversation_json: str | list, current_turn: int | None = None
+    ) -> dict:
+        return service.wm_refresh(scope, conversation_json, current_turn=current_turn)
+
+    @server.tool(
+        name="memory_episode_pack",
+        description=(
+            "事件边界打包：上下文压缩前或会话结束前，把这段对话里的原样细节（标识符、端口、路径、"
+            "报错原文、数值）、"
+            "约束、决策、文件改动存成情节卡片，约束同步进工作记忆。" + _SUBAGENT_WRITE_GUARD
+        ),
+    )
+    def memory_episode_pack(
+        scope: str,
+        conversation_json: str | list,
+        session_id: str | None = None,
+        reason: str = "compaction",
+    ) -> dict:
+        return service.episode_pack(
+            conversation_json, scope=scope, session_id=session_id, reason=reason
+        )
+
+    @server.tool(
+        name="memory_forget_request",
+        description=(
+            "执行用户明确提出的遗忘请求：删除相关记忆，并把原文归档里对应的片段替换为占位符；"
+            "只删指定片段，审计日志只记元数据。只在用户明确要求时调用。" + _SUBAGENT_WRITE_GUARD
+        ),
+    )
+    def memory_forget_request(description: str, scope: str = "global") -> dict:
+        return service.forget_request(description, scope=scope)
 
     return server
 

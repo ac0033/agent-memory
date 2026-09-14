@@ -24,6 +24,8 @@ def _section_lines(wm: WorkingMemory) -> list[tuple[str, list[str]]]:
     sections: list[tuple[str, list[str]]] = []
     if wm.goal:
         sections.append(("### 目标", [wm.goal]))
+    if wm.constraints:
+        sections.append(("### 约束", [f"- {c}" for c in wm.constraints]))
     if wm.todos:
         ordered = sorted(wm.todos, key=lambda t: t.status != "pending")
         lines = [
@@ -34,8 +36,28 @@ def _section_lines(wm: WorkingMemory) -> list[tuple[str, list[str]]]:
         sections.append(("### 已确认决策", [f"- {d}" for d in wm.decisions]))
     if wm.variables:
         sections.append(("### 变量", [f"- {k}: {v}" for k, v in wm.variables.items()]))
+    if wm.open_questions:
+        sections.append(("### 未决问题", [f"- {q}" for q in wm.open_questions]))
     if wm.notes:
         sections.append(("### 备注", [f"- {n}" for n in wm.notes]))
+    if wm.subtasks:
+        lines = []
+        for st in wm.subtasks:
+            done = [t.content for t in st.todos if t.status == "done"]
+            nxt = [t.content for t in st.todos if t.status == "pending"]
+            parts = [st.goal] if st.goal else []
+            if st.constraints:
+                parts.append("约束：" + "；".join(st.constraints))
+            if done:
+                parts.append("已完成：" + "；".join(done))
+            if nxt:
+                parts.append("下一步：" + "；".join(nxt))
+            if st.open_questions:
+                parts.append("未决：" + "；".join(st.open_questions))
+            if st.variables:
+                parts.append("变量：" + "，".join(f"{k}={v}" for k, v in st.variables.items()))
+            lines.append(f"- 【{st.name}】" + "｜".join(parts))
+        sections.append(("### 其他并行任务", lines))
     return sections
 
 

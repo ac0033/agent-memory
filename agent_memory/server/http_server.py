@@ -2,7 +2,7 @@
 
 与 stdio 入口（server/mcp_server.py 的 main）的区别：stdio 由宿主把 server 拉成
 子进程、随会话生灭；本模块是一个长期运行的 HTTP 服务，任何能发 HTTP 请求的
-agent 宿主都能接入——注册一个 URL 即得全部十五个 tool。
+agent 宿主都能接入——注册一个 URL 即得全部二十五个 tool。
 
 路由：
 - /mcp       —— MCP 协议端点（streamable-http，由 MCPServer 提供）；
@@ -20,6 +20,7 @@ agent 宿主都能接入——注册一个 URL 即得全部十五个 tool。
 import sys
 from pathlib import Path
 
+import anyio
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
@@ -45,11 +46,14 @@ def build_bootstrap_text(host: str, port: int) -> str:
 1. 把这个 MCP server 注册进你的宿主（配置名叫 agent-memory）：
    {base}/mcp
    注册方式因宿主而异（Kimi Code 改 mcp.json，Claude Code 改 mcpServers 配置，
-   其他宿主同理），传输类型是 streamable-http / HTTP。注册后你会获得十五个
+   其他宿主同理），传输类型是 streamable-http / HTTP。注册后你会获得二十五个
    tool：memory_search / memory_add / memory_distill_prompt / memory_feedback /
    memory_update / memory_forget / memory_review_list / memory_review_resolve /
    memory_wm_read / memory_wm_write / memory_wm_clear / memory_context /
-   memory_transcript_read / memory_session_end / memory_consistency_check。
+   memory_transcript_read / memory_session_end / memory_consistency_check，
+   以及 v0.2 的 memory_archive_search / memory_archive_read / memory_archive_sync /
+   memory_surface / memory_confirm_enqueue / memory_confirm_list / memory_confirm_resolve /
+   memory_wm_refresh / memory_episode_pack / memory_forget_request。
 
 2. 读取使用规范并遵循它（特别是记忆作用域的选择规则与人工复核交互流程）：
    {base}/SKILL.md
@@ -66,7 +70,7 @@ memory_distill_prompt 拿协议 → 自行蒸馏 → memory_add(distilled_json=.
 
 
 def build_http_server(service: MemoryService, host: str, port: int):
-    """在十五个 tool 的 MCP server 上叠加 /SKILL.md、/bootstrap、/wm_blocks 静态路由。"""
+    """在二十五个 tool 的 MCP server 上叠加 /SKILL.md、/bootstrap、/wm_blocks、/surface 路由。"""
 
     server = build_server(service)
 
@@ -126,6 +130,32 @@ def build_http_server(service: MemoryService, host: str, port: int):
         return PlainTextResponse(
             "\n\n".join(parts), media_type="text/markdown; charset=utf-8"
         )
+
+    @server.custom_route("/surface", methods=["POST"], include_in_schema=False)
+    async def surface(request: Request) -> PlainTextResponse:
+        """主动浮现（v0.2 P24–P26）：POST JSON {message, scope?, recent_turns?, date?}。
+
+        供宿主的"用户提交消息"hook 调用（免 MCP 握手）：返回 <surfaced_memories> 块；
+        记忆副手判定无需提醒时返回空字符串 200。scope 非法返回 400。
+        """
+        if rejected := reject_untrusted_host(request):
+            return rejected
+        try:
+            body = await request.json()
+        except ValueError:
+            return PlainTextResponse("请求体必须是 JSON", status_code=400)
+        if not isinstance(body, dict) or not str(body.get("message") or "").strip():
+            return PlainTextResponse("缺少 message", status_code=400)
+        scope = normalize_scope(str(body.get("scope") or "global"))
+        if not is_valid_scope(scope):
+            return PlainTextResponse(f"scope 非法：{scope!r}", status_code=400)
+        recent = [str(x) for x in body.get("recent_turns") or [] if str(x).strip()][-3:]
+        result = await anyio.to_thread.run_sync(
+            lambda: service.surface(
+                str(body["message"]), scope=scope, recent_turns=recent, date=body.get("date")
+            )
+        )
+        return PlainTextResponse(result["block"], media_type="text/markdown; charset=utf-8")
 
     return server
 

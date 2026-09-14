@@ -15,7 +15,10 @@ from pathlib import Path
 import yaml
 
 from agent_memory.io_utils import atomic_write_text, interprocess_lock
-from agent_memory.models import MemoryEntry, validate_entry_id
+from agent_memory.models import OPTIONAL_V2_FIELDS, MemoryEntry, validate_entry_id
+
+# patch_meta 只允许改这些"注解型"字段：不影响索引文本与语义版本
+PATCHABLE_FIELDS = {"completeness", "verify_flag"}
 
 # scope -> 目录名的分隔符："repo:abc" -> "repo__abc"
 SCOPE_DIR_SEP = "__"
@@ -42,8 +45,14 @@ def dirname_to_scope(dirname: str) -> str:
 
 
 def entry_to_markdown(entry: MemoryEntry) -> str:
-    """MemoryEntry -> 带 YAML frontmatter 的 Markdown 文本。"""
+    """MemoryEntry -> 带 YAML frontmatter 的 Markdown 文本。
+
+    v0.2 的可选字段取默认值（None / 空列表）时不写出，老条目的文件内容保持不变。
+    """
     meta = entry.model_dump(exclude={"content"}, mode="json")
+    for key in OPTIONAL_V2_FIELDS:
+        if meta.get(key) in (None, []):
+            meta.pop(key, None)
     frontmatter = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False)
     return f"---\n{frontmatter}---\n\n{entry.content}\n"
 
@@ -159,6 +168,25 @@ class MarkdownStore:
                 entry.model_dump(mode="python")
                 | {"retrieval_count": entry.retrieval_count + 1}
             )
+            atomic_write_text(path, entry_to_markdown(updated))
+        return updated
+
+    def patch_meta(self, entry_id: str, **fields) -> MemoryEntry:
+        """只改注解型元数据（完整度、核验标记），不动 version / last_verified / 正文。
+
+        这些字段不进索引文本，也不改变事实本身，所以不走协调写入、不递增版本；
+        否则写入后的核验会把“最后核实时间”刷新成今天，抹掉过时信号。
+        """
+        bad = set(fields) - PATCHABLE_FIELDS
+        if bad:
+            raise MemoryStoreError(
+                f"patch_meta 只允许修改 {sorted(PATCHABLE_FIELDS)}，收到 {sorted(bad)}"
+            )
+        validate_entry_id(entry_id)
+        with interprocess_lock(self.lock_path):
+            path = self._find_path(entry_id)
+            entry = entry_from_markdown(path.read_text(encoding="utf-8"), path=path)
+            updated = MemoryEntry.model_validate(entry.model_dump(mode="python") | fields)
             atomic_write_text(path, entry_to_markdown(updated))
         return updated
 

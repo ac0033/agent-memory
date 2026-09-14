@@ -59,7 +59,9 @@
 ### 里程碑速览与验收基线
 
 - M0 数据模型与配置；M1 记忆内核（store/index/embed/hybrid/redact/CLI）；M2 蒸馏写路径 + MCP server；M3 LangGraph 适配 + Skill + 前缀回归；M4 进化闭环 + layer3 + 真实验收（layer3 有记忆 91.67% vs baseline 0%，McNemar p=0.0010；缺陷复盘见 `docs/m2-defect-postmortem.md` 缺陷 3/4）；M5 人工复核交互 + hook；M6 HTTP 常驻服务 + scope 纪律；M7 三层记忆 + memory_context 统一接口；M8 写入失败语义（归档兜底、force_review 转复核、报错含命中片段、LLM 超时/重试配置化）；M9 宿主蒸馏协议（memory_distill_prompt + distilled_json 模式 + 对账无 LLM 降级，顺带修复无 LLM 时单条写入有近邻崩溃的 bug）+ 会话开头工作记忆自动注入（/wm_blocks 路由 + 宿主中立 hook）。
-- 当前测试基线：`uv run pytest -q` 672 passed，`uv run ruff check .` 干净。
+- v0.2（2026-09-14，框架文档 §9 的优化顺序）：P02 归档先脱敏 + 持续归档（`memory_archive_sync`）；P03 原文可检索（`long_term/store/raw_index.py`，派生的 `data/raw_index.db`，可由 data/raw 重建；`memory_archive_search/read`；`memory_search` 命中"只有要点/核验不一致"的记忆时附 `<raw_evidence>`）；P27/P13 完整度自评与回读核验（`MemoryEntry.completeness/verify_flag`，蒸馏自评 + `annotate_completeness` 对照原文，`MarkdownStore.patch_meta` 只改注解不动 version/last_verified）；P24–P26 主动浮现（`long_term/retrieve/surface.py`：线索扩展 + 一跳扩散 + 精确率优先的记忆副手，`memory_surface`、HTTP `POST /surface`、`scripts/memory_surface_hook.py`）；P29 待确认队列（`agent_memory/confirmations.py`，`data/confirmations/`）；P07/P08 工作记忆 constraints / open_questions / subtasks + 服务端整理（`working/refresh.py`，`memory_wm_refresh`）；P05/P06 事件边界情节卡片（`long_term/ingest/episode.py`，`memory_episode_pack`）；P19 双时态（`valid_from/valid_to/history`，对账 UPDATE 时旧版本折进 history，蒸馏带会话日期）；P15 来源类型（第三方/工具来源的说法降为 low 进复核）；K12 遗忘请求（`long_term/ingest/forget.py`，蒸馏识别 + `memory_forget_request`；D1 有条件例外：只擦指定片段为占位符，审计 `data/logs/forget_audit.jsonl` 只记元数据）。新增能力集中在 `server/service_v2.py`（MemoryService 的混入类）；MCP tool 由 15 个增至 25 个。v0.2 字段全部可选，老数据与老渲染输出不变。
+- 当前测试基线：`uv run pytest -q` 777 passed（v0.2 新增 `tests/test_v2_memory.py`、`tests/test_http_surface.py`），`uv run ruff check .` 干净（`docs/research/**` 只放宽行长）。
+- 评测：MemCompass v0.2（`docs/research/benchmark-suite/`，8 个子集 317 条用例；runner 在 `runners/`，D6 草稿，用户审核后迁入 `evals/`）。
 
 ### data/ 目录
 

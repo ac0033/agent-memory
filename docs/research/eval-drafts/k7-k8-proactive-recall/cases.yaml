@@ -1,0 +1,426 @@
+# 专项一：主动联想与线索唤起（K7、K8）种子用例 v0.1（草稿，待审核）
+# 多文档 YAML；迁入 evals/ 时按 id 拆成单文件。合成数据，不含真实工作数据。
+# 触发消息都不包含任何关于记忆的提问。
+---
+id: pr-01
+suite: proactive_recall
+type: should_surface
+description: 昨天学的 GloVe 权重函数也用了 3/4 次方，今天问 word2vec 负采样时应主动关联
+sessions:
+  - session_id: s1
+    date: 2026-09-12
+    turns:
+      - role: user
+        content: "GloVe 的加权函数 f(x) 为什么是 (x/x_max)^α，α 为什么取 3/4？"
+      - role: assistant
+        content: "f(x) 用来压低高频共现对的权重，避免 the、of 这类词主导损失；x 超过 x_max=100 时截断为 1；α=3/4 是论文实验里效果较好的取值。"
+    memories:
+      - id: glove-weighting-2026-09-12
+        content: "2026-09-12 学习了 GloVe：权重函数 f(x)=(x/x_max)^α（α=3/4，x_max=100），用于压低高频共现对的影响。"
+        memory_type: episodic
+trigger:
+  date: 2026-09-13
+  user_message: "今天在看 word2vec 的负采样，噪声分布为什么要用 unigram 频率的 3/4 次方？"
+gold:
+  should_surface: true
+  target_memory_ids: [glove-weighting-2026-09-12]
+  key_details:
+    - "关联到昨天（9/12）学的 GloVe"
+    - "GloVe 的权重函数同样用了 α=3/4"
+    - "两者都是为了压低高频词的影响"
+  stale_details: []
+  max_turn: 1
+rubric:
+  essential:
+    - "解释了 3/4 次方的作用（相对原始频率，提高低频词的采样概率、压低高频词）"
+    - "主动关联到昨天学的 GloVe 权重函数也用了 3/4，并点出两者的共同动机"
+  pitfalls:
+    - "编造 GloVe 中并不存在的细节"
+---
+id: pr-02
+suite: proactive_recall
+type: should_surface
+description: 域名在活动前到期且自动续费已关闭，排活动上线计划时应主动提示
+sessions:
+  - session_id: s1
+    date: 2026-08-25
+    turns:
+      - role: user
+        content: "公司官网域名 2026-10-01 到期，财务说今年自动续费关了，要手动续。"
+      - role: assistant
+        content: "记下了：官网域名 10/01 到期，自动续费已关闭，需要手动续费。"
+    memories:
+      - id: site-domain-expiry
+        content: "公司官网域名 2026-10-01 到期，自动续费已关闭，需要手动续费。"
+        memory_type: semantic
+trigger:
+  date: 2026-09-20
+  user_message: "帮我排一下 10 月 3 日国庆营销活动落地页的上线计划。"
+gold:
+  should_surface: true
+  target_memory_ids: [site-domain-expiry]
+  key_details:
+    - "官网域名 10/01 到期，早于活动日 10/03"
+    - "自动续费已关闭，需要手动续费"
+  stale_details: []
+  max_turn: 1
+rubric:
+  essential:
+    - "给出上线计划"
+    - "主动提示域名在活动前（10/01）到期、自动续费已关闭，必须在活动前手动续费"
+  pitfalls:
+    - "编造域名已经续费"
+---
+id: pr-03
+suite: proactive_recall
+type: should_surface
+description: 品牌字段有 12% 为空且暂缓回填，按品牌汇总时应主动提示数据会失真
+sessions:
+  - session_id: s1
+    date: 2026-09-05
+    turns:
+      - role: user
+        content: "商品表的 brand 字段有 12% 是空的，先不回填，等实体键口径定了再说。"
+      - role: assistant
+        content: "明白：brand 空值约 12%，回填暂缓，等实体键口径确定。"
+    memories:
+      - id: brand-null-12pct
+        content: "商品表 brand 字段约 12% 为空，回填暂缓，等实体键口径确定后再处理。"
+        memory_type: semantic
+trigger:
+  date: 2026-09-11
+  user_message: "帮我写个 SQL，按品牌汇总本月销售额。"
+gold:
+  should_surface: true
+  target_memory_ids: [brand-null-12pct]
+  key_details:
+    - "brand 约 12% 为空"
+    - "回填暂缓（口径未定）"
+    - "汇总需要单列“未知品牌”或说明结果会失真"
+  stale_details: []
+  max_turn: 1
+rubric:
+  essential:
+    - "给出按品牌汇总的 SQL"
+    - "主动提示 brand 约 12% 为空、回填暂缓，汇总中要单列空品牌或说明结果会失真"
+  pitfalls:
+    - "擅自回填品牌"
+---
+id: pr-04
+suite: proactive_recall
+type: should_surface
+description: 之前踩过 PowerShell 单对数组被展开的坑，写同类批量替换脚本时应主动规避
+sessions:
+  - session_id: s1
+    date: 2026-09-13
+    turns:
+      - role: user
+        content: "刚才的替换脚本把每个 c 都换成了 l，怎么回事？"
+      - role: assistant
+        content: "原因是 @(@('old','new')) 只有一对时会被展开成两个字符串，$pair[0] 和 $pair[1] 变成了单个字符。改用 ,@('old','new') 或 hashtable 就不会有这个问题。"
+    memories:
+      - id: ps-single-pair-flatten
+        content: "PowerShell 坑：@(@('old','new')) 只有一对时会被展开，$pair[0]/$pair[1] 变成单个字符；应使用 ,@('old','new') 或 hashtable。"
+        memory_type: procedural
+trigger:
+  date: 2026-09-20
+  user_message: "写个 PowerShell 脚本，把这几个 md 文件里的 foo 替换成 bar（就一对替换）。"
+gold:
+  should_surface: true
+  target_memory_ids: [ps-single-pair-flatten]
+  key_details:
+    - "单对数组会被展开的坑"
+    - "改用 ,@('foo','bar') 或 hashtable，或者直接用 -replace"
+  stale_details: []
+  max_turn: 1
+rubric:
+  essential:
+    - "给出的脚本不会触发单对数组被展开的问题"
+    - "主动提到之前踩过的这个坑，或说明为什么这样写"
+  pitfalls:
+    - "写出 @(@('foo','bar')) 这种会被展开的写法"
+---
+id: pr-05
+suite: proactive_recall
+type: indirect_cue
+description: 触发消息只说“对账那边来了新人”，没有提到人名，应唤起小林及其技术背景
+sessions:
+  - session_id: s1
+    date: 2026-09-01
+    turns:
+      - role: user
+        content: "新同事小林下周一入职，负责对账模块，他主要写 Go，不会 Python。"
+      - role: assistant
+        content: "记下了：小林负责对账模块，技术栈是 Go，不会 Python。"
+    memories:
+      - id: newcomer-xiaolin
+        content: "新同事小林（2026-09-07 入职）负责对账模块，主要写 Go，不会 Python。"
+        memory_type: semantic
+trigger:
+  date: 2026-09-09
+  user_message: "对账那边来了个新人，帮我准备一份第一周的入门任务清单。"
+gold:
+  should_surface: true
+  target_memory_ids: [newcomer-xiaolin]
+  key_details:
+    - "新人是小林"
+    - "主要写 Go，不会 Python，任务安排要考虑这一点"
+  stale_details: []
+  max_turn: 1
+rubric:
+  essential:
+    - "给出入门任务清单"
+    - "识别出新人是小林，并按他会 Go、不会 Python 来安排（例如补 Python 入门，或优先安排 Go 相关任务）"
+  pitfalls:
+    - "编造小林的其他背景"
+---
+id: pr-06
+suite: proactive_recall
+type: indirect_cue
+description: “那台老的数据库机器”指的是 db-02，应唤起它即将下线、任务要迁移的安排
+sessions:
+  - session_id: s1
+    date: 2026-08-28
+    turns:
+      - role: user
+        content: "db-02 这台老数据库服务器月底下线，上面跑的定时任务要在 9/25 前迁到 db-05。"
+      - role: assistant
+        content: "记下了：db-02 月底下线，定时任务 9/25 前迁到 db-05。"
+    memories:
+      - id: db02-decommission
+        content: "老数据库服务器 db-02 将于 2026-09 月底下线，其上的定时任务需在 9/25 前迁到 db-05。"
+        memory_type: semantic
+trigger:
+  date: 2026-09-15
+  user_message: "那台老的数据库机器上的备份脚本，帮我加个失败告警。"
+gold:
+  should_surface: true
+  target_memory_ids: [db02-decommission]
+  key_details:
+    - "老数据库机器就是 db-02，月底下线"
+    - "定时任务要在 9/25 前迁到 db-05"
+    - "告警应加在迁移后的 db-05 上，或与迁移一并处理"
+  stale_details: []
+  max_turn: 1
+rubric:
+  essential:
+    - "识别出目标机器是 db-02，并提示它即将下线、任务要在 9/25 前迁到 db-05"
+    - "建议把告警加在 db-05 上，或与迁移一起安排"
+  pitfalls:
+    - "只在 db-02 上加告警，完全不提下线和迁移"
+---
+id: pr-07
+suite: proactive_recall
+type: should_not_surface
+description: 客户服务器只能用 Python 3.9 与用户在个人电脑上装 Python 3.12 无关
+sessions:
+  - session_id: s1
+    date: 2026-08-20
+    turns:
+      - role: user
+        content: "客户 X 的服务器只能用 Python 3.9，SDK 不能升级到要求 3.10 以上的版本。"
+      - role: assistant
+        content: "记下了：客户 X 服务器限定 Python 3.9。"
+    memories:
+      - id: client-x-python39
+        content: "客户 X 的服务器只能用 Python 3.9，SDK 不能升级到要求 3.10 及以上的版本。"
+        memory_type: semantic
+trigger:
+  date: 2026-09-10
+  user_message: "我想在自己电脑上装个 Python 3.12 学习用，推荐用什么方式装？"
+gold:
+  should_surface: false
+  target_memory_ids: []
+  key_details: []
+  stale_details: []
+  max_turn: 1
+rubric:
+  essential:
+    - "直接给出个人电脑上安装 Python 3.12 的建议"
+  pitfalls:
+    - "拿客户 X 的 3.9 限制来干扰个人学习环境的建议"
+---
+id: pr-08
+suite: proactive_recall
+type: should_not_surface
+description: 面试准备中讲解 TLS 握手，与 prod 证书到期无关
+sessions:
+  - session_id: s1
+    date: 2026-08-10
+    turns:
+      - role: user
+        content: "prod 证书 2026-09-15 到期，续期工单要提前一周提。"
+      - role: assistant
+        content: "记下了。"
+    memories:
+      - id: prod-cert-expiry
+        content: "prod 证书 2026-09-15 到期，续期工单需提前一周提交。"
+        memory_type: semantic
+trigger:
+  date: 2026-09-01
+  user_message: "我在准备面试，帮我讲讲 TLS 握手的过程。"
+gold:
+  should_surface: false
+  target_memory_ids: []
+  key_details: []
+  stale_details: []
+  max_turn: 1
+rubric:
+  essential:
+    - "讲清 TLS 握手的过程"
+  pitfalls:
+    - "插入 prod 证书到期的提醒"
+---
+id: pr-09
+suite: proactive_recall
+type: should_not_surface
+description: 取消会议与周报剔除已取消订单只是共用“取消”一词，彼此无关
+sessions:
+  - session_id: s1
+    date: 2026-08-20
+    turns:
+      - role: user
+        content: "周报要剔除“已取消”和“供应商驳回”的订单。"
+      - role: assistant
+        content: "记下了。"
+    memories:
+      - id: weekly-exclude-cancelled
+        content: "周报统计需剔除“已取消”和“供应商驳回”的订单。"
+        memory_type: procedural
+trigger:
+  date: 2026-09-11
+  user_message: "下周三的评审会要取消，帮我写个通知。"
+gold:
+  should_surface: false
+  target_memory_ids: []
+  key_details: []
+  stale_details: []
+  max_turn: 1
+rubric:
+  essential:
+    - "写出会议取消通知"
+  pitfalls:
+    - "提及周报的剔除规则"
+---
+id: pr-10
+suite: proactive_recall
+type: should_not_surface
+description: 市场部王芳与后端王芳同名不同人，不应把支付评审的信息扯进来
+sessions:
+  - session_id: s1
+    date: 2026-08-15
+    turns:
+      - role: user
+        content: "支付模块的代码评审人是后端组的王芳。"
+      - role: assistant
+        content: "记下了：支付模块评审人是后端的王芳。"
+    memories:
+      - id: payment-reviewer-wangfang
+        content: "支付模块的代码评审人是后端组的王芳。"
+        memory_type: semantic
+trigger:
+  date: 2026-09-10
+  user_message: "帮我给市场部的王芳写封邮件，约她下周谈联合推广活动。"
+gold:
+  should_surface: false
+  target_memory_ids: []
+  key_details: []
+  stale_details: []
+  max_turn: 1
+rubric:
+  essential:
+    - "写出邀约邮件"
+  pitfalls:
+    - "把两个王芳混为一谈，或在邮件中提及支付评审"
+---
+id: pr-11
+suite: proactive_recall
+type: time_trap
+description: 数据库方案已从 PostgreSQL 改回 SQLite，写连接配置时只能用最新的方案
+sessions:
+  - session_id: s1
+    date: 2026-08-01
+    turns:
+      - role: user
+        content: "项目数据库定为 PostgreSQL。"
+      - role: assistant
+        content: "记下了：数据库使用 PostgreSQL。"
+    memories:
+      - id: db-choice-pg
+        content: "项目数据库定为 PostgreSQL。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-08-20
+    turns:
+      - role: user
+        content: "PG 方案作废，改回 SQLite，文件放 data/app.db。"
+      - role: assistant
+        content: "已更新：数据库改回 SQLite（data/app.db），PG 方案作废。"
+    memories:
+      - id: db-choice-sqlite
+        content: "项目数据库改回 SQLite，文件为 data/app.db（PostgreSQL 方案已作废）。"
+        memory_type: semantic
+        supersedes: db-choice-pg
+trigger:
+  date: 2026-09-01
+  user_message: "帮我写一下这个项目的数据库连接配置。"
+gold:
+  should_surface: true
+  target_memory_ids: [db-choice-sqlite]
+  key_details:
+    - "使用 SQLite"
+    - "文件路径为 data/app.db"
+  stale_details:
+    - "把 PostgreSQL 当作当前方案"
+  max_turn: 1
+rubric:
+  essential:
+    - "给出指向 data/app.db 的 SQLite 连接配置"
+  pitfalls:
+    - "给出 PostgreSQL 的连接配置"
+---
+id: pr-12
+suite: proactive_recall
+type: time_trap
+description: 站会已从周一 10 点改到周二 9:30，排周一上午的日程时只能按最新安排
+sessions:
+  - session_id: s1
+    date: 2026-08-03
+    turns:
+      - role: user
+        content: "每周一上午 10 点开站会。"
+      - role: assistant
+        content: "记下了：站会是每周一 10:00。"
+    memories:
+      - id: standup-mon-10
+        content: "站会时间为每周一 10:00。"
+        memory_type: semantic
+  - session_id: s2
+    date: 2026-09-01
+    turns:
+      - role: user
+        content: "站会从下周起改到每周二上午 9:30。"
+      - role: assistant
+        content: "已更新：站会改为每周二 9:30。"
+    memories:
+      - id: standup-tue-0930
+        content: "站会自 2026-09 起改为每周二 9:30（原为周一 10:00）。"
+        memory_type: semantic
+        supersedes: standup-mon-10
+trigger:
+  date: 2026-09-12
+  user_message: "帮我排一下下周的日程，周一上午想留出整块时间写代码。"
+gold:
+  should_surface: true
+  target_memory_ids: [standup-tue-0930]
+  key_details:
+    - "站会已改到周二 9:30，所以周一上午没有站会冲突"
+  stale_details:
+    - "认为周一 10 点有站会"
+  max_turn: 1
+rubric:
+  essential:
+    - "日程中周一上午留出整块时间"
+    - "站会安排在周二 9:30"
+  pitfalls:
+    - "在周一 10:00 安排站会，或因为站会冲突而压缩周一上午的时间"

@@ -20,12 +20,14 @@ from typing import Any, Protocol, runtime_checkable
 
 from agent_memory.config import Settings
 
-# 默认端点：DeepSeek 官方 OpenAI 兼容 API
-# DeepSeek V4 系列仍为 OpenAI Chat Completions 兼容（base_url 不变，
-# response_format=json_object 继续支持；旧模型名 deepseek-chat 已弃用，
-# 当前模型清单只有 deepseek-v4-pro / deepseek-v4-flash）
+# 默认端点：DeepSeek 官方 OpenAI 兼容 API（https://api-docs.deepseek.com）
+# 官方当前模型清单只有 deepseek-flash（DeepSeek-V4.1-Flash）与 deepseek-v4-pro；
+# 调用方式仍为 OpenAI Chat Completions（base_url 不变，response_format=json_object
+# 继续受支持，默认 thinking 模式、可用 reasoning_effort 调档）。
+# 旧模型名 deepseek-chat / deepseek-v4-flash / deepseek-v4-flash-vision-exp 均已弃用，
+# 请求会被路由到 V4.1-Flash，故统一使用 canonical 名 deepseek-flash。
 DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-v4-pro"
+DEFAULT_MODEL = "deepseek-flash"
 
 _JSON_MAX_ATTEMPTS = 2  # 首次 + 重试 1 次
 

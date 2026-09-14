@@ -81,6 +81,24 @@ class EvidenceRef(BaseModel):
     line_range: tuple[int, int] | None = None
 
 
+Completeness = Literal["complete", "gist"]
+SourceType = Literal["user", "assistant", "third_party", "tool"]
+
+# v0.2 新增的可选字段：取默认值时不写进 Markdown frontmatter，老文件与老输出保持不变
+OPTIONAL_V2_FIELDS = (
+    "completeness", "verify_flag", "valid_from", "valid_to", "source_type", "history",
+)
+
+
+class VersionRecord(BaseModel):
+    """被取代的旧版本（P19 双时态）：内容 + 有效区间 + 记录时间。"""
+
+    content: str
+    valid_from: date | None = None
+    valid_to: date | None = None
+    recorded_at: date | None = None
+
+
 class MemoryEntry(BaseModel):
     """一条原子记忆：一句话事实 + 来源 + 证据指针 + 版本化字段。
 
@@ -106,6 +124,24 @@ class MemoryEntry(BaseModel):
     # 检索命中计数（M4a）：hybrid 检索返回该条目时 +1（写路径的近邻检索不计）。
     # 长期为 0 的条目会在整理循环里被建议降权/归档。旧记忆文件无此字段，默认 0 兼容读取。
     retrieval_count: int = Field(default=0, ge=0)
+    # ---- v0.2（可选，老数据兼容）
+    # P27 完整度自评：complete = 细节齐全；gist = 只有要点，细节要回原文取（evidence 指向原文）
+    completeness: Completeness | None = None
+    # P13 回读核验：与原文对照发现不一致时标记，渲染时提示"使用前请回溯原文"
+    verify_flag: Literal["mismatch"] | None = None
+    # P19 双时态：事实的有效区间（valid time）；记录时间用 created_at
+    valid_from: date | None = None
+    valid_to: date | None = None
+    # P15 来源类型：用户本人 / 助手 / 第三方材料 / 工具输出
+    source_type: SourceType | None = None
+    # P19 被本条取代的旧版本（UPDATE 时由对账追加），按时间先后
+    history: list[VersionRecord] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validity_window_ordered(self) -> "MemoryEntry":
+        if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
+            raise ValueError("valid_to 不能早于 valid_from")
+        return self
 
     @field_validator("id")
     @classmethod

@@ -39,7 +39,7 @@ from agent_memory.long_term.retrieve.hybrid import HybridSearcher
 from agent_memory.long_term.store.coordinator import MemoryWriter
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore, MemoryStoreError
-from agent_memory.models import MemoryEntry
+from agent_memory.models import MemoryEntry, VersionRecord
 
 # 语义近邻阈值：cosine 距离 ≤ 0.35（相似度 ≥ 0.65）才算"近邻"，需要 LLM 介入判决策
 NEIGHBOR_MAX_DISTANCE = 0.35
@@ -81,7 +81,7 @@ _SYSTEM_PROMPT = (
 _USER_TEMPLATE = """新记忆候选：
 - id: {candidate_id}
 - 内容: {candidate_content}
-- 时间: {candidate_date}
+- 时间: {candidate_date}{candidate_valid}
 
 语义相近的既有记忆：
 {neighbors_text}
@@ -114,6 +114,26 @@ class ReconcileReport:
             for k, v in p.counts().items():
                 out[k] = out.get(k, 0) + v
         return out
+
+
+HISTORY_MAX = 8  # 每条记忆最多保留的旧版本数
+
+
+def _carry_history(candidate: MemoryEntry, old: MemoryEntry) -> list[VersionRecord]:
+    """把被取代的旧条目折成一条 VersionRecord，接在旧条目自己的 history 后面。
+
+    旧版本的有效区间：起点取旧条目的 valid_from（没有就用它的记录时间），终点取新条目的
+    valid_from（追溯更正时早于新条目的记录时间），没有就用新条目的记录时间。
+    """
+    end = candidate.valid_from or candidate.created_at
+    start = old.valid_from or old.created_at
+    rec = VersionRecord(
+        content=old.content,
+        valid_from=start,
+        valid_to=end if end >= start else start,
+        recorded_at=old.created_at,
+    )
+    return [*old.history, *candidate.history, rec][-HISTORY_MAX:]
 
 
 def _neighbors_text(neighbors: list[MemoryEntry]) -> str:
@@ -163,6 +183,11 @@ class _Reconciler:
                 candidate_id=candidate.id,
                 candidate_content=candidate.content,
                 candidate_date=candidate.created_at.isoformat(),
+                candidate_valid=(
+                    f"\n- 有效起点: {candidate.valid_from.isoformat()}"
+                    if candidate.valid_from
+                    else ""
+                ),
                 neighbors_text=_neighbors_text(neighbors),
             ),
             schema_description=_SCHEMA_DESCRIPTION,
@@ -184,7 +209,12 @@ class _Reconciler:
         return candidate.id
 
     def apply_update(self, candidate: MemoryEntry, old: MemoryEntry) -> tuple[str, str]:
-        """新条目 version 继承旧条目 +1、supersedes 指旧 id；旧条目删除。"""
+        """新条目 version 继承旧条目 +1、supersedes 指旧 id；旧条目删除。
+
+        v0.2（P19 双时态）：旧版本不再只剩一个 supersedes 指针——它的内容、有效区间与记录时间
+        追加进新条目的 history，"截至某时"与"当时以为"的问题才有据可查。
+        """
+        candidate = candidate.model_copy(update={"history": _carry_history(candidate, old)})
         if candidate.id == old.id:
             # id 相同走 store.update（自动 version+1、刷新 last_verified）
             self.writer.update(
@@ -199,6 +229,7 @@ class _Reconciler:
 
     def apply_delete(self, candidate: MemoryEntry, old: MemoryEntry, add_new: bool) -> None:
         if add_new:
+            candidate = candidate.model_copy(update={"history": _carry_history(candidate, old)})
             self.writer.replace(old.id, candidate, expected=old)
         else:
             self.writer.delete(old.id, expected=old)

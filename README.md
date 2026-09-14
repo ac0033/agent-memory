@@ -131,7 +131,7 @@ uv run ruff check .
 
 ### 配置 LLM（蒸馏 / 对账 / LLM 评委用）
 
-蒸馏写路径需要一个 OpenAI 兼容端点，默认 DeepSeek（`https://api.deepseek.com`，模型 `deepseek-chat`）：
+蒸馏写路径需要一个 OpenAI 兼容端点，默认 DeepSeek（`https://api.deepseek.com`，模型 `deepseek-flash`）：
 
 ```bash
 export AGENT_MEMORY_LLM_API_KEY=sk-...
@@ -168,7 +168,7 @@ Claude Code / Kimi Code 的 MCP 配置片段：
         "AGENT_MEMORY_DATA_DIR": "C:/Users/<you>/.agent-memory/data",
         "AGENT_MEMORY_LLM_API_KEY": "sk-...",
         "AGENT_MEMORY_LLM_BASE_URL": "https://api.deepseek.com",
-        "AGENT_MEMORY_LLM_MODEL": "deepseek-chat"
+        "AGENT_MEMORY_LLM_MODEL": "deepseek-flash"
       }
     }
   }
