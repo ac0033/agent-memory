@@ -17,3 +17,13 @@
   followup: >-
     迁入 evals/ 前再用评测运行做一次自动体检（tools/item_health.py：oracle 失败、全部系统失败、
     不给记忆也通过），被标记的用例单独复核。
+
+- date: 2026-09-15
+  reviewer: YuanLumen
+  applies_to: all
+  scope: 全部用例，含 v0.3 修订新增的 40 条（pf 16、ca 8、mp 16）
+  suite_version: 0.3.0-draft
+  verdict: pass
+  method: >-
+    用户的默认授权（原话："所有评测集默认都是我通过了，如果有需要我会自行查看并提供反馈"）。
+    v0.3 的修订由 Claude 完成，与答题器（DeepSeek）和评委（Kimi K3）都不同源（用户要求）。

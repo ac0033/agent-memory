@@ -104,7 +104,9 @@ TS_JUDGE_SYSTEM = """你是评估评委，评估"任务状态掌握"。你会拿
 - 对 constraints / done / next_steps / open_questions 分别给出：被评对象中与金标匹配的条目数 matched、被评对象报出的该类条目总数 reported；
 - key_vars_ok：金标 key_vars 中被正确报出的键数；
 - stale_reported：是否把过时条目当作现状报出；
-- contaminated：是否混入了串线条目。"""
+- contaminated：是否混入了串线条目——指把串线条目写进了目标任务的字段（目标、约束、已完成、下一步、未决问题、变量），
+  或在回答里把其他任务的进度说成目标任务的进度。被评对象在单独标明的分区里列出其他任务（如"其他并行任务"），
+  或明确说明"那是另一个任务"，不算串线。"""
 TS_JUDGE_SCHEMA = """{
   "goal_ok": true,
   "constraints": {"matched": 1, "reported": 2},

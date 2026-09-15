@@ -98,9 +98,10 @@ def m_ca(rows):
     rec = len(tps) / len(confirm_pos) if confirm_pos else None
     return {
         "n": len(rows),
-        "补全成功率(K9主)": rate([r.get("passed") for r in by("need_backfill", "misremember_trap", "unrecoverable")]),
-        "不完整察觉率": rate([_bf(r) for r in by("need_backfill", "misremember_trap")]),
-        "其中主动调原文工具": rate([r.get("backfill") for r in by("need_backfill", "misremember_trap")]),
+        "补全成功率(K9主)": rate([r.get("passed") for r in by("need_backfill", "misremember_trap", "unrecoverable",
+                                                         "rule_table_update")]),
+        "不完整察觉率": rate([_bf(r) for r in by("need_backfill", "misremember_trap", "rule_table_update")]),
+        "其中主动调原文工具": rate([r.get("backfill") for r in by("need_backfill", "misremember_trap", "rule_table_update")]),
         "过度回溯率(护栏)": rate([_bf(r) for r in by("gist_sufficient", "no_confirm_needed")]),
         "确认P": p, "确认R": rec, "确认F0.5(K10主)": f_beta(p, rec),
         "先斩后奏率": rate([r.get("act_before_confirm") for r in confirm_pos]),

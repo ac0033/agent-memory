@@ -110,7 +110,9 @@ def main() -> int:
         for ta, tb in zip(a_turns, b_turns):
             pairs["pr_surfaced"].append((bool(ta.get("surfaced")), bool(tb.get("surfaced"))))
 
-    lines = ["# 评委一致性（代理：评委 A qwen3.8-max vs 评委 B glm-5.2）", "",
+    judge_a = "、".join(sorted({json.loads((d / "meta.json").read_text(encoding="utf-8")).get("judge") or "?"
+                                for d in args.runs}))
+    lines = [f"# 评委一致性（代理：评委 A {judge_a} vs 评委 B {j2.model}）", "",
              "| 判定 | n | 一致率 | Cohen's κ | A 判正比例 | B 判正比例 |", "|---|---|---|---|---|---|"]
     for k, ps in pairs.items():
         a = [x for x, _ in ps]

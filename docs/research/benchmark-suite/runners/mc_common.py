@@ -14,7 +14,10 @@ import json
 import math
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -42,8 +45,12 @@ DEFAULTS = {
     # 答题器与被测系统走 DeepSeek 官方，评委走 token-plan——两边分摊额度，评委（qwen）与答题器异源
     "actor": {"base_url": "https://api.deepseek.com", "model": "deepseek-flash", "key_env": "DEEPSEEK_API_KEY"},
     "system": {"base_url": "https://api.deepseek.com", "model": "deepseek-flash", "key_env": "DEEPSEEK_API_KEY"},
-    "judge": {"base_url_env": "OPENAI_BASE_URL", "model": "qwen3.8-max", "key_env": "DASHSCOPE_API_KEY"},
-    "judge2": {"base_url_env": "OPENAI_BASE_URL", "model": "glm-5.2", "key_env": "DASHSCOPE_API_KEY"},
+    # 2026-09-15：token-plan 周额度再次耗尽，评委改为 Kimi K3（用户的会员，经 Kimi Code CLI 调用，不走 API）。
+    # 三方互不相同：答题器 DeepSeek、评委 Kimi、用例修订 Claude。t2-* 运行的评委是 qwen3.8-max（judge_qwen）。
+    "judge": {"cli": "kimi", "model": "kimi-code/k3"},
+    "judge2": {"cli": "kimi", "model": "kimi-code/k3"},
+    "judge_qwen": {"base_url_env": "OPENAI_BASE_URL", "model": "qwen3.8-max", "key_env": "DASHSCOPE_API_KEY"},
+    "judge_glm": {"base_url_env": "OPENAI_BASE_URL", "model": "glm-5.2", "key_env": "DASHSCOPE_API_KEY"},
 }
 
 native_lock = threading.RLock()  # sqlite-vec / torch 原生调用串行（Windows + 3.14 多线程偶发段错误）
@@ -238,8 +245,104 @@ class ChatClient:
         raise RuntimeError(f"LLM 调用失败：{last}")
 
 
-def build_client(role: str, env: dict[str, str], override_model: str | None = None, cache: bool = True) -> ChatClient:
+class KimiCLIClient:
+    """Kimi Code CLI 客户端（用户会员登录，不走 API）：`kimi -p` 非交互调用，取 stream-json 里最后一条助手回复。
+
+    - 与 ChatClient 同接口（complete_json）、同一磁盘缓存，缓存键含模型名；
+    - 子进程关掉用户的 agent-memory hook（环境变量）与技能（空的 --skills-dir），在临时空目录里运行，
+      评测内容不会进入用户真实的记忆库；
+    - CLI 不能设温度，复现靠缓存；并发由 MC_KIMI_CONCURRENCY 控制（默认 4），失败按退避重试。
+    """
+
+    def __init__(self, role: str, model: str = "kimi-code/k3", cache: bool = True, timeout: float = 420):
+        self.role = role
+        self.model = model
+        self.base_url = "kimi-cli"
+        self.cache_dir = CACHE_DIR / "memcompass" if cache else None
+        self.exe = shutil.which("kimi") or str(Path.home() / ".kimi-code" / "bin" / "kimi.exe")
+        self.workdir = Path(tempfile.gettempdir()) / "memcompass-kimi-cwd"
+        self.skills = self.workdir / "empty-skills"
+        self.skills.mkdir(parents=True, exist_ok=True)
+        self.timeout = timeout
+        self._sem = threading.Semaphore(int(os.environ.get("MC_KIMI_CONCURRENCY", "4")))
+
+    def _key(self, system: str, user: str, extra: str) -> str:
+        import hashlib
+
+        return hashlib.sha256(json.dumps([self.model, system, user, extra], ensure_ascii=False).encode()).hexdigest()
+
+    @staticmethod
+    def _last_reply(stdout: str) -> str:
+        text = ""
+        for line in stdout.splitlines():
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(ev, dict) and ev.get("role") == "assistant" and isinstance(ev.get("content"), str):
+                text = ev["content"]
+        return text
+
+    @staticmethod
+    def _parse(text: str) -> dict:
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            i, j = text.find("{"), text.rfind("}")
+            if i < 0 or j <= i:
+                raise ValueError("回复里没有 JSON object") from None
+            parsed = json.loads(text[i:j + 1])
+        if not isinstance(parsed, dict):
+            raise ValueError("JSON 不是 object")
+        return parsed
+
+    def complete_json(self, system: str, user: str, schema: str, seed_tag: str = "") -> dict:
+        key = self._key(system, user, schema + seed_tag)
+        if self.cache_dir:
+            f = self.cache_dir / f"{key}.json"
+            if f.exists():
+                try:
+                    return json.loads(f.read_text(encoding="utf-8"))["response"]
+                except (OSError, json.JSONDecodeError, KeyError):
+                    pass
+        if len(user) > 24000:  # Windows 命令行上限约 32K 字符；只截中间，保留开头与结尾
+            user = user[:12000] + "\n……（中间过长已省略）……\n" + user[-11000:]
+        prompt = (f"{system}\n\n只输出一个 JSON object（不要 markdown 代码块，不要调用任何工具，不要任何解释），结构：\n"
+                  f"{schema}\n\n===== 待评材料 =====\n{user}")
+        env = os.environ | {"AGENT_MEMORY_WM_HOOK": "off", "AGENT_MEMORY_REVIEW_TURN_INTERVAL": "1000000"}
+        cmd = [self.exe, "-p", prompt, "-m", self.model, "--skills-dir", str(self.skills), "--output-format", "stream-json"]
+        backoff = [10, 30, 60, 120]
+        last: Exception | None = None
+        for attempt in range(len(backoff) + 1):
+            try:
+                with self._sem:
+                    with _count_lock:
+                        llm_calls[self.role] = llm_calls.get(self.role, 0) + 1
+                    proc = subprocess.run(cmd, cwd=self.workdir, env=env, capture_output=True, text=True,
+                                          encoding="utf-8", errors="replace", timeout=self.timeout)
+                reply = self._last_reply(proc.stdout)
+                if proc.returncode != 0 or not reply:
+                    raise RuntimeError(f"kimi 退出码 {proc.returncode}：{(proc.stderr or proc.stdout)[-300:]}")
+                parsed = self._parse(reply)
+                if self.cache_dir:
+                    self.cache_dir.mkdir(parents=True, exist_ok=True)
+                    tmp = self.cache_dir / f"{key}.{os.getpid()}.{threading.get_ident()}.tmp"
+                    tmp.write_text(json.dumps({"model": self.model, "response": parsed}, ensure_ascii=False), encoding="utf-8")
+                    os.replace(tmp, self.cache_dir / f"{key}.json")
+                return parsed
+            except Exception as e:  # noqa: BLE001
+                last = e
+                if attempt < len(backoff):
+                    time.sleep(backoff[attempt])
+                    continue
+        raise RuntimeError(f"Kimi CLI 调用失败：{last}")
+
+
+def build_client(role: str, env: dict[str, str], override_model: str | None = None, cache: bool = True):
     spec = DEFAULTS[role]
+    if spec.get("cli") == "kimi":
+        return KimiCLIClient(role, override_model or spec["model"], cache=cache)
     base = spec.get("base_url") or env.get(spec.get("base_url_env", ""), "")
     key = env.get(spec["key_env"]) or os.environ.get(spec["key_env"])
     if not base or not key:

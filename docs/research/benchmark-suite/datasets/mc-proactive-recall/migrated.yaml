@@ -791,7 +791,8 @@ probes:
       target_memory_ids: []
       key_details: []
       stale_details: []
-      tolerated_mentions: []
+      tolerated_mentions:
+      - 简短提醒记录里另有同名的另一位（只为消歧，不带入其内容）
       earliest_turn: 1
       max_turn: 1
 behavior:

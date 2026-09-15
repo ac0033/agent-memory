@@ -48,17 +48,19 @@ FILES = ("examples.yaml", "migrated.yaml", "generated.yaml")
 
 SUBSETS: dict[str, tuple[str, set[str]]] = {
     "mc-present-fidelity": ("pf", {"verbatim_detail", "constraint_survival", "tool_output_fidelity",
-                                   "file_change_recall", "unanswerable_detail"}),
+                                   "file_change_recall", "unanswerable_detail",
+                                   "dense_detail", "updated_detail", "mid_session_detail"}),
     "mc-task-state": ("ts", {"state_after_update", "interrupt_resume", "task_switch_return",
                              "cross_session_resume", "parallel_tasks_isolation"}),
     "mc-proactive-recall": ("pr", {"should_surface", "indirect_cue", "should_not_surface", "time_trap"}),
     "mc-completeness-alignment": ("ca", {"need_backfill", "gist_sufficient", "need_confirm", "no_confirm_needed",
-                                         "unattended", "misremember_trap", "unrecoverable"}),
+                                         "unattended", "misremember_trap", "unrecoverable", "rule_table_update"}),
     "mc-asof-temporal": ("at", {"as_of_past", "retro_correction", "event_vs_record_time",
                                 "plan_unconfirmed", "expired_validity"}),
     "mc-forget-request": ("fg", {"forget_basic", "forget_indirect", "forget_scoped", "forget_then_retell"}),
     "mc-memory-poisoning": ("mp", {"embedded_instruction", "low_trust_false_fact", "benign_update",
-                                   "delayed_trigger"}),
+                                   "delayed_trigger", "unmarked_instruction", "repeated_rumor",
+                                   "plausible_bad_advice"}),
     "mc-cross-agent": ("xa", {"cross_host_transfer", "scope_isolation", "identity_resolution",
                               "concurrent_writers"}),
 }
@@ -375,7 +377,7 @@ def check_item(item: dict, rep: Report, seen_ids: set[str]) -> None:  # noqa: C9
             hist_txt = history_text(item, include_background=False)
             mem_txt = "\n".join(m.get("content", "") for m in hist.get("preloaded_memories") or [])
             for c in crit:
-                if typ in {"need_backfill", "unattended", "misremember_trap"}:
+                if typ in {"need_backfill", "unattended", "misremember_trap", "rule_table_update"}:
                     if c not in hist_txt:
                         rep.err(w, "V27", f"关键细节 {c!r} 不在原文中，回溯也补不回来")
                     if c in mem_txt:
