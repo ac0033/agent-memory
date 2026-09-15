@@ -460,7 +460,9 @@ class AgentMemorySystem(System):
                 self.svc.wm_refresh(scope, conversation=recent, current_turn=turn_index)
             elif host_llm is not None:
                 cur = self.svc.wm_read(scope)
-                user = ("当前工作记忆：\n" + (json.dumps(cur["working_memory"], ensure_ascii=False) if cur["exists"] else "（空）")
+                # 去掉写入时间戳：它每次运行都不同，会让宿主提示词无法命中评测缓存，重跑结果不可复现
+                wm = {k: v for k, v in (cur["working_memory"] or {}).items() if k != "updated_at"}
+                user = ("当前工作记忆：\n" + (json.dumps(wm, ensure_ascii=False) if cur["exists"] else "（空）")
                         + "\n\n最近几轮对话：\n" + "\n".join(f"{m['role']}: {m['content']}" for m in recent))
                 try:
                     out = host_llm.complete_json(HOOK_SYSTEM, user, HOOK_SCHEMA)
