@@ -7,8 +7,12 @@
 - datasets/<子集>/{card.md, examples.yaml, migrated.yaml, generated.yaml} 与 datasets/verification.yaml；
 - runners/*.py（统一 runner、对照组、评委提示词、汇总、评委一致性、报告拼装）；
 - tools/validate.py、tools/item_health.py；
+- 运行时依赖：build/mcb.py、build/pools.py（runner 回放填充会话、validate.py 校验时导入）；
+  朴素 RAG 对照组的 naive_rag.py（来自 docs/research/eval-drafts/runner-draft/，放进 runners/）——
+  冻结副本不依赖编写源头与草稿目录，改动那边不会悄悄改变冻结副本的结果；
 - 另写 README.md（冻结说明、来源提交、核验记录、用法）。
-不迁入：构造脚本 build/、核验台 tools/review/、设计与调研文档——它们留在 docs/research/benchmark-suite/，是编写源头。
+不迁入：其余构造脚本 build/build_*.py、核验台 tools/review/、设计与调研文档——它们留在
+docs/research/benchmark-suite/，是编写源头。
 用例文件不改写：生成文件不手改，核验以 datasets/verification.yaml 为准。
 """
 
@@ -17,6 +21,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import filecmp
+import re
 import shutil
 import subprocess
 import sys
@@ -32,6 +37,8 @@ SUBSETS = [
 ]
 DATA_FILES = ("card.md", "examples.yaml", "migrated.yaml", "generated.yaml")
 TOOLS = ("validate.py", "item_health.py")
+BUILD_RUNTIME = ("mcb.py", "pools.py")
+NAIVE_RAG = REPO / "docs" / "research" / "eval-drafts" / "runner-draft" / "naive_rag.py"
 
 README = """# MemCompass（冻结副本）
 
@@ -72,6 +79,9 @@ def plan() -> list[tuple[Path, Path]]:
         pairs.append((src, DST / "runners" / src.name))
     for t in TOOLS:
         pairs.append((SRC / "tools" / t, DST / "tools" / t))
+    for b in BUILD_RUNTIME:
+        pairs.append((SRC / "build" / b, DST / "build" / b))
+    pairs.append((NAIVE_RAG, DST / "runners" / NAIVE_RAG.name))
     return pairs
 
 
@@ -90,7 +100,7 @@ def main() -> int:
         return 1
     print(f"源：{SRC}\n目标：{DST}\n共 {len(pairs)} 个文件 + README.md")
     for s, d in pairs:
-        print(f"  {s.relative_to(SRC)}  →  {d.relative_to(REPO)}")
+        print(f"  {s.relative_to(REPO)}  →  {d.relative_to(REPO)}")
     if not args.apply:
         print("（dry run：加 --apply 才写入）")
         return 0
@@ -111,7 +121,9 @@ def main() -> int:
     sha = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
                          capture_output=True, text=True).stdout.strip() or "?"
     items = load_items(list(SUBSET_ALIAS))
-    version = items[0].get("meta", {}).get("suite_version", "?") if items else "?"
+    # 套件版本以编写源头 README 的版本行为准（用例 meta 里的 suite_version 只在重新生成时更新）
+    m = re.search(r"版本\s*([0-9][\w.\-]*)", (SRC / "README.md").read_text(encoding="utf-8"))
+    version = m.group(1) if m else "?"
     (DST / "README.md").write_text(
         README.format(date=dt.date.today().isoformat(), sha=sha, version=version, n_items=len(items)),
         encoding="utf-8")

@@ -33,7 +33,9 @@ from mc_common import (
     session_date,
 )
 
-sys.path.insert(0, str(REPO / "docs" / "research" / "eval-drafts" / "runner-draft"))
+# 朴素 RAG 对照组：冻结副本（evals/memcompass/runners/）自带 naive_rag.py；编写源头从草稿目录导入
+if not (Path(__file__).resolve().parent / "naive_rag.py").exists():
+    sys.path.insert(0, str(REPO / "docs" / "research" / "eval-drafts" / "runner-draft"))
 
 RAW_TOP_K = 5
 MEM_TOP_K = 5
