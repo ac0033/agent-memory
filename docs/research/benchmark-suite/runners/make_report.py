@@ -48,8 +48,9 @@ def body(md: str) -> tuple[str, str, str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", type=Path, required=True)
-    ap.add_argument("--v2", type=Path, required=True)
+    ap.add_argument("--base", type=Path, nargs="+", required=True,
+                    help="基线运行；可给多个（例如某子集单独重跑），同一任务以后给的为准")
+    ap.add_argument("--v2", type=Path, nargs="+", required=True, help="优化版运行；规则同 --base")
     ap.add_argument("--controls", type=Path, nargs="*", default=[],
                     help="对照组运行（no_memory、oracle、naive_rag 等），与基线、优化版合并后一起与 am_base 配对比较")
     ap.add_argument("--ablation", type=Path, nargs="*", default=[])
@@ -62,7 +63,7 @@ def main() -> int:
     import tempfile
 
     tmp = Path(tempfile.mkdtemp(prefix="mc-report-"))
-    main_runs = [args.base, args.v2, *args.controls]
+    main_runs = [*args.base, *args.v2, *args.controls]
     test_sub, test_prof, test_cost = body(report(main_runs, "am_base", "test", tmp / "test.md"))
     all_sub, all_prof, _ = body(report(main_runs, "am_base", None, tmp / "all.md"))
     abl = []
@@ -70,7 +71,7 @@ def main() -> int:
         import json
         import re
 
-        sub, _, _ = body(report([args.v2, d], "am_v2", "test", tmp / f"{d.name}.md"))
+        sub, _, _ = body(report([*args.v2, d], "am_v2", "test", tmp / f"{d.name}.md"))
         # 只保留该消融运行覆盖的子集（v2 全量运行里的其他子集与消融无关）
         keep = set(json.loads((d / "meta.json").read_text(encoding="utf-8")).get("subsets") or [])
         parts = re.split(r"(?m)^(?=### )", sub)
