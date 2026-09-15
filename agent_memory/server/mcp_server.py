@@ -1650,6 +1650,7 @@ def build_server(service: MemoryService):
             "服务端整理工作记忆：把最近几轮对话（[{role, content}] 数组或 JSON 字符串）交给记忆服"
             "务，"
             "由它更新目标、约束、待办、未决问题与并行任务（旧取值替换、闲聊不写入）。"
+            "增量整理：只改有变化的字段，没有变化时不写盘；返回的 changed 列出改动的字段。"
             + _SUBAGENT_WRITE_GUARD
         ),
     )

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
@@ -203,6 +204,28 @@ def test_search_appends_raw_evidence_for_gist_memory(mk_service):
     svc.writer.create(e)
     out = svc.search("周报端口规则", scope="global")
     assert "<raw_evidence>" in out["block"] and out["archive_hits"]
+
+
+def test_raw_fallback_only_checks_top_two_hits(mk_service):
+    svc = mk_service()
+    svc.archive_records(
+        [{"role": "user", "content": "周报规则：文件名 weekly_YYYYMMDD.csv，编码 UTF-8-BOM"}],
+        source="eval",
+        session_id="s1",
+    )
+    gist = make_entry("weekly-rules", "用户定了周报规则。", memory_type="procedural")
+    gist = gist.model_copy(
+        update={
+            "completeness": "gist",
+            "evidence": [EvidenceRef(session_id="s1", source="eval", line_range=(1, 1))],
+        }
+    )
+    ranked = [
+        SimpleNamespace(entry=e)
+        for e in (make_entry("m1", "完整记忆一"), make_entry("m2", "完整记忆二"), gist)
+    ]
+    assert svc._raw_fallback("周报规则", ranked) == []  # 排第三：不回退
+    assert svc._raw_fallback("周报规则", [ranked[2], *ranked[:2]])  # 排第一：回退
 
 
 # ---------------------------------------------------------------- P27 / P13
@@ -445,6 +468,34 @@ def test_wm_refresh_builds_structured_state(mk_service):
     svc.wm_refresh("repo:work", [{"role": "user", "content": "阈值改成 3 万"}], current_turn=6)
     wm = svc.wm_read("repo:work")
     assert "### 约束" in wm["block"] and "【B】" in wm["block"] and wm["turn_watermark"] == 6
+
+
+def test_wm_refresh_applies_incremental_patch(mk_service):
+    patches = [
+        {
+            "goal": "订单导出支持 CSV",
+            "constraints": ["单文件不超过 3 万行"],
+            "variables": {"shard_rows": "30000", "tmp_dir": "/tmp/export"},
+            "todos": [{"content": "CSV 分片", "status": "pending"}],
+        },
+        {
+            "variables": {"shard_rows": "20000", "tmp_dir": None},
+            "todos": [{"content": "CSV 分片", "status": "done"}],
+        },
+        {},
+    ]
+    svc = mk_service({"维护 agent 的工作记忆": lambda user: patches.pop(0)})
+    svc.wm_refresh("repo:work", [{"role": "user", "content": "导出要分片"}], current_turn=3)
+    out = svc.wm_refresh(
+        "repo:work", [{"role": "user", "content": "改成 2 万行，临时目录不用了"}], current_turn=6
+    )
+    assert out["changed"] == ["todos", "variables"]
+    wm = svc.wm_read("repo:work")["working_memory"]
+    # 没输出的字段原样保留；variables 按键合并，null 表示删除
+    assert wm["goal"] == "订单导出支持 CSV" and wm["constraints"] == ["单文件不超过 3 万行"]
+    assert wm["variables"] == {"shard_rows": "20000"} and wm["todos"][0]["status"] == "done"
+    same = svc.wm_refresh("repo:work", [{"role": "user", "content": "好的"}], current_turn=6)
+    assert same["changed"] == [] and same["version"] == out["version"]  # 没有改动不写盘
 
 
 def test_episode_pack_creates_card_and_syncs_constraints(mk_service):

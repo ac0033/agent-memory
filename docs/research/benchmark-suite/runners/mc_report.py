@@ -295,6 +295,25 @@ def main() -> int:
         vals = [fmt(table.get((sb, md, s), {}).get(key), pct=True) for s in systems]
         lines.append(f"| {cap} | {SHORT[sb]}/{md} | " + " | ".join(vals) + " |")
     lines.append("")
+    # 成本（Q1）：只统计带 cost 字段的行（v0.3 起的运行）
+    cost_rows = [r for r in rows if r.get("cost")]
+    if cost_rows:
+        lines += ["## 成本（每题平均）", "",
+                  "计数包在 LLM 客户端外面，评测缓存命中也计入，统计的是系统本来要花的量；字符数不是 token 数。"
+                  "“答题器”含基线由宿主改写工作记忆的调用；不含评委。", "",
+                  "| 子集 | 系统 | n | 系统 LLM 调用 | 系统输入字符 | 系统输出字符 | 答题器调用 | 答题器输入字符 | 答题器输出字符 |",
+                  "|---|---|---|---|---|---|---|---|---|"]
+        cg: dict[tuple, list[dict]] = defaultdict(list)
+        for r in cost_rows:
+            cg[(r["subset"], r["system"])].append(r)
+        for (sb, s), g in sorted(cg.items()):
+            def avg(who, k, g=g):
+                return sum(((r["cost"].get(who) or {}).get(k) or 0) for r in g) / len(g)
+
+            lines.append(f"| {SHORT.get(sb, sb)} | {s} | {len(g)} | {avg('sys', 'calls'):.1f} | {avg('sys', 'in_chars'):,.0f} | "
+                         f"{avg('sys', 'out_chars'):,.0f} | {avg('actor', 'calls'):.1f} | {avg('actor', 'in_chars'):,.0f} | "
+                         f"{avg('actor', 'out_chars'):,.0f} |")
+        lines.append("")
     if errors:
         lines.append("## 出错任务")
         for r in errors[:30]:

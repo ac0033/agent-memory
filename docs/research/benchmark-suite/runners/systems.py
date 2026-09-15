@@ -23,7 +23,15 @@ import sys
 import tempfile
 from pathlib import Path
 
-from mc_common import REPO, native_lock, parse_time, render_session, session_date
+from mc_common import (
+    REPO,
+    CostMeter,
+    MeteredLLM,
+    native_lock,
+    parse_time,
+    render_session,
+    session_date,
+)
 
 sys.path.insert(0, str(REPO / "docs" / "research" / "eval-drafts" / "runner-draft"))
 
@@ -290,10 +298,13 @@ class AgentMemorySystem(System):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         data = Path(self.tmp.name)
         self.settings = self.settings_base.model_copy(update={"data_dir": data, "review_gate": "off"})
+        # 每题一个计数器：被测系统内部 LLM 的调用量（Q1 成本）
+        self.meter = CostMeter()
+        llm = MeteredLLM(self.system_llm, self.meter) if self.system_llm is not None else None
         with native_lock:
             self.store = MarkdownStore(data)
             self.index = IndexDB(data / "index.db")
-            self.svc = self._svc_cls(self.settings, self.store, self.index, self.embedder, self.system_llm)
+            self.svc = self._svc_cls(self.settings, self.store, self.index, self.embedder, llm)
         self.offsets: dict[str, int] = {}
         if mode == "preloaded":
             self._preload(item)

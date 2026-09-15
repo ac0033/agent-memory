@@ -245,6 +245,47 @@ class ChatClient:
         raise RuntimeError(f"LLM 调用失败：{last}")
 
 
+class CostMeter:
+    """按任务统计 LLM 用量（Q1 成本代理）：调用次数、输入 / 输出字符数。"""
+
+    def __init__(self):
+        self.calls = 0
+        self.in_chars = 0
+        self.out_chars = 0
+        self._lock = threading.Lock()
+
+    def add(self, in_chars: int, out_chars: int) -> None:
+        with self._lock:
+            self.calls += 1
+            self.in_chars += in_chars
+            self.out_chars += out_chars
+
+    def as_dict(self) -> dict:
+        return {"calls": self.calls, "in_chars": self.in_chars, "out_chars": self.out_chars}
+
+
+class MeteredLLM:
+    """包在 LLM 客户端外面计数。评测缓存命中也计入：统计的是系统本来要花的量，与缓存无关。
+    同时兼容 agent_memory 的 LLMClient（complete / complete_json）与本模块的 ChatClient。"""
+
+    def __init__(self, inner, meter: CostMeter):
+        self.inner = inner
+        self.meter = meter
+
+    def complete(self, system: str, user: str) -> str:
+        out = self.inner.complete(system, user)
+        self.meter.add(len(system) + len(user), len(out or ""))
+        return out
+
+    def complete_json(self, system: str, user: str, schema: str, *args, **kwargs) -> dict:
+        out = self.inner.complete_json(system, user, schema, *args, **kwargs)
+        self.meter.add(len(system) + len(user) + len(schema), len(json.dumps(out, ensure_ascii=False)))
+        return out
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
 class KimiCLIClient:
     """Kimi Code CLI 客户端（用户会员登录，不走 API）：`kimi -p` 非交互调用，取 stream-json 里最后一条助手回复。
 

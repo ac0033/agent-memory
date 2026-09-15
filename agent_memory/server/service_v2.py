@@ -195,13 +195,16 @@ class V2ServiceMixin:
         return "\n".join(out)
 
     def _raw_fallback(self, query: str, results) -> list:
-        """P23 原文回退：返回结果里有"只有要点 / 核验不一致"的记忆时，
-        到它们引用的原文会话里再查一次。"""
+        """P23 原文回退：排在前两位的命中里有"只有要点 / 核验不一致"的记忆时，
+        到它们引用的原文会话里再查一次。
+
+        v0.2.2 起只看前两位：v0.2 对全部命中都回退，评测里不需要回溯的用例有 5/8 也附上了原文，
+        多为排在后面、被标了 gist 的背景记忆；它们与问题关系弱，附原文只增加 token。"""
         if self.raw_index.count() == 0:
             return []
         hits = []
         seen = set()
-        for r in results:
+        for r in results[:2]:
             e = r.entry
             if e.completeness != "gist" and e.verify_flag != "mismatch":
                 continue
@@ -335,6 +338,10 @@ class V2ServiceMixin:
             else None
         )
         out = refresh_payload(current, conversation, self.llm)
+        changed = sorted(k for k in out if out.get(k) != (current or {}).get(k))
+        if old and not changed and (current_turn is None or current_turn == old.turn_watermark):
+            # 增量整理没有改动，水位也没变：不写盘
+            return {"status": "ok", "version": old.version, "changed": []}
         r = lambda t: redact(str(t))[0]  # noqa: E731
 
         def todos(xs):
@@ -379,7 +386,7 @@ class V2ServiceMixin:
             else (old.turn_watermark if old else 0),
         )
         saved = self.working_store.write(wm, expected_version=old.version if old else 0)
-        return {"status": "ok", "version": saved.version}
+        return {"status": "ok", "version": saved.version, "changed": changed}
 
     # ------------------------------------------------------------ P05 / P06 事件边界打包
 

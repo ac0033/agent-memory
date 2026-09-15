@@ -37,6 +37,8 @@ from mc_common import (  # noqa: E402
     OUT_ROOT,
     REPO,
     SUBSET_ALIAS,
+    CostMeter,
+    MeteredLLM,
     build_client,
     contains_any,
     llm_calls,
@@ -750,6 +752,10 @@ def main() -> int:
         base = {"subset": it["subset"], "item_id": it["id"], "type": it["type"], "subtype": it.get("subtype"),
                 "split": it["split"], "system": label, "mode": mode, "seed": seed}
         system = None
+        # Q1 成本：答题器（含基线的宿主改写工作记忆）与压缩器按题计数；被测系统内部 LLM 由适配器计数
+        meters = {"actor": CostMeter(), "compactor": CostMeter()}
+        act = MeteredLLM(actor, meters["actor"]) if actor is not None else None
+        comp = MeteredLLM(compactor, meters["compactor"]) if compactor is not None else None
         try:
             system = make_system(sn)
             if isinstance(system, AgentMemorySystem):
@@ -762,9 +768,9 @@ def main() -> int:
                 system.setup(it, ingest if ingest != "replay" else "none")
             handler = {"pr": run_pr, "ca": run_ca, "qa": run_qa, "mpb": run_mp_behavior, "xa": run_xa, "ts": run_ts}.get(fn)
             if fn == "pf":
-                row = run_pf(it, system, mode, seed, actor, judge, args.dry_run, compactor=compactor)
+                row = run_pf(it, system, mode, seed, act, judge, args.dry_run, compactor=comp)
             else:
-                row = handler(it, system, mode, seed, actor, judge, args.dry_run)
+                row = handler(it, system, mode, seed, act, judge, args.dry_run)
             base.update(row)
         except Exception as e:  # noqa: BLE001
             base["error"] = f"{type(e).__name__}: {e}"
@@ -772,6 +778,9 @@ def main() -> int:
         finally:
             if system is not None:
                 system.close()
+        base["cost"] = {k: m.as_dict() for k, m in meters.items()}
+        if getattr(system, "meter", None) is not None:
+            base["cost"]["sys"] = system.meter.as_dict()
         base["seconds"] = round(time.perf_counter() - t0, 1)
         with _write_lock:
             res_f.write(json.dumps(base, ensure_ascii=False, default=str) + "\n")
