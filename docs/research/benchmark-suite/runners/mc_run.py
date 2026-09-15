@@ -734,12 +734,21 @@ def main() -> int:
                                     capture_output=True, text=True).stdout.strip())
     except Exception:  # noqa: BLE001
         sha, dirty = "?", None
+    prev = {}
+    if args.resume and (out_dir / "meta.json").exists():  # 续跑：保留开跑时间与历次提交号，任务数按全量计
+        try:
+            prev = json.loads((out_dir / "meta.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            prev = {}
+    history = prev.get("am_git_history") or ([prev["am_git"]] if prev.get("am_git") else [])
+    now = dt.datetime.now().isoformat(timespec="seconds")
     meta = {"run_id": run_id, "am_root": str(am_root), "am_label": args.am_label, "am_git": sha, "am_dirty": dirty,
+            "am_git_history": [*history, sha] if history and history[-1] != sha else (history or [sha]),
             "subsets": subsets, "splits": args.splits, "systems": sysnames, "modes": sorted(modes), "seeds": args.seeds,
             "actor": getattr(actor, "model", None), "judge": getattr(judge, "model", None),
             "system_llm": settings.llm_model if system_llm else None, "prompts": J.prompt_hashes(),
-            "n_items": len(items), "n_tasks": len(tasks), "resumed_skipped": n_skipped,
-            "started": dt.datetime.now().isoformat(timespec="seconds")}
+            "n_items": len(items), "n_tasks": len(tasks) + n_skipped, "resumed_skipped": n_skipped,
+            "started": prev.get("started") or now, **({"resumed_at": now} if prev else {})}
     (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"run {run_id}：{len(items)} 条用例，{len(tasks)} 个任务；am={am_root}（{sha}{'+改动' if dirty else ''}）")
 

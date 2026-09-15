@@ -231,7 +231,9 @@ def main() -> int:
     if args.splits:
         lines.append(f"- 统计切分：{args.splits}")
     for m in metas:
-        lines.append(f"- 运行 `{m['run_id']}`：am={m['am_label']}@{m['am_git']}{'（含未提交改动）' if m.get('am_dirty') else ''}；"
+        hist = m.get("am_git_history") or []
+        via = f"（续跑经过 {' → '.join(hist)}）" if len(hist) > 1 else ""
+        lines.append(f"- 运行 `{m['run_id']}`：am={m['am_label']}@{m['am_git']}{via}{'（含未提交改动）' if m.get('am_dirty') else ''}；"
                      f"切分 {m['splits']}；种子 {m['seeds']}；答题器 {m.get('actor')}；评委 {m.get('judge')}；"
                      f"被测系统内部 LLM {m.get('system_llm')}；任务 {m['n_tasks']}，错误 {m.get('errors')}")
     lines.append(f"- 出错任务：{len(errors)}（不计入指标）")
