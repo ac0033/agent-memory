@@ -23,6 +23,15 @@
 
 MCP tool 由 15 个增至 25 个；v0.2 字段全部可选，老数据、老渲染输出不变（有测试覆盖）。
 
+### 评测后的修订（依据 2026-09-14 正式报告，均由 test 切分上的现象触发，报告中如实披露）
+
+| 版本 | 改动 | 触发的评测现象 | 代码 |
+|---|---|---|---|
+| v0.2.1 | 用户转述知情方的答复记为 `source_type=user`；追溯更正提示只在有版本史时出现 | P15 把用户转述的法务答复降为 low 进复核，at-0026 丢失 | `ingest/distill.py`、`retrieve/inject.py` |
+| v0.2.2 | `wm_refresh` 改增量：LLM 只输出有变化的字段（variables 按键合并，null 删除），没有变化不写盘 | 长会话里每次整理都重写整份工作记忆（2 条长用例 206 次调用、每次约 4 千字输出） | `working/refresh.py`、`service_v2.wm_refresh` |
+| v0.2.2 | P23 原文回退只看排在前两位的命中 | 不需要回溯的用例有 5/8 自动附上原文，多为排在后面的 gist 背景记忆 | `service_v2._raw_fallback` |
+| v0.2.2 | SKILL.md：检索或浮现的记忆只在影响回答时才提；副手误报的不提 | 端到端负例误插话 11/13（基线 13/13） | SKILL.md §一、§九 |
+
 ## 2. 质量保证
 
 - 单元测试：`tests/test_v2_memory.py`（18 项）、`tests/test_http_surface.py`（2 项），全部用脚本化 fake LLM 与确定性 embedder；全量 `uv run pytest -q` 777 passed（会话开始时 757）；`uv run ruff check .` 干净。

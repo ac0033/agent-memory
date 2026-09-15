@@ -7,7 +7,7 @@
       --ablation data/logs/memcompass/t2-abl-no-surface data/logs/memcompass/t2-abl-no-archive \
       --skeleton <骨架.md> --conclusions <结论.md> --cases <案例.md> --out <报告.md>
 
-骨架里的 {{PROFILE_TEST}} / {{SUBSETS_TEST}} / {{ALL_SPLITS}} / {{ABLATION}} / {{JUDGE_AGREEMENT}} /
+骨架里的 {{PROFILE_TEST}} / {{SUBSETS_TEST}} / {{ALL_SPLITS}} / {{ABLATION}} / {{COST}} / {{JUDGE_AGREEMENT}} /
 {{CONCLUSIONS}} / {{CASES}} 会被替换（骨架里没有的占位符直接忽略）；结论与案例由人工撰写（读完数字再写）。
 """
 
@@ -30,18 +30,20 @@ def report(runs: list[Path], ref: str, splits: str | None, out: Path) -> str:
     return out.read_text(encoding="utf-8")
 
 
-def body(md: str) -> tuple[str, str]:
-    """拆出"分子集"部分与"能力画像"部分（去掉报告自带的标题与运行信息）。"""
+def body(md: str) -> tuple[str, str, str]:
+    """拆出"分子集""能力画像""成本"三部分（去掉报告自带的标题、运行信息与出错清单）。"""
     lines = md.split("\n")
     start = next(i for i, x in enumerate(lines) if x.startswith("## "))
-    text = "\n".join(lines[start:])
+    text = "\n".join(lines[start:]).split("## 出错任务")[0]
+    cost = ""
+    if "## 成本" in text:
+        text, cost = text.split("## 成本", 1)
+        cost = "\n".join(cost.split("\n")[1:]).strip()
     if "## 能力画像" in text:
         subsets, profile = text.split("## 能力画像", 1)
         profile = "\n".join(profile.split("\n")[1:])
-        if "## 出错任务" in profile:
-            profile = profile.split("## 出错任务")[0]
-        return subsets.replace("## ", "### "), profile.strip()
-    return text, ""
+        return subsets.replace("## ", "### "), profile.strip(), cost
+    return text, "", cost
 
 
 def main() -> int:
@@ -61,14 +63,14 @@ def main() -> int:
 
     tmp = Path(tempfile.mkdtemp(prefix="mc-report-"))
     main_runs = [args.base, args.v2, *args.controls]
-    test_sub, test_prof = body(report(main_runs, "am_base", "test", tmp / "test.md"))
-    all_sub, all_prof = body(report(main_runs, "am_base", None, tmp / "all.md"))
+    test_sub, test_prof, test_cost = body(report(main_runs, "am_base", "test", tmp / "test.md"))
+    all_sub, all_prof, _ = body(report(main_runs, "am_base", None, tmp / "all.md"))
     abl = []
     for d in args.ablation:
         import json
         import re
 
-        sub, _ = body(report([args.v2, d], "am_v2", "test", tmp / f"{d.name}.md"))
+        sub, _, _ = body(report([args.v2, d], "am_v2", "test", tmp / f"{d.name}.md"))
         # 只保留该消融运行覆盖的子集（v2 全量运行里的其他子集与消融无关）
         keep = set(json.loads((d / "meta.json").read_text(encoding="utf-8")).get("subsets") or [])
         parts = re.split(r"(?m)^(?=### )", sub)
@@ -80,6 +82,7 @@ def main() -> int:
         "{{SUBSETS_TEST}}": test_sub,
         "{{ALL_SPLITS}}": f"#### 能力画像\n\n{all_prof}\n\n{all_sub}",
         "{{ABLATION}}": "\n\n".join(abl) or "（未运行）",
+        "{{COST}}": test_cost or "（运行结果里没有成本字段）",
         "{{JUDGE_AGREEMENT}}": args.judge_agreement.read_text(encoding="utf-8").replace("# ", "#### ", 1)
         if args.judge_agreement and args.judge_agreement.exists() else "（未运行）",
         "{{CONCLUSIONS}}": args.conclusions.read_text(encoding="utf-8") if args.conclusions else "（待撰写）",
