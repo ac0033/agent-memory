@@ -22,7 +22,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from mcb import DATASETS, a, assign_splits, item, mem, ref_time, session, today_prefix, u, write_items  # noqa: E402
+from mcb import (  # noqa: E402
+    DATASETS,
+    a,
+    assign_splits,
+    item,
+    mem,
+    ref_time,
+    session,
+    today_prefix,
+    u,
+    write_items,
+)
 from pools import background, background_date  # noqa: E402
 
 SUBSET = "mc-proactive-recall"

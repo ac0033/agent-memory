@@ -22,7 +22,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mcb import (  # noqa: E402
-    DATASETS, a, assign_splits, d, item, iso, md, ref_time, rng, session, today_prefix, u, weekday_cn, write_items,
+    DATASETS,
+    a,
+    assign_splits,
+    d,
+    iso,
+    item,
+    md,
+    ref_time,
+    rng,
+    session,
+    today_prefix,
+    u,
+    weekday_cn,
+    write_items,
 )
 from pools import filler_turns  # noqa: E402
 
@@ -178,7 +191,7 @@ def gen_version_chain(iid: str, k: int, retro: bool) -> dict:
     t_past = dd(t0, max(2, (v1_end - t0).days // 2))
     ans_past = tl.valid_at(t_past)
     probes.append(_q("q1", ref, f"截至 {iso(t_past)}，{subj}是什么？", f"{ans_past}。", [ans_past],
-                     [f"答成后来的取值"], [{"session_id": "s1", "message_index": 0}],
+                     ["答成后来的取值"], [{"session_id": "s1", "message_index": 0}],
                      {"as_of": iso(t_past), "time_axis": "valid"}))
     # q2：当前（对照）
     now_v = tl.valid_at(ref)

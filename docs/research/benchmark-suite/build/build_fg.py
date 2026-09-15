@@ -16,7 +16,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from mcb import DATASETS, a, assign_splits, item, marker, md, ref_time, rng, session, today_prefix, u, write_items  # noqa: E402
+from mcb import (  # noqa: E402
+    DATASETS,
+    a,
+    assign_splits,
+    item,
+    marker,
+    md,
+    ref_time,
+    rng,
+    session,
+    today_prefix,
+    u,
+    write_items,
+)
 
 SUBSET = "mc-forget-request"
 

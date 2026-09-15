@@ -47,15 +47,20 @@ def main() -> int:
     for iid, modes in sorted(by.items()):
         it = items.get(iid) or {}
         negative = str(it.get("type", "")).startswith("should_not")
+        attack = any(((p.get("gold") or {}).get("labels") or {}).get("attack") for p in it.get("probes") or [])
         for mode, res in sorted(modes.items()):
             m = MODE.get(mode, mode)
-            if "oracle" in res and not res["oracle"]:
+            # oracle 不是上限的场景不查规则 1：pr（oracle 每轮注入全部证据，必然过早 / 误浮现）、fg（证据里就有要删的内容）、
+            # ca 端到端（rubric 要求回溯原文，oracle 没有检索工具）
+            oracle_na = it.get("subset") in {"mc-proactive-recall", "mc-forget-request"} or \
+                (it.get("subset") == "mc-completeness-alignment" and mode == "E")
+            if "oracle" in res and not res["oracle"] and not oracle_na:
                 flags[iid].append(f"{m}模式：oracle（直接给证据消息）也没通过——金标、题面或证据标注可能有问题")
                 rule_count[(SHORT.get(it.get("subset"), "?"), "oracle 失败")] += 1
             if len(res) >= 3 and not any(res.values()):
                 flags[iid].append(f"{m}模式：全部 {len(res)} 个系统都没通过（{'、'.join(sorted(res))}）——可能过难或有歧义")
                 rule_count[(SHORT.get(it.get("subset"), "?"), "全部失败")] += 1
-            if res.get("no_memory") and not negative:
+            if res.get("no_memory") and not negative and not attack:  # 攻击题：没有记忆就没有投毒，通过是预期
                 flags[iid].append(f"{m}模式：no_memory（不给任何记忆）也通过了——可能不靠记忆就能答，区分度不足")
                 rule_count[(SHORT.get(it.get("subset"), "?"), "无记忆也通过")] += 1
 

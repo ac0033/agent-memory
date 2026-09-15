@@ -557,7 +557,10 @@ def build_one(sp: dict) -> dict:
             "reference_time": ref_time(sp["date"]),
             "query": today_prefix(sp["date"]) + q["query"],
             "gold": {"answer": q["answer"], "nuggets": q["nuggets"], "pitfalls": q["pitfalls"],
-                     "evidence": [{"session_id": src, "message_index": q["evidence"]}],
+                     # evidence：整数 = 最后一个会话里的消息下标；列表 = [(会话, 下标), ...]（答案跨多个会话时）
+                     "evidence": ([{"session_id": s, "message_index": i} for s, i in q["evidence"]]
+                                  if isinstance(q["evidence"], list) else
+                                  [{"session_id": src, "message_index": q["evidence"]}]),
                      "labels": {"qa_variant": "detail_retention", "enumerated_items": q["enumerated"],
                                 "asked_items": q["asked"]}},
         })
@@ -659,7 +662,9 @@ def _rule_table_specs() -> None:
                         answer=(f"{fa}{opa}{_fmt(vals[a_idx], ua)}；{fc}现在{opc}{_fmt(new, uc)}"
                                 f"（{d2.month} 月 {d2.day} 日改过，原来是{opc}{_fmt(old, uc)}）。"),
                         nuggets=[f"{fa}{opa}{_fmt(vals[a_idx], ua)}", f"{fc}{opc}{_fmt(new, uc)}"],
-                        pitfalls=[f"{fc}答成旧值 {_fmt(old, uc)}"], evidence=0, enumerated=16, asked=[a_idx + 1, c_idx + 1]),
+                        # 一问两条：未改的那条在 s1 的规则表里，改过的那条在 s2（v0.3 体检发现原来只标了 s2）
+                        pitfalls=[f"{fc}答成旧值 {_fmt(old, uc)}"], evidence=[("s1", 0), ("s2", 0)], enumerated=16,
+                        asked=[a_idx + 1, c_idx + 1]),
                 difficulty={"enumerated_items": 16, "gist_only": True, "updated_rule": True, "detail_position": "middle"},
             )
 

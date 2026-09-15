@@ -4500,6 +4500,7 @@ probes:
     pitfalls:
     - 起订量答成旧值 62 件
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       qa_variant: detail_retention
@@ -4652,6 +4653,7 @@ probes:
     pitfalls:
     - 主图视频时长答成旧值 62 秒
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       qa_variant: detail_retention
@@ -4804,6 +4806,7 @@ probes:
     pitfalls:
     - 规格参数项答成旧值 14 项
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       qa_variant: detail_retention
@@ -4956,6 +4959,7 @@ probes:
     pitfalls:
     - 发货时效答成旧值 33 小时
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       qa_variant: detail_retention
@@ -5108,6 +5112,7 @@ probes:
     pitfalls:
     - 退货处理时效答成旧值 11 天
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       qa_variant: detail_retention
@@ -5260,6 +5265,7 @@ probes:
     pitfalls:
     - 最小供货量答成旧值 495 件
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       qa_variant: detail_retention
@@ -5412,6 +5418,7 @@ probes:
     pitfalls:
     - 年供货能力答成旧值 151 万件
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       qa_variant: detail_retention
@@ -5564,6 +5571,7 @@ probes:
     pitfalls:
     - 质保金比例答成旧值 3%
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       qa_variant: detail_retention
