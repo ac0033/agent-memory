@@ -445,7 +445,7 @@ def replay_sessions(item, system, host_llm, compactor=None, upto_probe: dict | N
                 system.observe(cur, "turn", scope, host_llm=host_llm, turn_index=turn_idx)
             for e in events.get(i, []):
                 if e["kind"] == "filler":
-                    fill = filler_turns(f"{item['id']}:{i}", max(1, int(e.get("n_turns", 20)) // 2))
+                    fill = filler_turns(f"{item['id']}:{i}", max(1, int(e.get("n_turns", 20)) // 2), pool=e.get("pool"))
                     for fm in fill:
                         cur.append(fm)
                         if fm["role"] == "user":
@@ -454,7 +454,9 @@ def replay_sessions(item, system, host_llm, compactor=None, upto_probe: dict | N
                 elif e["kind"] == "compaction":
                     system.observe(cur, "compaction", scope, host_llm=host_llm, turn_index=turn_idx)
                     if compactor is not None:
-                        text = "\n".join(f"{x['role']}: {x['content']}" for x in cur)
+                        # v0.3：再次压缩时带上上一份摘要（与真实宿主一致），细节会随多次压缩逐步衰减
+                        text = (f"[此前的摘要] {summary}\n" if summary else "") + \
+                            "\n".join(f"{x['role']}: {x['content']}" for x in cur)
                         summary = compactor.complete_json(J.COMPACTOR_SYSTEM, text, J.COMPACTOR_SCHEMA).get("summary", "")
                         cur = []
                 elif e["kind"] in {"interrupt", "task_switch"}:
