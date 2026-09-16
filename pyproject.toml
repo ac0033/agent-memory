@@ -46,6 +46,8 @@ select = ["E", "F", "I", "UP"]
 [tool.ruff.lint.per-file-ignores]
 # 研究草稿（评测集构造脚本与 runner 草稿）里有大量中文长提示词与数据模板，只放宽行长，其余规则照常检查
 "docs/research/**" = ["E501"]
+# evals/memcompass 是 docs/research/benchmark-suite 的逐字节冻结副本（D6 可信根，不得改写），沿用同样的放宽
+"evals/memcompass/**" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

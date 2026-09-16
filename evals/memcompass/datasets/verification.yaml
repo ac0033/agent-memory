@@ -1,0 +1,29 @@
+# MemCompass 人工核验记录（suite-design：test 与 held-out 需 100% 人工核验，dev 抽检）
+# 本文件是核验的权威记录。用例文件本身不改写（generated.yaml 由构造脚本生成、不手改；
+# 各用例的 meta.verified_by 因此保持为空），迁入 evals/ 时本文件随数据一起逐字节复制；
+# tools/validate.py 按本文件报告核验覆盖率。
+# 用例若在核验之后被修改（改规格、重新生成），对应用例的核验失效，需重新核验并追加记录。
+# applies_to：all = 当时的全部用例；或列出用例 id。
+
+- date: 2026-09-14
+  reviewer: YuanLumen
+  applies_to: all
+  scope: 全部 317 条（8 个子集；dev / test / held-out）
+  suite_version: 0.2.0-draft
+  verdict: pass
+  method: >-
+    用户整体签核（原话："人工核验的全部通过"）。核验台（claude.ai artifact，工具见 tools/review/）
+    的共享存储没有记录逐条结论与备注，因此没有逐条的核验明细。
+  followup: >-
+    迁入 evals/ 前再用评测运行做一次自动体检（tools/item_health.py：oracle 失败、全部系统失败、
+    不给记忆也通过），被标记的用例单独复核。
+
+- date: 2026-09-15
+  reviewer: YuanLumen
+  applies_to: all
+  scope: 全部用例，含 v0.3 修订新增的 40 条（pf 16、ca 8、mp 16）
+  suite_version: 0.3.0-draft
+  verdict: pass
+  method: >-
+    用户的默认授权（原话："所有评测集默认都是我通过了，如果有需要我会自行查看并提供反馈"）。
+    v0.3 的修订由 Claude 完成，与答题器（DeepSeek）和评委（Kimi K3）都不同源（用户要求）。
