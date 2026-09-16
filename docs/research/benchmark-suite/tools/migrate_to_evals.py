@@ -56,7 +56,7 @@ README = """# MemCompass（冻结副本）
 .venv/Scripts/python.exe evals/memcompass/tools/validate.py --quiet
 # 跑一个被测版本（test 切分；每个进程约 3.5 GB 内存，16 GB 机器上一次只跑一个）
 .venv/Scripts/python.exe evals/memcompass/runners/mc_run.py --subsets pr,ca,at,fg,mp,xa,ts,pf --splits test \\
-    --systems am --am-root <代码根目录> --am-label <标签> --env-file D:/4_Projects/.env --jobs 8
+    --systems am --am-root <代码根目录> --am-label <标签> --env-file <你的 .env> --jobs 8
 # 汇总与配对比较
 .venv/Scripts/python.exe evals/memcompass/runners/mc_report.py data/logs/memcompass/<run_a> data/logs/memcompass/<run_b> --ref <参照系统>
 # 用例健康检查（oracle 失败 / 全部失败 / 不给记忆也通过）

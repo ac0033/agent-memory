@@ -6,7 +6,7 @@ data/logs/memcompass/<run_id>/results.jsonl；汇总用 mc_report.py（可合并
 示例（仓库根目录）：
   # 基线（HEAD 的 worktree）跑 dev 切分的 pr、ca
   .venv/Scripts/python.exe docs/research/benchmark-suite/runners/mc_run.py --subsets pr,ca --splits dev \
-      --systems am,no_memory,naive_rag --am-root <worktree> --am-label am_base --env-file D:/4_Projects/.env
+      --systems am,no_memory,naive_rag --am-root <worktree> --am-label am_base --env-file <你的 .env>
   # 不调 LLM 的接线检查
   ... mc_run.py --subsets pr --splits dev --systems am,naive_rag --dry-run
 
@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -619,7 +620,7 @@ def main() -> int:
                          "wm_refresh,episode_pack,archive_sync,annotate_completeness）")
     ap.add_argument("--seeds", type=int, default=1)
     ap.add_argument("--jobs", type=int, default=4)
-    ap.add_argument("--env-file", default="D:/4_Projects/.env")
+    ap.add_argument("--env-file", default=None, help="含 API key 的 .env 文件（KEY=VALUE）；不给则直接读进程环境变量")
     ap.add_argument("--judge-model", default=None)
     ap.add_argument("--actor-model", default=None)
     ap.add_argument("--rag-threshold", type=float, default=0.6)
@@ -639,7 +640,7 @@ def main() -> int:
     from agent_memory.llm import OpenAILLMClient
     from agent_memory.long_term.retrieve.embedder import get_embedder
 
-    env = read_env_file(args.env_file)
+    env = (read_env_file(args.env_file) if args.env_file else dict(os.environ))
     settings = get_settings()
     actor = judge = compactor = None
     system_llm = None

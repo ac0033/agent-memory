@@ -12,7 +12,7 @@
   .venv/Scripts/python.exe docs/research/eval-drafts/runner-draft/behavior_eval.py --dry-run
   # 真实运行
   .venv/Scripts/python.exe docs/research/eval-drafts/runner-draft/behavior_eval.py \
-      --env-file D:/4_Projects/.env --env-key DEEPSEEK_API_KEY --jobs 4
+      --env-file <你的 .env> --env-key DEEPSEEK_API_KEY --jobs 4
 
 密钥：只读取 --env-file 中 --env-key 指定的那个变量（环境里已有 AGENT_MEMORY_LLM_API_KEY 时优先用它），全程不打印。
 输出：data/logs/behavior_eval/<时间戳>/，包括 results.jsonl（逐题轨迹）和 summary.md（该目录已 gitignored）。

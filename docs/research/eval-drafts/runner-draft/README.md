@@ -18,7 +18,7 @@ HF_HUB_OFFLINE=1 .venv/Scripts/python.exe docs/research/eval-drafts/runner-draft
 
 # 2) 真实运行：密钥只从 --env-file 读取 --env-key 指定的变量，全程不打印
 .venv/Scripts/python.exe docs/research/eval-drafts/runner-draft/behavior_eval.py \
-    --env-file D:/4_Projects/.env --env-key DEEPSEEK_API_KEY --jobs 4
+    --env-file <你的 .env> --env-key DEEPSEEK_API_KEY --jobs 4
 
 # 3) 正式评测时使用异源评委（例如 DashScope 的兼容接口）
     ... --judge-env-key DASHSCOPE_API_KEY \

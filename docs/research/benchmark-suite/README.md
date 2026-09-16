@@ -65,7 +65,7 @@ v1.0 目标规模仍以各数据卡为准（合计约 1,300 条）；v0.2 的规
 .venv/Scripts/python.exe docs/research/benchmark-suite/runners/mc_run.py \
     --subsets pr,ca,at,fg,mp,xa,ts,pf --splits dev,test \
     --systems am,no_memory,naive_rag,full_context,oracle,naive_rag_threshold,am_retrieve_always \
-    --am-root <代码根目录> --am-label am_base --env-file D:/4_Projects/.env --jobs 6
+    --am-root <代码根目录> --am-label am_base --env-file <含 API key 的 .env 路径> --jobs 6
 # 中断后加 --resume 并沿用同一个 --run-id 续跑：跳过已成功的任务，出错的重跑（汇总时同一任务只计一行）。
 # 每个进程约占 3.5 GB 内存（bge-m3），16 GB 机器上同时最多跑 2 个。
 
