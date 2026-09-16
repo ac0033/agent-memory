@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 from pathlib import Path
@@ -51,12 +52,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("runs", nargs="+", type=Path)
     ap.add_argument("--per-kind", type=int, default=40)
-    ap.add_argument("--env-file", default="D:/4_Projects/.env")
+    ap.add_argument("--env-file", default=None, help="含 API key 的 .env 文件（KEY=VALUE）；不给则直接读进程环境变量")
     ap.add_argument("--judge2-model", default=None)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
-    env = read_env_file(args.env_file)
+    env = (read_env_file(args.env_file) if args.env_file else dict(os.environ))
     j2 = build_client("judge2", env, args.judge2_model)
     rows = [json.loads(line) for d in args.runs for line in (d / "results.jsonl").read_text(encoding="utf-8").splitlines()
             if line.strip()]

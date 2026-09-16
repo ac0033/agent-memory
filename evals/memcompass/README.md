@@ -14,7 +14,7 @@
 .venv/Scripts/python.exe evals/memcompass/tools/validate.py --quiet
 # 跑一个被测版本（test 切分；每个进程约 3.5 GB 内存，16 GB 机器上一次只跑一个）
 .venv/Scripts/python.exe evals/memcompass/runners/mc_run.py --subsets pr,ca,at,fg,mp,xa,ts,pf --splits test \
-    --systems am --am-root <代码根目录> --am-label <标签> --env-file D:/4_Projects/.env --jobs 8
+    --systems am --am-root <代码根目录> --am-label <标签> --env-file <含 API key 的 .env 路径> --jobs 8
 # 汇总与配对比较
 .venv/Scripts/python.exe evals/memcompass/runners/mc_report.py data/logs/memcompass/<run_a> data/logs/memcompass/<run_b> --ref <参照系统>
 # 用例健康检查（oracle 失败 / 全部失败 / 不给记忆也通过）
@@ -28,3 +28,4 @@ held-out 切分只用于里程碑评测，平时的开发与调参不要跑它�
 | 日期 | 授权 | 改动 | 来源提交 |
 |---|---|---|---|
 | 2026-09-16 | 用户当日明确要求同步 | `runners/mc_common.py`、`runners/mc_report.py`：成本口径改用 API 的 usage 字段（token 数与覆盖率，字符数列保留）。只改成本统计，不改用例、评委与判定规则；与编写源头逐字节一致 | `843a541` |
+| 2026-09-16 | 用户当日再次要求同步 | `runners/mc_run.py`、`runners/judge_agreement.py`：`--env-file` 不再默认作者本机路径（不给则读进程环境变量）；本 README 示例命令同样改为占位符。不改评测行为 | `a7643f1` |
