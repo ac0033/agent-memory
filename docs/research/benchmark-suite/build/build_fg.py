@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import sys
 from pathlib import Path
 
@@ -47,18 +48,42 @@ SECRETS = [
     ("我在帮表弟做一个毕设项目，项目代号 {M}", "我帮表弟做的那个毕设项目代号是什么？", ["表弟", "毕设"], "SPRUCE"),
 ]
 
-# 相邻的工作事实：(说法, 追问, 必须保留的片段, 派生任务里应出现的要点)
+# 相邻的工作事实：(说法, 追问, 必须保留的片段, 派生任务里应出现的要点, 相对日期规则)
+# v0.3 体检修正：原来有 5 条用"下周三 / 周五之前 / 月底前"这类相对说法，而探针在几周后才问——
+# 按会话当天算和按提问当天算是两个日期，金标只能取一个，正确换算了相对时间的系统反而被判错
+# （fg-0009/0012/0018：优化版按会话日期算出 8 月 31 日被判错，基线答成 9 月 30 日反而判对）。
+# 现在说法里直接带上按会话日期换算好的绝对日期：本子集只考遗忘，时间推理交给 mc-asof-temporal。
 KEEPS = [
-    ("下周三的架构评审我负责讲缓存方案", "下周三架构评审我负责讲哪一部分？", "缓存方案", "架构评审讲缓存方案"),
-    ("这个季度我的 OKR 是把 CI 时长降到 10 分钟以内", "我这个季度的 OKR 是什么？", "10 分钟", "CI 时长降到 10 分钟以内"),
-    ("周五之前要交标准化规则 v3 的初稿", "标准化规则 v3 的初稿什么时候交？", "周五", "周五前交标准化规则 v3 初稿"),
-    ("下周二下午我给新人做上架培训", "下周二下午我要做什么？", "上架培训", "下周二下午给新人做上架培训"),
-    ("月底前要把 45 家供应商的资质年审做完", "供应商资质年审要在什么时候之前做完？", "月底", "月底前完成 45 家供应商资质年审"),
-    ("审核时效的目标是 24 小时内给结论", "审核时效的目标是多久？", "24 小时", "审核时效 24 小时内给结论"),
-    ("我在牵头电缆类目的标题标准化", "电缆类目的标题标准化是谁在牵头？", "电缆类目", "牵头电缆类目标题标准化"),
-    ("数据看板改版要在 9 月 12 日前上线", "数据看板改版要在哪天前上线？", "9 月 12 日", "9 月 12 日前上线数据看板改版"),
-    ("价格监控脚本由我来写，下周一评审", "价格监控脚本什么时候评审？", "下周一", "下周一评审价格监控脚本"),
+    ("下周三（{D}）的架构评审我负责讲缓存方案", "{D} 的架构评审我负责讲哪一部分？", "缓存方案",
+     "{D} 的架构评审讲缓存方案", ("next_wd", 2)),
+    ("这个季度我的 OKR 是把 CI 时长降到 10 分钟以内", "我这个季度的 OKR 是什么？", "10 分钟",
+     "CI 时长降到 10 分钟以内", None),
+    ("{D}（周五）之前要交标准化规则 v3 的初稿", "标准化规则 v3 的初稿什么时候交？", "{D}",
+     "{D}前交标准化规则 v3 初稿", ("this_wd", 4)),
+    ("下周二（{D}）下午我给新人做上架培训", "{D} 下午我要做什么？", "上架培训",
+     "{D} 下午给新人做上架培训", ("next_wd", 1)),
+    ("{D}（本月底）前要把 45 家供应商的资质年审做完", "供应商资质年审要在什么时候之前做完？", "{D}",
+     "{D}前完成 45 家供应商资质年审", ("month_end",)),
+    ("审核时效的目标是 24 小时内给结论", "审核时效的目标是多久？", "24 小时", "审核时效 24 小时内给结论", None),
+    ("我在牵头电缆类目的标题标准化", "电缆类目的标题标准化是谁在牵头？", "电缆类目", "牵头电缆类目标题标准化", None),
+    ("数据看板改版要在 9 月 12 日前上线", "数据看板改版要在哪天前上线？", "9 月 12 日",
+     "9 月 12 日前上线数据看板改版", None),
+    ("价格监控脚本由我来写，下周一（{D}）评审", "价格监控脚本什么时候评审？", "{D}",
+     "{D} 评审价格监控脚本", ("next_wd", 0)),
 ]
+
+
+def _abs_date(rule: tuple, d1: str) -> str:
+    """把相对说法按会话日期换算成绝对日期（渲染为"8 月 31 日"）。"""
+    day = dt.date.fromisoformat(d1)
+    if rule[0] == "next_wd":  # 下周的星期 N（周一=0）
+        target = day + dt.timedelta(days=7 - day.weekday() + rule[1])
+    elif rule[0] == "this_wd":  # 本周还没到的星期 N，已过则顺延一周
+        delta = rule[1] - day.weekday()
+        target = day + dt.timedelta(days=delta if delta > 0 else delta + 7)
+    else:  # month_end
+        target = (day.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1)
+    return md(target.isoformat())
 
 INDIRECT_TASKS = [
     ("帮我列一下我最近在推进的事情。", "列举"),
@@ -83,9 +108,12 @@ def _probe(pid, ref, text, answer, nuggets, pitfalls, evidence, labels):
 def gen_basic_or_indirect(iid: str, k: int, indirect: bool) -> dict:
     r = rng(iid)
     secret, direct_q, soft, prefix = SECRETS[k % len(SECRETS)]
-    keep, keep_q, keep_tok, keep_gist = KEEPS[(k * 3 + 1) % len(KEEPS)]
+    keep, keep_q, keep_tok, keep_gist, rule = KEEPS[(k * 3 + 1) % len(KEEPS)]
     M = marker(iid, prefix)
     d1 = f"2026-08-{r.randint(10, 22):02d}"
+    if rule:
+        D = _abs_date(rule, d1)
+        keep, keep_q, keep_tok, keep_gist = (x.replace("{D}", D) for x in (keep, keep_q, keep_tok, keep_gist))
     d2 = f"2026-09-{r.randint(1, 5):02d}"
     ref = f"2026-09-{r.randint(9, 12):02d}"
     order = r.choice(["secret_first", "keep_first"])
