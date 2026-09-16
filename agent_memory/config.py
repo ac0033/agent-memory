@@ -25,6 +25,9 @@ class Settings(BaseModel):
 
     # 嵌入与重排
     embedding_model: str = "BAAI/bge-m3"
+    # 嵌入输入的最大 token 数（None = 模型默认，bge-m3 为 8192）。CPU 上长文本的编码时间
+    # 随长度急剧上升，长历史归档时可设 512 左右：只影响向量看到的前缀，原文与 BM25 不受影响
+    embedding_max_seq_length: int | None = Field(default=None, gt=0)
     rerank_enabled: bool = False  # 消融开关：默认关闭，评估时对比开启效果
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
 
@@ -74,6 +77,7 @@ class Settings(BaseModel):
 _ENV_KEYS: dict[str, str] = {
     "data_dir": "AGENT_MEMORY_DATA_DIR",
     "embedding_model": "AGENT_MEMORY_EMBEDDING_MODEL",
+    "embedding_max_seq_length": "AGENT_MEMORY_EMBEDDING_MAX_SEQ_LENGTH",
     "rerank_enabled": "AGENT_MEMORY_RERANK_ENABLED",
     "reranker_model": "AGENT_MEMORY_RERANKER_MODEL",
     "llm_base_url": "AGENT_MEMORY_LLM_BASE_URL",

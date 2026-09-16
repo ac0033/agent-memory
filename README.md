@@ -1,5 +1,7 @@
 # agent-memory
 
+> English: [README.en.md](README.en.md) · License: MIT
+
 本地长期记忆基础设施（Local Long-Term Memory Infrastructure）。agent 中立：不绑定任何特定 agent 框架，通过三种方式接入——
 
 - **Python 库**：LangGraph 等框架直接 `import agent_memory`（见 `agent_memory/long_term/adapters/`）；

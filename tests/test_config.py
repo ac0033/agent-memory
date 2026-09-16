@@ -183,3 +183,16 @@ class TestFailClosed:
     def test_invalid_llm_max_retries(self, bad):
         with pytest.raises(ValidationError):
             get_settings(env={"AGENT_MEMORY_LLM_MAX_RETRIES": bad})
+
+
+class TestEmbeddingMaxSeqLength:
+    def test_default_is_none(self):
+        assert get_settings(env={}).embedding_max_seq_length is None
+
+    def test_env_sets_value(self):
+        s = get_settings(env={"AGENT_MEMORY_EMBEDDING_MAX_SEQ_LENGTH": "512"})
+        assert s.embedding_max_seq_length == 512
+
+    def test_non_positive_rejected(self):
+        with pytest.raises(ValidationError):
+            get_settings(env={"AGENT_MEMORY_EMBEDDING_MAX_SEQ_LENGTH": "0"})

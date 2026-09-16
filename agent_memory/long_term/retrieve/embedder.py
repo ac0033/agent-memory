@@ -21,10 +21,12 @@ class Embedder:
     （推理是 CPU 密集，加锁几乎不损失吞吐，只防并发进 native 代码的未知风险）。
     """
 
-    def __init__(self, model_name: str | None = None):
+    def __init__(self, model_name: str | None = None, max_seq_length: int | None = None):
         if model_name is None:
             model_name = get_settings().embedding_model
         self.model_name = model_name
+        # None = 模型默认（bge-m3 8192）；见 Settings.embedding_max_seq_length
+        self.max_seq_length = max_seq_length
         self._model = None
         self._encode_lock = threading.Lock()
 
@@ -35,6 +37,8 @@ class Embedder:
                     from sentence_transformers import SentenceTransformer
 
                     self._model = SentenceTransformer(self.model_name)
+                    if self.max_seq_length:
+                        self._model.max_seq_length = self.max_seq_length
         return self._model
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
@@ -56,5 +60,6 @@ def get_embedder(settings: Settings | None = None) -> Embedder:
     with _lock:
         if _default is None:
             model_name = settings.embedding_model if settings else None
-            _default = Embedder(model_name)
+            max_len = settings.embedding_max_seq_length if settings else None
+            _default = Embedder(model_name, max_seq_length=max_len)
         return _default
