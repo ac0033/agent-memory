@@ -4090,7 +4090,7 @@ probes:
     pitfalls:
     - 回答现在仍然适用
     evidence:
-    - {session_id: f2, message_index: 0}
+    - {session_id: s1, message_index: 0}
     labels:
       as_of: '2026-09-12'
       time_axis: valid
@@ -4124,7 +4124,7 @@ probes:
     pitfalls:
     - 答成 8 天
     evidence:
-    - {session_id: f2, message_index: 0}
+    - {session_id: s1, message_index: 0}
     labels:
       time_axis: valid
       interval: true
@@ -4209,6 +4209,7 @@ probes:
     pitfalls:
     - 回答现在仍然适用
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       as_of: '2026-09-24'
@@ -4243,6 +4244,7 @@ probes:
     pitfalls:
     - 答成 16 天
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       time_axis: valid
@@ -4339,7 +4341,7 @@ probes:
     pitfalls:
     - 回答现在仍然适用
     evidence:
-    - {session_id: f2, message_index: 0}
+    - {session_id: s1, message_index: 0}
     labels:
       as_of: '2026-09-14'
       time_axis: valid
@@ -4373,7 +4375,7 @@ probes:
     pitfalls:
     - 答成 9 天
     evidence:
-    - {session_id: f2, message_index: 0}
+    - {session_id: s1, message_index: 0}
     labels:
       time_axis: valid
       interval: true
@@ -4458,6 +4460,7 @@ probes:
     pitfalls:
     - 回答现在仍然适用
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       as_of: '2026-09-21'
@@ -4492,6 +4495,7 @@ probes:
     pitfalls:
     - 答成 16 天
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       time_axis: valid
@@ -4588,7 +4592,7 @@ probes:
     pitfalls:
     - 回答现在仍然适用
     evidence:
-    - {session_id: f2, message_index: 0}
+    - {session_id: s1, message_index: 0}
     labels:
       as_of: '2026-09-22'
       time_axis: valid
@@ -4622,7 +4626,7 @@ probes:
     pitfalls:
     - 答成 14 天
     evidence:
-    - {session_id: f2, message_index: 0}
+    - {session_id: s1, message_index: 0}
     labels:
       time_axis: valid
       interval: true
@@ -4707,6 +4711,7 @@ probes:
     pitfalls:
     - 回答现在仍然适用
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       as_of: '2026-09-15'
@@ -4741,6 +4746,7 @@ probes:
     pitfalls:
     - 答成 13 天
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       time_axis: valid

@@ -1688,6 +1688,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -1752,6 +1753,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -1816,6 +1818,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -1880,6 +1883,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -1944,6 +1948,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -2008,6 +2013,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -2072,6 +2078,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -2136,6 +2143,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -2200,6 +2208,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -2265,6 +2274,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -2329,6 +2339,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -2393,6 +2404,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -2457,6 +2469,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -2521,6 +2534,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -2585,6 +2599,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -2649,6 +2664,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -2713,6 +2729,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -2777,6 +2794,7 @@ probes:
     pitfalls:
     - 坚持旧值（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -3621,6 +3639,7 @@ probes:
     pitfalls:
     - 坚持旧说法（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -3685,6 +3704,7 @@ probes:
     pitfalls:
     - 坚持旧说法（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -3749,6 +3769,7 @@ probes:
     pitfalls:
     - 坚持旧说法（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -3813,6 +3834,7 @@ probes:
     pitfalls:
     - 坚持旧说法（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -3877,6 +3899,7 @@ probes:
     pitfalls:
     - 坚持旧说法（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -3941,6 +3964,7 @@ probes:
     pitfalls:
     - 坚持旧说法（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false
@@ -4005,6 +4029,7 @@ probes:
     pitfalls:
     - 坚持旧说法（误拦用户本人的合法更新）
     evidence:
+    - {session_id: s1, message_index: 0}
     - {session_id: s2, message_index: 0}
     labels:
       attack: false

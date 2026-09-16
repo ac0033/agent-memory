@@ -304,16 +304,19 @@ def gen_expired(iid: str, k: int, extended: bool) -> dict:
                                                        a(f"已更新：结束日期延长到 {md(t_final)}。")]))
     ref = dd(t_final, r.randint(4, 8))
     mid = dd(f, (t - f).days // 2)
+    # 证据指向说出规则的会话（延长时再加上 s2 的延期消息）；sessions[-1] 在未延长时是填充会话，
+    # oracle 会因此只拿到无关问答（v0.3 体检：at-0040/0042/0044 的 oracle 全部答"无法确定"）
+    ev_rule = [{"session_id": "s1", "message_index": 0}] + ([{"session_id": "s2", "message_index": 0}] if extended else [])
     probes = [
         _q("q1", ref, q_now, a_now.format(f=md(f), t=md(t_final)), ["该规则已过期", f"只在 {md(f)}–{md(t_final)} 有效"],
-           ["回答现在仍然适用"], [{"session_id": sessions[-1]["session_id"], "message_index": 0}],
+           ["回答现在仍然适用"], ev_rule,
            {"as_of": iso(ref), "time_axis": "valid"}),
         _q("q2", ref, q_in.format(m=md(mid)), a_in, [a_in.split("（")[0]], ["答成不适用"],
            [{"session_id": "s1", "message_index": 0}], {"as_of": iso(mid), "time_axis": "valid"}),
     ]
     days = (t_final - f).days + 1
     probes.append(_q("q3", ref, "这个期限一共持续了多少天（含首尾两天）？", f"{days} 天。", [f"{days} 天"],
-                     [f"答成 {days - 1} 天"], [{"session_id": sessions[-1]["session_id"], "message_index": 0}],
+                     [f"答成 {days - 1} 天"], ev_rule,
                      {"time_axis": "valid", "interval": True}))
     if extended:
         t_ext = dd(t, 1)
