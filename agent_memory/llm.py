@@ -125,6 +125,10 @@ class OpenAILLMClient:
         self._client = OpenAI(
             base_url=self.base_url, api_key=api_key, timeout=timeout, max_retries=max_retries
         )
+        # 最近一次 complete / complete_json 的 token 用量（来自 API 的 usage 字段；
+        # 缓存命中时从缓存记录回放；拿不到 usage 时为 None）。供评测 runner 做成本核算，
+        # 业务路径不读它。
+        self.last_usage: dict[str, int] | None = None
 
     @classmethod
     def from_settings(
@@ -159,6 +163,7 @@ class OpenAILLMClient:
             return None
         if record.get("model") != self.model:  # 双保险：key 本身已含 model
             return None
+        self.last_usage = record.get("usage")  # 老缓存没有这个字段 → None
         return record["response"]
 
     def _cache_write(self, key: str, kind: str, system: str, user: str, response: Any) -> None:
@@ -171,11 +176,37 @@ class OpenAILLMClient:
             "system": system,
             "user": user,
             "response": response,
+            "usage": self.last_usage,
         }
         # 临时文件 + os.replace：并发写同 key 不会留下半截文件
         tmp = self.cache_dir / f"{key}.{os.getpid()}.{threading.get_ident()}.tmp"
         tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, self.cache_dir / f"{key}.json")
+
+    @staticmethod
+    def extract_usage(resp: Any) -> dict[str, int] | None:
+        """从 OpenAI 兼容响应里取 token 用量；字段缺失时尽量补零，整体拿不到返回 None。
+
+        completion_tokens 在 DeepSeek / OpenAI 推理模型上已包含思考 token，
+        reasoning_tokens 单列（在 completion_tokens_details 里，有则记）。
+        """
+        usage = getattr(resp, "usage", None)
+        if usage is None:
+            return None
+
+        def _int(obj: Any, name: str) -> int:
+            v = getattr(obj, name, None) if not isinstance(obj, dict) else obj.get(name)
+            return int(v) if isinstance(v, (int, float)) else 0
+
+        out = {
+            "prompt_tokens": _int(usage, "prompt_tokens"),
+            "completion_tokens": _int(usage, "completion_tokens"),
+        }
+        details = getattr(usage, "completion_tokens_details", None)
+        out["reasoning_tokens"] = _int(details, "reasoning_tokens") if details is not None else 0
+        pdetails = getattr(usage, "prompt_tokens_details", None)
+        out["cached_tokens"] = _int(pdetails, "cached_tokens") if pdetails is not None else 0
+        return out
 
     def complete(self, system: str, user: str) -> str:
         key = self._cache_key("text", system, user)
@@ -193,6 +224,7 @@ class OpenAILLMClient:
         except Exception as e:
             raise LLMError(f"LLM 调用失败：{type(e).__name__}: {e}") from e
         content = resp.choices[0].message.content
+        self.last_usage = self.extract_usage(resp)
         if not content:
             raise LLMError("LLM 返回了空内容")
         self._cache_write(key, "text", system, user, content)
@@ -220,6 +252,7 @@ class OpenAILLMClient:
                     response_format={"type": "json_object"},
                 )
                 content = resp.choices[0].message.content or ""
+                self.last_usage = self.extract_usage(resp)
                 parsed: Any = json.loads(content)
                 if not isinstance(parsed, dict):
                     raise LLMError(f"LLM 输出的 JSON 不是 object（第 {attempt} 次）: {content!r}")

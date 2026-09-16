@@ -169,14 +169,14 @@ memory_session_end(scope="repo:myproj", conversation_json="[...]", session_id="2
 
 **如果你正以 subagent 身份运行：**
 
-- 只读不写：可以用 `memory_search` / `memory_context` / `memory_wm_read` / `memory_transcript_read` / `memory_review_list` 检索背景；写类工具（`memory_add` / `memory_update` / `memory_forget` / `memory_feedback` / `memory_session_end` / `memory_review_resolve` / `memory_wm_write` / `memory_wm_clear`）不要调用——它们保留给拥有全局上下文的主 agent，部分宿主会直接从你的工具面里摘掉它们。
+- 只读不写：可以用 `memory_search` / `memory_context` / `memory_wm_read` / `memory_transcript_read` / `memory_review_list` 检索背景；写类工具（`memory_add` / `memory_update` / `memory_forget` / `memory_feedback` / `memory_session_end` / `memory_review_resolve` / `memory_wm_write` / `memory_wm_clear` / `memory_archive_sync` / `memory_wm_refresh` / `memory_episode_pack` / `memory_confirm_resolve` / `memory_forget_request`）不要调用——它们保留给拥有全局上下文的主 agent，部分宿主会直接从你的工具面里摘掉它们。
 - 你的最终回复就是交接物：把任务结论写全、写清楚。如果你判断某些结论值得跨会话沉淀（可复用的踩坑经验、确立的约定等），在最终回复里单列一节"建议沉淀的记忆"，由主 agent 决定是否入库。
 
 **如果你是主 agent，要派生 subagent：**
 
 - 派活时把下面这段约束原文附进任务 prompt：
 
-> 你以 subagent 身份运行。记忆库（agent-memory MCP 工具）对你只读：可以用 memory_search / memory_context / memory_wm_read 检索背景，但禁止调用任何写类记忆工具（memory_add / memory_update / memory_forget / memory_feedback / memory_session_end / memory_review_resolve / memory_wm_write / memory_wm_clear）。值得跨会话沉淀的结论不要自己入库，写进你的最终回复并单列"建议沉淀的记忆"一节，由我决定是否入库。
+> 你以 subagent 身份运行。记忆库（agent-memory MCP 工具）对你只读：可以用 memory_search / memory_context / memory_wm_read 检索背景，但禁止调用任何写类记忆工具（memory_add / memory_update / memory_forget / memory_feedback / memory_session_end / memory_review_resolve / memory_wm_write / memory_wm_clear / memory_archive_sync / memory_wm_refresh / memory_episode_pack / memory_confirm_resolve / memory_forget_request）。值得跨会话沉淀的结论不要自己入库，写进你的最终回复并单列"建议沉淀的记忆"一节，由我决定是否入库。
 
 - subagent 需要的历史背景（既有约定、用户偏好）由你先检索、写进任务 prompt 喂给它，而不是让它自己去捞——你知道它需要什么，它不知道。
 - subagent 返回后，审阅它的"建议沉淀的记忆"：确有长期价值的按"二、何时写入"的正常管线入库；任务局部的过程性信息一律不入库。

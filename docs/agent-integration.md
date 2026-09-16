@@ -34,7 +34,7 @@ from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
 
 - `AgentMemoryStore`：LangGraph `BaseStore` 实现，namespace 约定 `("memories", <scope>)`，
   适合替换图的记忆存储层；
-- `build_memory_tools()`：17 个 LangChain tool，**与 MCP 的 15 个 tool 能力对应**
+- `build_memory_tools()`：17 个 LangChain tool，**与 MCP 的 15 个基础 tool 能力对应**（v0.2 新增的 10 个 tool 目前只在 MCP 侧提供）
   （长期 / 工作 / 短期三层全暴露；宿主蒸馏在 LangGraph 中单列为 `save_distilled`）——
   `recall_memories`、`memory_distill_prompt`、`save_memory`、`save_conversation`、`save_distilled`、
   `memory_consistency_check`、`wm_read` / `wm_write` / `wm_clear`、
@@ -44,7 +44,9 @@ from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
   构建失败才显式降级：`save_memory` 无近邻直接 ADD、存在近邻转人工复核，
   `save_conversation` / `session_end` 的蒸馏段报 LLMError 或降级为只归档。
 
-## 三、工具一览（15 个 MCP tool）
+## 三、工具一览（25 个 MCP tool）
+
+前 15 个是基础工具；后 10 个是 v0.2（2026-09-14）新增，对应框架文档里的原文可检索（P03/P23）、主动浮现（P24–P26）、待确认队列（P29）、工作记忆整理（P07/P08）、事件边界情节卡片（P05/P06）与遗忘请求（K12）。
 
 | 分组 | 工具 | 用途 |
 |---|---|---|
@@ -60,6 +62,14 @@ from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
 | 写 | `memory_update` / `memory_forget` / `memory_feedback` | 按 id 更新 / 删除 / 反馈调置信度 |
 | 收尾 | `memory_session_end` | 会话结束编排：归档 + 蒸馏 + 清理（有未完成待办会否决） |
 | 复核 | `memory_review_list` / `memory_review_resolve` | 人工复核队列的查看与裁决 |
+| 原文（v0.2） | `memory_archive_search` | 检索历史会话的原文归档（关键词 + 语义），返回带出处的片段；记忆只有要点或疑似记错时先回溯原文再行动 |
+| 原文（v0.2） | `memory_archive_read` | 读取一个已归档会话的原文（`around_line` 只取某行附近） |
+| 原文（v0.2） | `memory_archive_sync` | 持续归档：把宿主日志里上次之后的新轮次先脱敏再追加进原文归档；建议在压缩前、会话中定期调用 |
+| 浮现（v0.2） | `memory_surface` | 主动联想：给出当前消息（和前几轮），记忆副手判断有没有“不提就会错或漏”的历史；精确率优先，没有就返回空 |
+| 确认（v0.2） | `memory_confirm_enqueue` / `memory_confirm_list` / `memory_confirm_resolve` | 待确认队列：无人值守时把需要用户确认的理解与方案挂起，其余照常处理；用户回来后逐条 approve / reject / modify |
+| 工作记忆（v0.2） | `memory_wm_refresh` | 服务端增量整理工作记忆：交最近几轮对话，由服务更新目标、约束、待办、未决问题与并行任务；只改有变化的字段 |
+| 情节（v0.2） | `memory_episode_pack` | 事件边界打包：压缩前或会话结束前把原样细节（标识符、端口、路径、报错原文、数值）、约束、决策存成情节卡片 |
+| 遗忘（v0.2） | `memory_forget_request` | 执行用户明确提出的遗忘请求：删相关记忆，并把原文归档里对应片段替换为占位符；审计只记元数据 |
 
 ## 四、宿主 runtime 必须自己做的事（职责清单）
 
@@ -109,9 +119,9 @@ from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
 
 落地分三层，前两层是 agent 中立的（任何会派生 subagent 的宿主都生效），第三层是宿主相关的硬闸：
 
-1. **tool 描述守卫（agent 中立）**：8 个写类 tool（`memory_add` / `memory_update` / `memory_forget` / `memory_feedback` / `memory_session_end` / `memory_review_resolve` / `memory_wm_write` / `memory_wm_clear`）的 description 末尾统一带"仅限主 agent 调用，subagent 禁止使用"的约束。工具描述跟着工具走，subagent 只要能看到这个 tool 就会看到这句——这是唯一不依赖宿主的提示词通道。
+1. **tool 描述守卫（agent 中立）**：13 个写类 tool（`memory_add` / `memory_update` / `memory_forget` / `memory_feedback` / `memory_session_end` / `memory_review_resolve` / `memory_wm_write` / `memory_wm_clear` / `memory_archive_sync` / `memory_wm_refresh` / `memory_episode_pack` / `memory_confirm_resolve` / `memory_forget_request`）的 description 末尾统一带"仅限主 agent 调用，subagent 禁止使用"的约束。工具描述跟着工具走，subagent 只要能看到这个 tool 就会看到这句——这是唯一不依赖宿主的提示词通道。
 2. **SKILL.md 标准约束语（agent 中立）**：`/SKILL.md` 第七节"subagent 记忆纪律"给出一段可直接复制的约束原文，遵循规范的主 agent 派活时会把它附进每个 subagent 的任务 prompt；subagent 需要的历史背景由主 agent 检索后喂进 prompt，subagent 返回的"建议沉淀的记忆"由主 agent 审阅入库。
-3. **宿主工具面硬闸（宿主相关）**：在宿主的 subagent 配置里摘掉 8 个写类工具。kimi-code 的落地是 `agents/coder.md` 覆盖文件（`override: true` + `disallowedTools`，由 `scripts/install_kimi_code.sh` 装到 `~/.kimi-code/agents/`；内置 `coder` 是唯一带 MCP 工具的 subagent，explore/plan 无需处理）；其他宿主按各自的 subagent 工具配置同理裁剪。提示词约束是软约束，这层把写工具从执行层摘掉才是真闸。
+3. **宿主工具面硬闸（宿主相关）**：在宿主的 subagent 配置里摘掉这 13 个写类工具。kimi-code 的落地是 `agents/coder.md` 覆盖文件（`override: true` + `disallowedTools`，由 `scripts/install_kimi_code.sh` 装到 `~/.kimi-code/agents/`；内置 `coder` 是唯一带 MCP 工具的 subagent，explore/plan 无需处理）；其他宿主按各自的 subagent 工具配置同理裁剪。提示词约束是软约束，这层把写工具从执行层摘掉才是真闸。
 
 两点说明：
 

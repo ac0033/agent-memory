@@ -49,9 +49,21 @@ class _FakeChoice:
         self.message = _FakeMessage(content)
 
 
+class _FakeUsage:
+    """模拟 openai 的 CompletionUsage：completion_tokens 已含思考 token，
+    思考 token 另在 details 里单列。"""
+
+    def __init__(self, prompt_tokens, completion_tokens, reasoning_tokens=0):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.completion_tokens_details = type("D", (), {"reasoning_tokens": reasoning_tokens})()
+        self.prompt_tokens_details = None
+
+
 class _FakeResponse:
-    def __init__(self, content):
+    def __init__(self, content, usage=None):
         self.choices = [_FakeChoice(content)]
+        self.usage = usage
 
 
 class _FakeCompletions:
@@ -63,7 +75,10 @@ class _FakeCompletions:
 
     def create(self, **kwargs):
         self.calls += 1
-        return _FakeResponse(self._contents.pop(0))
+        item = self._contents.pop(0)
+        if isinstance(item, tuple):  # (content, usage)
+            return _FakeResponse(item[0], usage=item[1])
+        return _FakeResponse(item)
 
 
 class _FakeOpenAI:
@@ -183,3 +198,35 @@ def test_cache_concurrent_writes_no_corruption(monkeypatch, tmp_path):
     for f in tmp_path.glob("*.json"):
         json.loads(f.read_text(encoding="utf-8"))  # 不抛异常即合法
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_usage_captured_from_response_and_replayed_from_cache(monkeypatch, tmp_path):
+    """last_usage 取自 API 的 usage 字段；缓存命中时从缓存记录回放同样的用量。"""
+    usage = _FakeUsage(120, 30, reasoning_tokens=25)
+    client, completions = _make_client(monkeypatch, [("hello", usage)])
+    client.cache_dir = tmp_path
+    assert client.last_usage is None
+    assert client.complete("s", "u") == "hello"
+    assert client.last_usage == {
+        "prompt_tokens": 120,
+        "completion_tokens": 30,
+        "reasoning_tokens": 25,
+        "cached_tokens": 0,
+    }
+    client.last_usage = None
+    assert client.complete("s", "u") == "hello"  # 缓存命中，不再调 API
+    assert completions.calls == 1
+    assert client.last_usage["completion_tokens"] == 30
+
+
+def test_usage_none_when_response_has_no_usage(monkeypatch):
+    """响应没有 usage（或老缓存记录）时 last_usage 为 None，不影响正常返回。"""
+    client, _ = _make_client(monkeypatch, ["plain"])
+    assert client.complete("s", "u") == "plain"
+    assert client.last_usage is None
+
+
+def test_usage_captured_for_complete_json(monkeypatch):
+    client, _ = _make_client(monkeypatch, [(json.dumps({"a": 1}), _FakeUsage(10, 5))])
+    assert client.complete_json("s", "u", "{a:int}") == {"a": 1}
+    assert client.last_usage["prompt_tokens"] == 10

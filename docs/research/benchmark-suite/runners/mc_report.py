@@ -300,6 +300,12 @@ def main() -> int:
     # 成本（Q1）：只统计带 cost 字段的行（v0.3 起的运行）
     cost_rows = [r for r in rows if r.get("cost")]
     if cost_rows:
+        # token 列：只有客户端拿到 API usage 字段的调用才有（v0.3 后的运行；Kimi CLI 与老缓存记录没有）。
+        # 有 token 数的行才算覆盖；覆盖不到 100% 时在表头注明，避免把字符数与 token 数混读。
+        def _tok(r, who, k):
+            return ((r["cost"].get(who) or {}).get(k) or 0)
+
+        any_tokens = any(_tok(r, who, "token_calls") for r in cost_rows for who in ("sys", "actor", "compactor"))
         lines += ["## 成本（每题平均）", "",
                   "计数包在 LLM 客户端外面，评测缓存命中也计入，统计的是系统本来要花的量；字符数不是 token 数。"
                   "“答题器”含基线由宿主改写工作记忆的调用；不含评委。", "",
@@ -310,12 +316,31 @@ def main() -> int:
             cg[(r["subset"], r["system"])].append(r)
         for (sb, s), g in sorted(cg.items()):
             def avg(who, k, g=g):
-                return sum(((r["cost"].get(who) or {}).get(k) or 0) for r in g) / len(g)
+                return sum(_tok(r, who, k) for r in g) / len(g)
 
             lines.append(f"| {SHORT.get(sb, sb)} | {s} | {len(g)} | {avg('sys', 'calls'):.1f} | {avg('sys', 'in_chars'):,.0f} | "
                          f"{avg('sys', 'out_chars'):,.0f} | {avg('actor', 'calls'):.1f} | {avg('actor', 'in_chars'):,.0f} | "
                          f"{avg('actor', 'out_chars'):,.0f} |")
         lines.append("")
+        if any_tokens:
+            lines += ["### 按 API usage 字段计的 token（每题平均）", "",
+                      "来自 OpenAI 兼容接口返回的 usage：输出 token 按接口口径**已含思考 token**（思考部分另列），"
+                      "这是字符数低估成本的根源。“覆盖”= 拿到 usage 的调用 / 全部调用；覆盖不足 100% 的行，"
+                      "token 数只代表覆盖到的那部分调用（Kimi CLI 评委与 v0.3 前的缓存记录没有 usage）。", "",
+                      "| 子集 | 系统 | n | 系统输入 tok | 系统输出 tok | 其中思考 tok | 覆盖 | 答题器输入 tok | 答题器输出 tok | 其中思考 tok | 覆盖 |",
+                      "|---|---|---|---|---|---|---|---|---|---|---|"]
+            for (sb, s), g in sorted(cg.items()):
+                def avg(who, k, g=g):
+                    return sum(_tok(r, who, k) for r in g) / len(g)
+
+                def cov(who, g=g):
+                    calls = sum(_tok(r, who, "calls") for r in g)
+                    return f"{sum(_tok(r, who, 'token_calls') for r in g) / calls:.0%}" if calls else "—"
+
+                lines.append(f"| {SHORT.get(sb, sb)} | {s} | {len(g)} | {avg('sys', 'in_tokens'):,.0f} | {avg('sys', 'out_tokens'):,.0f} | "
+                             f"{avg('sys', 'reasoning_tokens'):,.0f} | {cov('sys')} | {avg('actor', 'in_tokens'):,.0f} | "
+                             f"{avg('actor', 'out_tokens'):,.0f} | {avg('actor', 'reasoning_tokens'):,.0f} | {cov('actor')} |")
+            lines.append("")
     if errors:
         lines.append("## 出错任务")
         for r in errors[:30]:

@@ -11,6 +11,11 @@ disallowedTools:
   - mcp__agent-memory__memory_review_resolve
   - mcp__agent-memory__memory_wm_write
   - mcp__agent-memory__memory_wm_clear
+  - mcp__agent-memory__memory_archive_sync
+  - mcp__agent-memory__memory_wm_refresh
+  - mcp__agent-memory__memory_episode_pack
+  - mcp__agent-memory__memory_confirm_resolve
+  - mcp__agent-memory__memory_forget_request
 ---
 
 ${base_prompt}

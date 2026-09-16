@@ -31,6 +31,7 @@ MCP tool 由 15 个增至 25 个；v0.2 字段全部可选，老数据、老渲�
 | v0.2.2 | `wm_refresh` 改增量：LLM 只输出有变化的字段（variables 按键合并，null 删除），没有变化不写盘 | 长会话里每次整理都重写整份工作记忆（2 条长用例 206 次调用、每次约 4 千字输出） | `working/refresh.py`、`service_v2.wm_refresh` |
 | v0.2.2 | P23 原文回退只看排在前两位的命中 | 不需要回溯的用例有 5/8 自动附上原文，多为排在后面的 gist 背景记忆 | `service_v2._raw_fallback` |
 | v0.2.2 | SKILL.md：检索或浮现的记忆只在影响回答时才提；副手误报的不提 | 端到端负例误插话 11/13（基线 13/13） | SKILL.md §一、§九 |
+| v0.3 后（2026-09-16，只改评测 runner，不改被测行为） | 成本口径改用 API 的 usage 字段：`OpenAILLMClient.last_usage`（缓存记录带 usage、命中回放）、runner `ChatClient` 同口径，`CostMeter` 增加 in/out/思考 token 与覆盖率，`mc_report` 新增 token 成本表；字符数列保留 | v0.3 报告 §9.8：字符数看不到 deepseek-flash 计费的思考 token，对照组实测约 ¥0.1/题，比按字符推算高一个量级 | `agent_memory/llm.py`、`runners/mc_common.py`、`runners/mc_report.py`；`evals/memcompass/` 的冻结副本未同步（D6，由用户迁入） |
 
 ## 2. 质量保证
 

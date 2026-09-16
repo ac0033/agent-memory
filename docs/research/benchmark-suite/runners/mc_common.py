@@ -184,6 +184,28 @@ def read_env_file(path: str | None) -> dict[str, str]:
     return env
 
 
+def extract_usage(resp) -> dict | None:
+    """从 OpenAI 兼容响应取 token 用量。completion_tokens 已含思考 token（DeepSeek / OpenAI 推理模型口径），
+    reasoning_tokens 单列；整体拿不到 usage 返回 None。与 agent_memory.llm.OpenAILLMClient.extract_usage 同口径，
+    这里独立一份，因为基线 worktree 里的 agent_memory 没有该方法。"""
+    usage = getattr(resp, "usage", None)
+    if usage is None:
+        return None
+
+    def _int(obj, name):
+        v = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+        return int(v) if isinstance(v, (int, float)) else 0
+
+    details = getattr(usage, "completion_tokens_details", None)
+    pdetails = getattr(usage, "prompt_tokens_details", None)
+    return {
+        "prompt_tokens": _int(usage, "prompt_tokens"),
+        "completion_tokens": _int(usage, "completion_tokens"),
+        "reasoning_tokens": _int(details, "reasoning_tokens") if details is not None else 0,
+        "cached_tokens": _int(pdetails, "cached_tokens") if pdetails is not None else 0,
+    }
+
+
 class ChatClient:
     """最小 OpenAI 兼容客户端：complete_json + 磁盘缓存 + 限流退避。与 agent_memory.llm 解耦，
     这样被测系统的代码版本（基线 / 优化后）不影响答题器与评委。"""
@@ -196,6 +218,8 @@ class ChatClient:
         self.model = model
         self.cache_dir = CACHE_DIR / "memcompass" if cache else None
         self._client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=2)
+        # 最近一次调用的 token 用量（API usage 字段；缓存命中时回放；拿不到为 None）
+        self.last_usage: dict | None = None
 
     def _key(self, system: str, user: str, extra: str) -> str:
         import hashlib
@@ -208,7 +232,9 @@ class ChatClient:
             f = self.cache_dir / f"{key}.json"
             if f.exists():
                 try:
-                    return json.loads(f.read_text(encoding="utf-8"))["response"]
+                    rec = json.loads(f.read_text(encoding="utf-8"))
+                    self.last_usage = rec.get("usage")  # v0.3 以前的缓存没有这个字段 → None
+                    return rec["response"]
                 except (OSError, json.JSONDecodeError, KeyError):
                     pass
         sys_full = f"{system}\n\n只输出一个 JSON object（不要 markdown 代码块），结构：\n{schema}"
@@ -223,6 +249,7 @@ class ChatClient:
                     response_format={"type": "json_object"}, temperature=0,
                 )
                 text = resp.choices[0].message.content or ""
+                self.last_usage = extract_usage(resp)
                 text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
                 parsed = json.loads(text)
                 if not isinstance(parsed, dict):
@@ -230,7 +257,8 @@ class ChatClient:
                 if self.cache_dir:
                     self.cache_dir.mkdir(parents=True, exist_ok=True)
                     tmp = self.cache_dir / f"{key}.{os.getpid()}.{threading.get_ident()}.tmp"
-                    tmp.write_text(json.dumps({"model": self.model, "response": parsed}, ensure_ascii=False), encoding="utf-8")
+                    tmp.write_text(json.dumps({"model": self.model, "response": parsed, "usage": self.last_usage},
+                                              ensure_ascii=False), encoding="utf-8")
                     os.replace(tmp, self.cache_dir / f"{key}.json")
                 return parsed
             except Exception as e:  # noqa: BLE001
@@ -246,22 +274,42 @@ class ChatClient:
 
 
 class CostMeter:
-    """按任务统计 LLM 用量（Q1 成本代理）：调用次数、输入 / 输出字符数。"""
+    """按任务统计 LLM 用量（Q1 成本）：调用次数、输入 / 输出字符数，以及 API usage 字段给出的 token 数。
+
+    字符数对每次调用都有；token 数只在客户端能拿到 usage 时累加（OpenAI 兼容 API 有，Kimi CLI 没有；
+    v0.3 以前写入的缓存记录也没有），`token_calls` 记有 token 数的调用次数，报告据此给出覆盖率。
+    out_tokens 按 API 口径已含思考 token，reasoning_tokens 单列——这是字符数低估成本的根源。
+    """
 
     def __init__(self):
         self.calls = 0
         self.in_chars = 0
         self.out_chars = 0
+        self.token_calls = 0
+        self.in_tokens = 0
+        self.out_tokens = 0
+        self.reasoning_tokens = 0
+        self.cached_tokens = 0
         self._lock = threading.Lock()
 
-    def add(self, in_chars: int, out_chars: int) -> None:
+    def add(self, in_chars: int, out_chars: int, usage: dict | None = None) -> None:
         with self._lock:
             self.calls += 1
             self.in_chars += in_chars
             self.out_chars += out_chars
+            if usage:
+                self.token_calls += 1
+                self.in_tokens += int(usage.get("prompt_tokens") or 0)
+                self.out_tokens += int(usage.get("completion_tokens") or 0)
+                self.reasoning_tokens += int(usage.get("reasoning_tokens") or 0)
+                self.cached_tokens += int(usage.get("cached_tokens") or 0)
 
     def as_dict(self) -> dict:
-        return {"calls": self.calls, "in_chars": self.in_chars, "out_chars": self.out_chars}
+        return {
+            "calls": self.calls, "in_chars": self.in_chars, "out_chars": self.out_chars,
+            "token_calls": self.token_calls, "in_tokens": self.in_tokens, "out_tokens": self.out_tokens,
+            "reasoning_tokens": self.reasoning_tokens, "cached_tokens": self.cached_tokens,
+        }
 
 
 class MeteredLLM:
@@ -272,14 +320,18 @@ class MeteredLLM:
         self.inner = inner
         self.meter = meter
 
+    def _usage(self) -> dict | None:
+        # 基线 worktree 的 LLMClient 与 Kimi CLI 客户端没有 last_usage → None，只计字符
+        return getattr(self.inner, "last_usage", None)
+
     def complete(self, system: str, user: str) -> str:
         out = self.inner.complete(system, user)
-        self.meter.add(len(system) + len(user), len(out or ""))
+        self.meter.add(len(system) + len(user), len(out or ""), self._usage())
         return out
 
     def complete_json(self, system: str, user: str, schema: str, *args, **kwargs) -> dict:
         out = self.inner.complete_json(system, user, schema, *args, **kwargs)
-        self.meter.add(len(system) + len(user) + len(schema), len(json.dumps(out, ensure_ascii=False)))
+        self.meter.add(len(system) + len(user) + len(schema), len(json.dumps(out, ensure_ascii=False)), self._usage())
         return out
 
     def __getattr__(self, name):

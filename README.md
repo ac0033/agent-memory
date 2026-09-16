@@ -175,7 +175,7 @@ Claude Code / Kimi Code 的 MCP 配置片段：
 }
 ```
 
-MCP 当前提供十五个 tool。核心写读入口包括：`memory_search`（混合检索 + XML 注入块，scope 过滤在服务端强制）、
+MCP 当前提供二十五个 tool（v0.2 新增原文归档、主动联想、待确认队列、工作记忆整理、情节卡片与遗忘请求十个，见 `docs/agent-integration.md` §三）。核心写读入口包括：`memory_search`（混合检索 + XML 注入块，scope 过滤在服务端强制）、
 `memory_add`（对话 JSON 走蒸馏管线 / 单条 content 走脱敏+对账 / distilled_json 走宿主蒸馏）、
 `memory_feedback`（升降置信度，降到 low 以下进复核队列）、
 `memory_update`（过脱敏+评价门后更新）、`memory_forget`（删除）。
@@ -308,7 +308,7 @@ agent 应逐条向用户报告并请其裁决（SKILL.md 有对应流程）。
 ### HTTP 常驻服务
 
 stdio 模式由宿主把 server 拉成子进程、随会话生灭；HTTP 模式是一个长期运行的本机服务，
-任何能发 HTTP 请求的 agent 宿主注册一个 URL 即得全部十五个 tool：
+任何能发 HTTP 请求的 agent 宿主注册一个 URL 即得全部二十五个 tool：
 
 ```bash
 uv run python -m agent_memory.server.http_server
