@@ -421,6 +421,10 @@ def summarize(rows: list[dict]) -> str:
             tok_out = sum(c.get("out_tokens", 0) for c in cs) / len(cs)
             cov = sum(c.get("token_calls", 0) for c in cs) / max(1, sum(c["calls"] for c in cs))
             line += f"；系统内部 LLM 每题 {calls:.0f} 次调用、输入 {tok_in:,.0f} tok、输出 {tok_out:,.0f} tok（usage 覆盖 {cov:.0%}）"
+            credit = sum(c.get("credit") or 0 for c in cs) / len(cs)
+            ans_credit = sum((r.get("cost_answer") or {}).get("credit") or 0 for r in g) / len(g)
+            if credit or ans_credit:
+                line += f"；积分：系统 {credit:.2f} + 答题 {ans_credit:.2f} / 题"
         adds = [r["add"] for r in g if r.get("add") and "entries_total" in r["add"]]
         if adds:
             ent = sum(a.get("entries_total") or 0 for a in adds) / len(adds)

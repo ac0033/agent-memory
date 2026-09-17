@@ -296,6 +296,7 @@ class CostMeter:
         self.out_tokens = 0
         self.reasoning_tokens = 0
         self.cached_tokens = 0
+        self.credit = 0.0  # WorkBuddy / CodeBuddy CLI 的积分（API 客户端没有，保持 0）
         self._lock = threading.Lock()
 
     def add(self, in_chars: int, out_chars: int, usage: dict | None = None) -> None:
@@ -309,12 +310,14 @@ class CostMeter:
                 self.out_tokens += int(usage.get("completion_tokens") or 0)
                 self.reasoning_tokens += int(usage.get("reasoning_tokens") or 0)
                 self.cached_tokens += int(usage.get("cached_tokens") or 0)
+                self.credit += float(usage.get("credit") or 0)
 
     def as_dict(self) -> dict:
         return {
             "calls": self.calls, "in_chars": self.in_chars, "out_chars": self.out_chars,
             "token_calls": self.token_calls, "in_tokens": self.in_tokens, "out_tokens": self.out_tokens,
             "reasoning_tokens": self.reasoning_tokens, "cached_tokens": self.cached_tokens,
+            "credit": round(self.credit, 4),
         }
 
 
