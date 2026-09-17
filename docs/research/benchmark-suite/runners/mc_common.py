@@ -54,8 +54,9 @@ DEFAULTS = {
     # 2026-09-17：Kimi 会员月额度与 token-plan 周额度同时耗尽，评委改走 WorkBuddy 内置的 CodeBuddy Code CLI
     # （用户的 WorkBuddy 登录态，按积分计费）。--help 里的模型列表只是静态子集：实测 --model 可直接用
     # glm-5.3 / kimi-k3 / kimi-k3-1 / deepseek-v4-flash / glm-5.2 等最新模型。缺省 kimi-k3：与 MemCompass v0.3
-    # 的评委同一模型（当时经 Kimi CLI 调用），结果可比；单次评委调用约 3 积分（glm-5.3 约 1 积分，可用 --judge-model 换）。
-    "judge_codebuddy": {"cli": "codebuddy", "model": "kimi-k3"},
+    # 的评委同一模型（当时经 Kimi CLI 调用）但单次约 3 积分；用户 2026-09-17 定：评委用 glm-5.3-flash（约 0.07 积分/次），
+    # 答题器与被测系统内部 LLM 用 deepseek-v4-flash（约 0.04 积分/次），不再调 DeepSeek 官方 API。
+    "judge_codebuddy": {"cli": "codebuddy", "model": "glm-5.3-flash"},
 }
 
 native_lock = threading.RLock()  # sqlite-vec / torch 原生调用串行（Windows + 3.14 多线程偶发段错误）

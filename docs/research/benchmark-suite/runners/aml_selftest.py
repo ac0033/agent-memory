@@ -470,10 +470,10 @@ def main() -> None:
                     help="评委来源：judge（Kimi CLI）/ judge_qwen / judge_glm（token-plan）/ deepseek（与答题器同源，"
                          "只在其他评委额度耗尽时用，报告必须注明）")
     ap.add_argument("--answer-via", default="api", choices=["api", "codebuddy"],
-                    help="答题器：api = DeepSeek 官方（缺省）；codebuddy = WorkBuddy 内置 CLI（--answer-model 选模型，如 glm-5.1 / kimi-k2.5）")
+                    help="答题器：api = DeepSeek 官方；codebuddy = WorkBuddy 内置 CLI（缺省模型 deepseek-v4-flash，--answer-model 可换）")
     ap.add_argument("--system-via", default="api", choices=["api", "codebuddy"],
                     help="被测系统内部 LLM（蒸馏 / 对账 / 浮现）：api = DeepSeek 官方（缺省）；codebuddy = WorkBuddy 内置 CLI")
-    ap.add_argument("--system-model", default=None, help="--system-via codebuddy 时的模型（缺省 glm-5.1）")
+    ap.add_argument("--system-model", default=None, help="--system-via codebuddy 时的模型（缺省 deepseek-v4-flash）")
     ap.add_argument("--rejudge", action="store_true",
                     help="不跑系统，只用 --judge-role 指定的评委重判 results.jsonl 里已有的回答，标签写入 labels[<评委>]")
     ap.add_argument("--jobs", type=int, default=1)
@@ -511,14 +511,14 @@ def main() -> None:
         "llm_api_key": env.get(sysd["key_env"]), "llm_base_url": sysd.get("base_url") or env.get(sysd.get("base_url_env", "")),
         "llm_model": sysd["model"]})
     if args.system_via == "codebuddy":
-        system_llm = CodeBuddyCLIClient("system", args.system_model or "glm-5.1", cache=not args.no_cache)
+        system_llm = CodeBuddyCLIClient("system", args.system_model or "deepseek-v4-flash", cache=not args.no_cache)
         settings = settings.model_copy(update={"llm_model": f"codebuddy:{system_llm.model}"})
     else:
         system_llm = OpenAILLMClient.from_settings(settings, cache_dir=REPO / "data" / "logs" / "llm_cache" / f"sys-{args.am_label}-aml")
     embedder = CachedEmbedder(get_embedder(settings), OUT_ROOT / "embedding_cache.pkl")
     actor = DEFAULTS["actor"]
     if args.answer_via == "codebuddy":
-        answerer = CodeBuddyAnswerer(CodeBuddyCLIClient("actor", args.answer_model or "glm-5.1", cache=not args.no_cache))
+        answerer = CodeBuddyAnswerer(CodeBuddyCLIClient("actor", args.answer_model or "deepseek-v4-flash", cache=not args.no_cache))
     else:
         answerer = TextClient(actor["base_url"], env[actor["key_env"]], args.answer_model or actor["model"], cache=not args.no_cache)
     if args.judge_role == "deepseek":
