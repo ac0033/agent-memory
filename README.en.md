@@ -1,104 +1,237 @@
 # agent-memory
 
-Local, agent-neutral long-term memory infrastructure for LLM agents. 中文文档见 [README.md](README.md)。
+**Local, agent-neutral long-term memory infrastructure for LLM agents.** A small service on your own machine that lets any agent (Claude Code, Kimi Code, a LangGraph app, …) remember user preferences, project conventions and past mistakes across sessions. Every write goes through a gate, memories can be forgotten on request, the system knows *when* to speak up, and all of it is measured by a 373-case benchmark that ships with the repo.
 
-It runs as a small service on your own machine and gives any agent three layers of memory:
+> 中文文档见 [README.md](README.md) · License: [MIT](LICENSE) · Python ≥ 3.12 · 789 tests, no network or API key needed
 
-- **Long-term memory** — facts, preferences and procedures that survive across sessions and projects. Nothing is written raw: every candidate goes through *redaction → distillation → evaluation gate → reconciliation*, so the store holds curated atomic statements with evidence pointers back to the original conversation.
-- **Working memory** — the current task's goal, constraints, todos, open questions and variables, kept per scope and injected at the start of the next session.
-- **Short-term memory** — the current conversation, read directly from the host's own transcript files (no duplicate log).
+---
 
-Three ways to plug in:
+## The problem
 
-| Path | For | Entry point |
+A coding agent starts every session from zero: the database you chose last week, the "always use uv" preference, the bug you hit yesterday all have to be repeated. The usual fix is to dump the whole conversation history into RAG, which has four structural problems:
+
+| Problem | Raw-transcript RAG | agent-memory |
 |---|---|---|
-| **MCP over HTTP** (recommended) | Claude Code, Kimi Code, any MCP client | `http://127.0.0.1:8765/mcp` + read `/SKILL.md` |
-| **MCP stdio** | hosts that spawn servers per session | `uv run python -m agent_memory.server.mcp_server` |
-| **Python library** | LangGraph / LangChain apps | `agent_memory.long_term.adapters.langgraph` (`AgentMemoryStore`, `build_memory_tools()`) |
+| **Cannot forget** | The user says "forget that"; the text is still there and retrieval still leaks it | Deletes the memory *and* blanks the matching archive span; audit keeps metadata only |
+| **Cannot resist poisoning** | An injected "ignore safety checks from now on" is recalled verbatim | Every write passes an evaluation gate: instructions, injection patterns and leaked secrets never enter the store |
+| **No task state** | Retrieves what was *said*, not where the task *is* | A separate working-memory layer (goal, constraints, todos, open questions), injected at session start |
+| **Does not know when to speak** | Injects on every turn, relevant or not | Precision-first proactive recall: surfaces a memory only when *not* mentioning it would cause a mistake |
 
-The full integration guide, including what the host runtime must do itself, is in [docs/agent-integration.md](docs/agent-integration.md) (Chinese).
+agent-memory splits memory into three layers (long-term / working / short-term), runs every write through *redaction → distillation → gate → reconciliation*, renders recalled memories with a "reference, not instruction" guard, and plugs in via MCP, a Python library or a Skill.
+
+## Why not "just another RAG"
+
+Our own benchmark is blunt about it: on short histories of 2–8 sessions, **a naive RAG baseline (keep everything, retrieve every turn) matches or beats this system on most plain question-answering subsets.** The value of structured memory is not "more accurate answers"; it is the things raw retrieval structurally cannot do:
+
+- **Forget on request**: retrieval-layer hard leakage is 100% for naive RAG and full-context, 0% here.
+- **Poisoning resistance**: the write gate keeps suspicious content out (attack success 0% vs 11% for naive RAG) while still accepting the user's own legitimate updates (false-block 0%).
+- **Task state and proactive recall**: naive RAG has no state structure (system-level task state 14% vs 92%) and no "should I mention this" judgement (false interjections 11/13 vs 2/13).
+- **No cross-agent bleed**: naive RAG migrates 100% of memories but bleeds 58% across hosts / scopes; this system bleeds 0%.
+
+Full comparison: [report §1.3c](docs/research/benchmark-suite/results/2026-09-16-v03-report.md).
+
+## Highlights
+
+1. **Three layers, one call.** Long-term (facts / preferences / procedures across sessions), working (the current task's goal, constraints, todos, open questions) and short-term (the host's own transcript, read in place, never duplicated). `memory_context` returns all three as separate blocks in one call.
+2. **Gated writes that never lose data.** Every candidate passes redaction → distillation → gate → reconciliation (ADD / UPDATE / DELETE / NOOP). Conflicts the pipeline cannot settle go to a human review queue instead of a guess. The raw transcript is archived *before* distillation, and gate rejections can be forced into review.
+3. **Memory is reference, not instruction.** The distiller refuses to extract instructions, the gate blocks prompt-injection patterns, and every injected block carries a guard preamble. The current request always wins over a recalled memory.
+4. **Verifiable forgetting.** `memory_forget_request` deletes memories and blanks the matching archive spans; the audit log holds metadata only. Retrieval-layer and answer-layer leakage: 0%.
+5. **Proactive recall, precision first.** LLM cue expansion + one-hop spreading + a per-item "would omitting this cause an error / is the principle transferable" judgement. System-level F0.5 77%, false interjections 2/13.
+6. **Bitemporal memories with history.** `valid_from / valid_to` on every entry; on UPDATE the old version folds into `history`; distillation resolves relative dates against the session date and detects retroactive corrections. As-of questions: 97%.
+7. **Searchable archive, self-aware gists.** Redacted, append-only archive with a derived index; each memory carries a completeness flag (complete / gist / mismatch); hitting a gist automatically attaches raw evidence. Back-fill success rose from 19% to 88%.
+8. **Offline evolution loop with rollback.** `agent-memory evolve` merges duplicates, re-verifies old entries and downgrades stale ones, producing a *proposal* rather than editing the store; three independent checks (boundary / retention / safety) each hold a veto; snapshot before promotion, audit after, rollback at any time.
+9. **Host-neutral, works without an API key.** MCP over HTTP, MCP stdio, LangGraph library, Skill. Subscription-only hosts distill in their own context using the protocol from `memory_distill_prompt`; the server still validates, redacts, gates and reconciles.
+10. **A benchmark and an honest report.** MemCompass: 8 subsets, 373 synthetic cases covering what public benchmarks do not (forgetting, poisoning, proactive recall, task state, cross-agent, bitemporal…), with programmatic gold labels, independent judges, paired statistics, ablations and control groups. The report says where naive RAG beats us.
+
+## Results
+
+Benchmark: [MemCompass v0.3](docs/research/benchmark-suite/README.md) (8 subsets / 373 cases, built in this repo, all synthetic). The table is the **paired comparison of v0.2.2 against the previous version** on the test split (193 cases), McNemar exact test:
+
+| Capability | Subset / mode | v0.2.2 | Previous | p | Mechanism evidence |
+|---|---|---|---|---|---|
+| Forget on request | fg / QA | 100% (15/15) | 40% | .004 | Retrieval hard leakage 0% vs 70% |
+| Back-fill from archive | ca / end-to-end | 88% (30/33) | 19% | <.001 | Drops to 75% with archive tools ablated |
+| Proactive recall (system) | pr / system | 78% (25/32, F0.5 77%) | 41% (13/32) | .004 | Back to 13/32 with surfacing ablated |
+| Cross-agent migration (system) | xa / system | 83% | 0% | .002 | Host-neutral archive and injection |
+| Temporal questions | at / QA | 97% | 57% | .007 | Bitemporal fields, retroactive corrections |
+| Present fidelity | pf / end-to-end | 100% | 84% | .016 | Episode cards before context compaction |
+| Poisoning robustness | mp / QA | 100% | 89% | .250 | Attack success 0% for both; false-block 0% vs 21% |
+
+**Honest footnotes**
+
+- Each case has only 2–8 sessions; naive RAG ties or wins most plain QA subsets (previous section). A long-history tier (~350k tokens per case) is not built yet and is the most important next step.
+- Single seed; subsets with n < 50 have wide intervals, flagged "direction only" in the report.
+- Answerer, judge and case reviser are from different vendors (DeepSeek / Kimi K3 / Claude); inter-judge agreement 85%–98% (κ 0.69–0.93). No human-agreement study yet.
+
+Full report (controls, ablations, cost, item health, limitations): [`docs/research/benchmark-suite/results/2026-09-16-v03-report.md`](docs/research/benchmark-suite/results/2026-09-16-v03-report.md) (Chinese). Reproduction: [`evals/memcompass/README.md`](evals/memcompass/README.md).
+
+## Architecture
+
+```
+                 ┌──────────────────────────────────────────────────────┐
+   host agent    │  memory_context = profile + working memory + recall  │
+ (MCP / lib / Skill)  memory_surface = proactive recall (precision-first)│
+                 └───────────────▲──────────────────────────▲───────────┘
+                                 │ read                      │ read
+        ┌────────────────────────┴────────┐   ┌──────────────┴──────────────┐
+        │ long-term  data/memory/*.md     │   │ working  data/working/       │
+        │ single source of truth, scoped  │   │ goal/constraints/todos/open  │
+        │ + rebuildable index.db          │   │ server-side wm_refresh       │
+        │   (sqlite-vec 1024d + FTS5)     │   └──────────────▲──────────────┘
+        └────────────────────────▲────────┘                  │ redaction only
+                                 │ write                     │
+   ┌─────────────────────────────┴──────────────────────────────────────┐
+   │ write path: redact → distill → gate → reconcile (ADD/UPDATE/DELETE/ │
+   │             NOOP) → propagate;  undecidable → data/review_queue/    │
+   └─────────────────────────────▲──────────────────────────────────────┘
+                                 │ archive first, then distill
+        ┌────────────────────────┴────────┐   ┌─────────────────────────────┐
+        │ raw archive  data/raw/ (append) │   │ short-term = host transcript │
+        │ redacted + derived raw_index    │   │ parsed in place by adapters  │
+        └─────────────────────────────────┘   └─────────────────────────────┘
+
+   offline: agent-memory evolve → proposal → 3 checks → snapshot → promote → audit / rollback
+```
+
+Scopes: `global`, `repo:<name>`, `agent:<name>`; a search sees the current scope plus `global`. The three non-negotiable rules (data-layer separation, gated writes, a trusted root agents may not edit) are in [AGENTS.md](AGENTS.md) (Chinese).
 
 ## Quick start
+
+### 1. Install and run
 
 ```bash
 git clone https://github.com/ac0033/agent-memory.git
 cd agent-memory
-uv sync                      # Python 3.14, sqlite-vec, bge-m3 embeddings (downloaded on first use)
-uv run pytest -q             # 780+ tests, no network or API key needed
-export AGENT_MEMORY_LLM_API_KEY=sk-...          # any OpenAI-compatible endpoint; default is DeepSeek
+uv sync                      # Python ≥ 3.12; bge-m3 embeddings downloaded on first use (~2 GB)
+uv run pytest -q             # 789 tests, no network or API key needed
+
+export AGENT_MEMORY_LLM_API_KEY=sk-...          # any OpenAI-compatible endpoint; default is DeepSeek deepseek-flash
 # optional: AGENT_MEMORY_LLM_BASE_URL / AGENT_MEMORY_LLM_MODEL / AGENT_MEMORY_DATA_DIR
 uv run python -m agent_memory.server.http_server
 # listening on http://127.0.0.1:8765/mcp (loopback only)
 ```
 
-Then register the URL as a streamable-HTTP MCP server in your agent host and have the agent read
-`http://127.0.0.1:8765/SKILL.md` once — the Skill explains when to search, when to write, how scopes work and how
-human review is handled. `http://127.0.0.1:8765/bootstrap` is a paste-ready onboarding instruction.
+Without an LLM key, everything that does not need distillation still works (search, manual writes, feedback, working memory, archives). Distillation can be delegated to the host (step 3).
 
-Without an LLM key everything that does not need distillation still works (search, manual writes, feedback,
-working memory, archives). Subscription-only hosts with no API key can distill on their side using the protocol
-returned by `memory_distill_prompt` and submit candidates with `memory_add(distilled_json=...)`; the server still
-runs validation, redaction, the gate and reconciliation on them.
+### 2. Connect an agent
 
-## What the agent gets (25 MCP tools)
+**Option A: MCP over HTTP (recommended, any MCP client).** Register `http://127.0.0.1:8765/mcp` as a streamable-HTTP MCP server and have the agent read `http://127.0.0.1:8765/SKILL.md` once. `/bootstrap` returns a paste-ready onboarding instruction.
+
+**Option B: MCP stdio (host spawns the server per session).** Claude Code / Kimi Code config:
+
+```json
+{
+  "mcpServers": {
+    "agent-memory": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "agent_memory.server.mcp_server"],
+      "env": {
+        "AGENT_MEMORY_DATA_DIR": "C:/Users/<you>/.agent-memory/data",
+        "AGENT_MEMORY_LLM_API_KEY": "sk-..."
+      }
+    }
+  }
+}
+```
+
+**Option C: Python library (LangGraph / LangChain apps).**
+
+```python
+from langgraph.prebuilt import create_react_agent
+from agent_memory.long_term.adapters.langgraph.store import AgentMemoryStore
+from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
+from agent_memory.long_term.retrieve.resident import build_system_context
+
+store = AgentMemoryStore()                       # LangGraph BaseStore, namespace ("memories", <scope>)
+tools = build_memory_tools()                     # 17 ReAct tools covering all three layers
+prompt = "You are the user's coding assistant.\n\n" + build_system_context("repo:myproj")
+agent = create_react_agent(model, tools, prompt=prompt, store=store)
+```
+
+Runnable example: `uv run python examples/langgraph_demo.py`.
+
+**Option D: Skill.** Copy `skills/agent-memory/` into the host's skills directory (Claude Code `~/.claude/skills/`, Kimi Code `~/.kimi-code/skills/`) and combine with either MCP option. Kimi Code has a one-shot installer, `scripts/install_kimi_code.sh` (merges mcp.json, installs the Skill and the read-only subagent override, registers the session-start hook).
+
+### 3. Subscription-only hosts without an API key
+
+The host is itself an LLM, so it can distill: call `memory_distill_prompt()` for the protocol, produce `{"memories": [...]}` in its own context, submit with `memory_add(distilled_json=...)`. The server still validates, redacts, gates and reconciles.
+
+More usage (CLI distillation, evaluation commands, the evolve loop, human review, hooks, working memory, session end) is in the [usage guide](docs/usage.md) (Chinese); what the host runtime must do itself is in the [integration guide §4](docs/agent-integration.md) (Chinese).
+
+## The 25 MCP tools
 
 | Group | Tools | Purpose |
 |---|---|---|
-| Read | `memory_context`, `memory_search`, `memory_wm_read`, `memory_transcript_read`, `memory_distill_prompt`, `memory_consistency_check` | One-call context assembly (profile + working memory + recall), on-demand hybrid search (dense + BM25, RRF, confidence × time decay), transcript reading, host-side distillation protocol, store/index consistency check |
+| Read | `memory_context`, `memory_search`, `memory_wm_read`, `memory_transcript_read`, `memory_distill_prompt`, `memory_consistency_check` | One-call context assembly; hybrid search (dense + BM25 → RRF → confidence × time decay); working memory; transcript reading; host-side distillation protocol; store/index consistency check |
 | Write | `memory_add`, `memory_update`, `memory_forget`, `memory_feedback`, `memory_wm_write`, `memory_wm_clear` | Long-term writes through the full pipeline; working-memory writes (redaction only) |
-| Session | `memory_session_end` | Archive + distill + clean up at the end of a session (vetoed while todos are pending) |
+| Session | `memory_session_end` | Archive + distill + clean up at session end (vetoed while todos are pending) |
 | Review | `memory_review_list`, `memory_review_resolve` | Human review queue for candidates the pipeline would not commit on its own |
-| Raw archive (v0.2) | `memory_archive_search`, `memory_archive_read`, `memory_archive_sync` | Redacted, append-only archive of the original conversations, searchable; the agent falls back to it when a memory is only a gist or looks wrong |
-| Proactive recall (v0.2) | `memory_surface` | A precision-first "memory assistant" that surfaces history the agent would otherwise miss |
-| Confirmation queue (v0.2) | `memory_confirm_enqueue`, `memory_confirm_list`, `memory_confirm_resolve` | Park decisions that need the user while working unattended |
-| Working memory (v0.2) | `memory_wm_refresh` | Server-side incremental refresh of goal / constraints / todos / open questions from recent turns |
-| Episodes (v0.2) | `memory_episode_pack` | Save exact details (ids, ports, paths, error text) before context compaction |
-| Forgetting (v0.2) | `memory_forget_request` | Execute an explicit user request to forget: delete memories and blank the matching archive spans, metadata-only audit |
+| Raw archive | `memory_archive_search`, `memory_archive_read`, `memory_archive_sync` | Redacted, append-only, searchable archive; fall back to it when a memory is only a gist or looks wrong |
+| Proactive recall | `memory_surface` | Precision-first "memory assistant" that surfaces history the agent would otherwise miss |
+| Confirmation queue | `memory_confirm_enqueue`, `memory_confirm_list`, `memory_confirm_resolve` | Park decisions that need the user while working unattended |
+| Working memory | `memory_wm_refresh` | Server-side incremental refresh of goal / constraints / todos / open questions |
+| Episodes | `memory_episode_pack` | Save exact details (ids, ports, paths, error text) before context compaction |
+| Forgetting | `memory_forget_request` | Execute an explicit forget request: delete memories and blank matching archive spans, metadata-only audit |
 
-Every write tool's description states that it is for the main agent only; a ready-made subagent override for Kimi
-Code and the standard constraint text for other hosts are in [docs/agent-integration.md](docs/agent-integration.md) §7.
-
-## Design in one paragraph
-
-Memory entries are Markdown files (the single source of truth) with a rebuildable SQLite index (sqlite-vec 1024-d
-+ FTS5). Raw conversations are archived append-only after redaction. The write path never trusts its input: the
-distiller refuses to extract instructions, the gate blocks prompt-injection patterns and leaked secrets, and
-reconciliation decides ADD / UPDATE / DELETE / NOOP against existing neighbours, sending unresolved conflicts to a
-human review queue instead of guessing. Everything fails closed but never loses data: the raw transcript is archived
-before distillation, and rejected candidates can be forced into review. Scopes (`global`, `repo:<name>`,
-`agent:<name>`) isolate projects; a search only sees the current scope plus `global`. An offline "evolve" loop
-consolidates the store with snapshots and rollback. The three non-negotiable rules — data-layer separation, gated
-writes, and a trusted root that agents may not edit — are spelled out in [AGENTS.md](AGENTS.md).
-
-## How well does it work?
-
-We measure rather than claim. MemCompass, an 8-subset / 373-case capability benchmark written for this project,
-lives in [`evals/memcompass/`](evals/memcompass/) (frozen copy) with its source in
-[`docs/research/benchmark-suite/`](docs/research/benchmark-suite/); the v0.3 report is
-[`results/2026-09-16-v03-report.md`](docs/research/benchmark-suite/results/2026-09-16-v03-report.md).
-Headlines from the test split, paired against the previous version of this same system:
-
-- Forget-on-request compliance 100% vs 40%; retrieval-layer leakage 0% vs 70%.
-- Retroactive back-fill from the archive 88% vs 19%.
-- System-level proactive recall F0.5 77% vs 41%; cross-host injection 83% vs 0%; temporal questions 97% vs 57%.
-
-The honest caveat: on histories of only 2–8 sessions, a naive RAG baseline (keep everything, retrieve every turn)
-matches or beats this system on most plain question-answering subsets. The structured memory wins where raw
-retrieval structurally cannot — forgetting, poisoning resistance, working-memory state and knowing *when* to
-speak up. A long-history tier (~350k tokens per case) is the next planned benchmark step; see the report §1.3c.
+Every write tool's description states it is for the main agent only; subagents are read-only and hand their conclusions back to the main agent. The Kimi Code subagent override lives in `agents/coder.md`.
 
 ## Repository map
 
 ```
-agent_memory/        library + servers (long_term / working / short_term / server)
-skills/agent-memory/ the Skill (SKILL.md) served at /SKILL.md
-agents/coder.md      Kimi Code subagent override (write tools removed)
-scripts/             hooks and installers for hosts
-evals/               trusted root: legacy eval layers + MemCompass frozen copy (agents must not edit)
-docs/                integration guide, research, benchmark source, reports
+agent-memory/
+├── agent_memory/            # Python package (import agent_memory)
+│   ├── config.py / models.py    settings (AGENT_MEMORY_* env vars) and the memory-entry schema
+│   ├── llm.py / confirmations.py  OpenAI-compatible LLM client; confirmation queue
+│   ├── long_term/               store (Markdown + SQLite index) / ingest (redact, distill, gate, reconcile,
+│   │                            propagate, episodes, forget) / retrieve (bge-m3 hybrid search, injection,
+│   │                            resident profile, surfacing) / evolve (offline loop) / adapters/langgraph
+│   ├── working/                 working memory (task state + server-side refresh)
+│   ├── short_term/              transcript adapters for host session logs
+│   └── server/                  MCP stdio server, HTTP server, MemoryService
+├── skills/agent-memory/     # the Skill (SKILL.md), also served at /SKILL.md
+├── agents/coder.md          # Kimi Code subagent override (write tools removed)
+├── scripts/                 # host hooks (periodic distillation, session-start injection, surfacing) and installer
+├── examples/                # minimal LangGraph example
+├── evals/                   # trusted root (agents must not edit): layer1–3 / prefix sets + MemCompass frozen copy
+├── docs/                    # usage, integration, design, research and benchmark (see below)
+├── tests/                   # 789 tests (slow ones skipped by default: uv run pytest -m slow)
+└── data/                    # runtime data (gitignored): raw / memory / working / review_queue / snapshots / logs
 ```
+
+## Documentation
+
+| I want to… | Read |
+|---|---|
+| Plug memory into my agent and know what the host is responsible for | [docs/agent-integration.md](docs/agent-integration.md) |
+| Everyday usage: CLI, evaluation commands, evolve, review, hooks, session end | [docs/usage.md](docs/usage.md) |
+| Understand the three-layer design and its trade-offs | [docs/design/memory-architecture.md](docs/design/memory-architecture.md) |
+| See which capabilities a good agent memory needs and how to measure them | [docs/research/agent-memory-capability-framework.md](docs/research/agent-memory-capability-framework.md) |
+| Build, validate and run the MemCompass benchmark | [docs/research/benchmark-suite/README.md](docs/research/benchmark-suite/README.md) |
+| Read the latest evaluation report | [docs/research/benchmark-suite/results/](docs/research/benchmark-suite/results/) |
+| Know why each v0.2 mechanism was built | [docs/research/optimization-v02.md](docs/research/optimization-v02.md) |
+| Milestone history, defect post-mortems, reliability hardening | [docs/history/](docs/history/) |
+| Rules for people and agents working in this repo | [AGENTS.md](AGENTS.md) |
+| Contribute | [CONTRIBUTING.md](CONTRIBUTING.md) |
+
+All documents except this file are currently in Chinese.
+
+## Design principles
+
+- **D1 Data-layer separation**: `data/raw` is append-only; the Markdown files in `data/memory` are the single source of truth; `data/index.db` is a rebuildable derived index and is never edited by hand.
+- **D2 Gated writes**: raw conversations never enter the store directly; every candidate passes redaction → distillation → gate → reconciliation, and the distiller never extracts instructions.
+- **D6 Trusted root**: `evals/`, rubrics, release thresholds and audit logs may not be modified by agents. The benchmark is authored and verified in `docs/research/benchmark-suite/` and migrated to the frozen copy by the maintainer.
+- **Fail closed, never fail lost**: invalid config, failed validation or missing evidence raise immediately instead of silently degrading; nothing on the write path is lost to a failure.
+- **Local first**: all data is Markdown and SQLite on your disk; the server binds 127.0.0.1 by default; nothing leaves the machine.
+
+## Known limitations and roadmap
+
+- **No long-history tier yet**: cases have 2–8 sessions; a ~350k-token S/M tier is needed to judge real long-history gains ([benchmark README §7](docs/research/benchmark-suite/README.md)).
+- **Raw-evidence guard is loose**: ~50% of cases that need no back-fill still get raw evidence attached.
+- **Schema induction (K6) not implemented**: the evolve verifier is part of the trusted root and needs a new proposal type.
+- **The LangGraph adapter covers the 15 base tools**; the 10 v0.2 tools are MCP-only for now.
+- **Chinese-only benchmark**; no English parallel version yet.
+- Benchmark data is synthetic; no judge-vs-human agreement study yet.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Benchmark datasets under `evals/memcompass/` and
-`docs/research/benchmark-suite/datasets/` are synthetic and released under the same license.
+MIT, see [LICENSE](LICENSE). Benchmark datasets under `evals/memcompass/` and `docs/research/benchmark-suite/datasets/` are synthetic and released under the same license.

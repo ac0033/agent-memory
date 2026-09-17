@@ -9,7 +9,7 @@
    用 ingest/propagate.py 的 judge_validity 判定该条目本身是否仍成立
    （默认假设成立，明确证据才判失效，证据不足降级为 revise 交人工——
    不复用 judge_propagation：它的语义是"某条记忆被撤销后牵连谁"，拿来
-   复核条目自身会把正常记忆恒判失效，见 docs/m2-defect-postmortem.md）；
+   复核条目自身会把正常记忆恒判失效，见 docs/history/defect-postmortem.md）；
 3. 长期未被检索（retrieval_count == 0 且创建超过 stale_days 天）的条目：
    confidence 非 low 的建议降一档（downgrade），已是 low 的建议归档（archive）；
 4. 反"丢弃式防御"（postmortem 启示 5）：LLM 合并产出先做规范化
