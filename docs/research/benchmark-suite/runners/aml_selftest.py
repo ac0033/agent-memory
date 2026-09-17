@@ -47,6 +47,7 @@ sys.path.insert(0, str(REPO / "docs" / "research" / "eval-drafts" / "runner-draf
 from mc_common import (  # noqa: E402
     CACHE_DIR,
     CachedEmbedder,
+    ChatClient,
     KimiCLIClient,
     build_client,
     extract_usage,
@@ -191,7 +192,8 @@ class TextClient:
         self._client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=2)
         self.last_usage: dict | None = None
 
-    def complete(self, prompt: str, max_tokens: int = 512) -> str:
+    def complete(self, prompt: str, max_tokens: int = 4096) -> str:
+        # deepseek-flash 是推理模型：max_tokens 同时限制思考与可见回答，512 时思考就把额度用完、回答为空（先导轮实测）
         key = hashlib.sha256(json.dumps([self.model, prompt, max_tokens]).encode()).hexdigest()
         if self.cache_dir and (self.cache_dir / f"{key}.json").exists():
             rec = json.loads((self.cache_dir / f"{key}.json").read_text(encoding="utf-8"))
@@ -298,9 +300,24 @@ def rag_search(system: NaiveRAGSystem, query: str) -> list[dict]:
 
 # ---------------------------------------------------------------- 主流程
 
+def warm_embeddings(item: dict, embedder, log, batch: int = 32) -> None:
+    """先把这题全部消息文本分批算进向量缓存并落盘。CPU 上一题约 500 条、20 多分钟，
+    进程若中途被杀（本机内存紧张时常见），下次 --resume 只需补算剩余批次。"""
+    texts = [m["content"] for s in item["history"]["sessions"] for m in s["messages"]]
+    seen: set[str] = set()
+    uniq = [t for t in texts if not (t in seen or seen.add(t))]
+    t0 = time.time()
+    for i in range(0, len(uniq), batch):
+        embedder.embed_texts(uniq[i:i + batch])
+        embedder.save()
+        if (i // batch) % 4 == 3:
+            log(f"    embed {min(i + batch, len(uniq))}/{len(uniq)} ({time.time() - t0:.0f}s)")
+
+
 def run_one(q: dict, sys_name: str, ctx: dict, log) -> dict:
     item = to_item(q)
     qid = str(q["question_id"])
+    warm_embeddings(item, ctx["embedder"], log)
     row = {"question_id": qid, "question_type": q["question_type"], "is_abstention": qid.endswith("_abs"),
            "system": sys_name, "question": q["question"], "gold": q["answer"], "question_date": q["question_date"],
            "n_sessions": len(item["history"]["sessions"]), "ts": dt.datetime.now().isoformat(timespec="seconds")}
@@ -339,6 +356,8 @@ def run_one(q: dict, sys_name: str, ctx: dict, log) -> dict:
     row["answer"] = answer
     row["cost_answer"] = ctx["answerer"].last_usage
     row["label"] = judge_label(ctx["judge"], render_judge_prompt(q["question"], str(q["answer"]), answer))
+    row["judge"] = ctx["judge_name"]
+    row["labels"] = {ctx["judge_name"]: row["label"]}
     row["passed"] = row["label"] == "CORRECT"
     row["total_seconds"] = round(time.time() - t_all, 1)
     return row
@@ -431,6 +450,11 @@ def main() -> None:
     ap.add_argument("--env-file", default=None)
     ap.add_argument("--answer-model", default=None, help="缺省 deepseek-flash（DEFAULTS.actor）")
     ap.add_argument("--judge-model", default=None, help="缺省 Kimi K3（CLI）")
+    ap.add_argument("--judge-role", default="judge",
+                    help="评委来源：judge（Kimi CLI）/ judge_qwen / judge_glm（token-plan）/ deepseek（与答题器同源，"
+                         "只在其他评委额度耗尽时用，报告必须注明）")
+    ap.add_argument("--rejudge", action="store_true",
+                    help="不跑系统，只用 --judge-role 指定的评委重判 results.jsonl 里已有的回答，标签写入 labels[<评委>]")
     ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--no-cache", action="store_true")
@@ -469,9 +493,28 @@ def main() -> None:
     embedder = CachedEmbedder(get_embedder(settings), OUT_ROOT / "embedding_cache.pkl")
     actor = DEFAULTS["actor"]
     answerer = TextClient(actor["base_url"], env[actor["key_env"]], args.answer_model or actor["model"], cache=not args.no_cache)
-    judge = build_client("judge", env, args.judge_model, cache=not args.no_cache)
+    if args.judge_role == "deepseek":
+        judge = ChatClient("judge", actor["base_url"], env[actor["key_env"]], args.judge_model or actor["model"],
+                           cache=not args.no_cache)
+    else:
+        judge = build_client(args.judge_role, env, args.judge_model, cache=not args.no_cache)
+    judge_name = getattr(judge, "model", type(judge).__name__)
+    if args.rejudge:
+        rows = [json.loads(line) for line in results.read_text(encoding="utf-8").splitlines() if line.strip()]
+        n = 0
+        for r in rows:
+            if r.get("error") or "answer" not in r:
+                continue
+            labels = r.setdefault("labels", {})
+            if judge_name in labels:
+                continue
+            labels[judge_name] = judge_label(judge, render_judge_prompt(r["question"], str(r["gold"]), r["answer"]))
+            n += 1
+        results.write_text("".join(json.dumps(r, ensure_ascii=False) + chr(10) for r in rows), encoding="utf-8")
+        print(f"rejudged {n} rows with {judge_name}")
+        return
     ctx = {"am_root": args.am_root.resolve(), "am_label": args.am_label, "embedder": embedder, "settings": settings,
-           "system_llm": system_llm, "answerer": answerer, "judge": judge}
+           "system_llm": system_llm, "answerer": answerer, "judge": judge, "judge_name": judge_name}
 
     bal0 = deepseek_balance(env)
     meta = {"run_id": args.run_id, "head": git_head(), "started": dt.datetime.now().isoformat(timespec="seconds"),
@@ -508,6 +551,10 @@ def main() -> None:
                    "error": f"{type(e).__name__}: {e}", "trace": traceback.format_exc()[-2000:]}
             log(f"ERROR {qid} {s}: {row['error'][:200]}")
         write(row)
+        try:
+            embedder.save()
+        except Exception:  # noqa: BLE001
+            pass
 
     if args.jobs > 1:
         with ThreadPoolExecutor(max_workers=args.jobs) as ex:
