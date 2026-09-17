@@ -619,7 +619,7 @@ D 运行级（长期真实使用）        记忆库健康度、漂移、用户�
 
 **用户材料**
 - ChatGPT 对话"解释Codex记忆机制"：https://chatgpt.com/share/6aa637d5-4e2c-83e8-b3bb-8d600fda4ff2
-- agent-memory 设计文档 `agent-memory-framework.md`
+- agent-memory 设计文档 `../design/memory-architecture.md`（原根目录 `agent-memory-framework.md`）
 
 **产品与官方文档**
 - Codex memories：https://github.com/openai/codex/blob/main/codex-rs/memories/README.md ；本机 `~/.codex/memories/`〔实测〕

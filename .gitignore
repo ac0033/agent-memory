@@ -1,36 +1,46 @@
-# 虚拟环境与构建产物
-.venv/
+# ---- Python / 构建产物 ----
 __pycache__/
-*.egg-info/
 *.py[cod]
+*.egg-info/
 dist/
 build/
-# 例外：MemCompass 的构造脚本是数据集的编写源头（generated.yaml 由它们生成），必须入库
+# 例外：MemCompass 的构造脚本是数据集的编写源头，冻结副本也依赖其中的 mcb.py / pools.py，必须入库
 !docs/research/benchmark-suite/build/
+!evals/memcompass/build/
 
-# 运行时数据：忽略 data/ 下所有内容，但保留目录本身和 .gitkeep 占位
+# ---- 环境与工具缓存 ----
+.venv/
+.uv-cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.workbuddy/
+.idea/
+.vscode/
+
+# ---- 运行时数据：data/ 下只保留目录占位，内容一律不入库 ----
 data/**
 !data/
 !data/**/
 !data/**/.gitkeep
 
-# 工具缓存
-.pytest_cache/
-.ruff_cache/
-.workbuddy/
-
-# 系统文件
-.DS_Store
-Thumbs.db
-
-# 兜底：任何密钥文件都不入库
+# ---- 密钥与本机配置 ----
 .env
 .env.*
 !.env.example
 
-# 本机部署脚本（含个人路径，仅作者本机使用，不随仓库发布）
+# ---- 本机部署脚本（含个人路径，仅作者本机使用） ----
 scripts/start_http_server.cmd
 scripts/register_task_s4u.ps1
 
-# 核验台生成物（含全部用例，含 held-out）
+# ---- 生成物 ----
+# 核验台单文件页面（含全部用例，含 held-out 切分）
 docs/research/benchmark-suite/tools/review/index.html
+*.bak
+
+# ---- 系统文件 ----
+.DS_Store
+Thumbs.db
+
+# ---- 仅本地保留、不公开的个人草稿 ----
+docs/research/benchmark-suite/aml-inquiry-email-draft.md

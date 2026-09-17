@@ -5,7 +5,7 @@
 
 ## 0. 决定与复核（2026-09-13）
 
-- **用户决定**：先咨询、再决定。咨询邮件由用户本人发出（草稿见 `aml-inquiry-email-draft.md`）；答复之前不部署公网 Add/Search，也不申请评测 Key。LoCoMo-Refined 不引用。
+- **用户决定**：先咨询、再决定。咨询邮件由用户本人发出（草稿 `aml-inquiry-email-draft.md` 仅本地保留，不随仓库公开）；答复之前不部署公网 Add/Search，也不申请评测 Key。LoCoMo-Refined 不引用。
 - **主 agent 复核**：以下三点在官网上逐一核实，均属实。
   - `/api/openapi.json` 中有 `POST /benchmark-proposals`（Submit Benchmark Proposal），但没有公开的请求 schema；
   - 提案页 `/benchmark-contributions` 的 HTML 中有 `<input name="ldbd_key" ... required />`，并且有 `benchmark_file` 字段；
