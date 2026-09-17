@@ -48,6 +48,7 @@ from mc_common import (  # noqa: E402
     CACHE_DIR,
     CachedEmbedder,
     ChatClient,
+    CodeBuddyCLIClient,
     KimiCLIClient,
     build_client,
     extract_usage,
@@ -220,6 +221,21 @@ class TextClient:
                     continue
                 raise
         raise RuntimeError("unreachable")
+
+
+class CodeBuddyAnswerer:
+    """把 CodeBuddyCLIClient 适配成 TextClient 的 complete(prompt) 接口（答题器）。"""
+
+    def __init__(self, client):
+        self.client = client
+        self.model = f"codebuddy:{client.model}"
+
+    @property
+    def last_usage(self):
+        return self.client.last_usage
+
+    def complete(self, prompt: str, max_tokens: int = 4096) -> str:
+        return self.client.complete("", prompt)
 
 
 def judge_label(judge, prompt: str) -> str:
@@ -453,6 +469,11 @@ def main() -> None:
     ap.add_argument("--judge-role", default="judge",
                     help="评委来源：judge（Kimi CLI）/ judge_qwen / judge_glm（token-plan）/ deepseek（与答题器同源，"
                          "只在其他评委额度耗尽时用，报告必须注明）")
+    ap.add_argument("--answer-via", default="api", choices=["api", "codebuddy"],
+                    help="答题器：api = DeepSeek 官方（缺省）；codebuddy = WorkBuddy 内置 CLI（--answer-model 选模型，如 glm-5.1 / kimi-k2.5）")
+    ap.add_argument("--system-via", default="api", choices=["api", "codebuddy"],
+                    help="被测系统内部 LLM（蒸馏 / 对账 / 浮现）：api = DeepSeek 官方（缺省）；codebuddy = WorkBuddy 内置 CLI")
+    ap.add_argument("--system-model", default=None, help="--system-via codebuddy 时的模型（缺省 glm-5.1）")
     ap.add_argument("--rejudge", action="store_true",
                     help="不跑系统，只用 --judge-role 指定的评委重判 results.jsonl 里已有的回答，标签写入 labels[<评委>]")
     ap.add_argument("--jobs", type=int, default=1)
@@ -489,10 +510,17 @@ def main() -> None:
     settings = settings.model_copy(update={
         "llm_api_key": env.get(sysd["key_env"]), "llm_base_url": sysd.get("base_url") or env.get(sysd.get("base_url_env", "")),
         "llm_model": sysd["model"]})
-    system_llm = OpenAILLMClient.from_settings(settings, cache_dir=REPO / "data" / "logs" / "llm_cache" / f"sys-{args.am_label}-aml")
+    if args.system_via == "codebuddy":
+        system_llm = CodeBuddyCLIClient("system", args.system_model or "glm-5.1", cache=not args.no_cache)
+        settings = settings.model_copy(update={"llm_model": f"codebuddy:{system_llm.model}"})
+    else:
+        system_llm = OpenAILLMClient.from_settings(settings, cache_dir=REPO / "data" / "logs" / "llm_cache" / f"sys-{args.am_label}-aml")
     embedder = CachedEmbedder(get_embedder(settings), OUT_ROOT / "embedding_cache.pkl")
     actor = DEFAULTS["actor"]
-    answerer = TextClient(actor["base_url"], env[actor["key_env"]], args.answer_model or actor["model"], cache=not args.no_cache)
+    if args.answer_via == "codebuddy":
+        answerer = CodeBuddyAnswerer(CodeBuddyCLIClient("actor", args.answer_model or "glm-5.1", cache=not args.no_cache))
+    else:
+        answerer = TextClient(actor["base_url"], env[actor["key_env"]], args.answer_model or actor["model"], cache=not args.no_cache)
     if args.judge_role == "deepseek":
         judge = ChatClient("judge", actor["base_url"], env[actor["key_env"]], args.judge_model or actor["model"],
                            cache=not args.no_cache)

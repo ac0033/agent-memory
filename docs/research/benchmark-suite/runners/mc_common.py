@@ -51,6 +51,9 @@ DEFAULTS = {
     "judge2": {"cli": "kimi", "model": "kimi-code/k3"},
     "judge_qwen": {"base_url_env": "OPENAI_BASE_URL", "model": "qwen3.8-max", "key_env": "DASHSCOPE_API_KEY"},
     "judge_glm": {"base_url_env": "OPENAI_BASE_URL", "model": "glm-5.2", "key_env": "DASHSCOPE_API_KEY"},
+    # 2026-09-17：Kimi 会员月额度与 token-plan 周额度同时耗尽，评委改走 WorkBuddy 内置的 CodeBuddy Code CLI
+    # （用户的 WorkBuddy 登录态，按积分计费；可选模型见 `codebuddy --help` 的 --model 列表）。
+    "judge_codebuddy": {"cli": "codebuddy", "model": "glm-5.1"},
 }
 
 native_lock = threading.RLock()  # sqlite-vec / torch 原生调用串行（Windows + 3.14 多线程偶发段错误）
@@ -436,12 +439,164 @@ def build_client(role: str, env: dict[str, str], override_model: str | None = No
     spec = DEFAULTS[role]
     if spec.get("cli") == "kimi":
         return KimiCLIClient(role, override_model or spec["model"], cache=cache)
+    if spec.get("cli") == "codebuddy":
+        return CodeBuddyCLIClient(role, override_model or spec["model"], cache=cache)
     base = spec.get("base_url") or env.get(spec.get("base_url_env", ""), "")
     key = env.get(spec["key_env"]) or os.environ.get(spec["key_env"])
     if not base or not key:
         raise RuntimeError(f"{role} 的端点或密钥缺失（需要 --env-file 中的 {spec['key_env']}"
                            + (f" 与 {spec['base_url_env']}" if spec.get("base_url_env") else "") + "）")
     return ChatClient(role, base, key, override_model or spec["model"], cache=cache)
+
+
+class CodeBuddyCLIClient:
+    """CodeBuddy Code CLI 客户端（WorkBuddy 桌面应用内置，复用其登录态，按积分计费，不走 API key）。
+
+    - `codebuddy -p --output-format json`：提示词经 stdin 传入（不受 Windows 命令行 32K 上限约束），
+      取输出 JSON 数组里 type=result 的元素：`result` 为回复文本，`usage` / `credit` 为用量与积分；
+    - 与 ChatClient 同接口（complete_json）并另有 complete（自由文本），可同时充当评委、答题器、
+      以及 agent_memory 的 LLMClient（MeteredLLM 包一层即可）；同一磁盘缓存，缓存键含模型名；
+    - 子进程：--tools "" 关掉全部工具、--strict-mcp-config 空配置（不会拉起用户的 agent-memory MCP）、
+      --no-session-persistence、临时空目录作 cwd，评测内容不进用户的真实会话与记忆；
+    - 不能设温度，复现靠缓存；并发由 MC_CODEBUDDY_CONCURRENCY 控制（默认 3）；
+    - CLI 位置：环境变量 CODEBUDDY_CLI_DIR，否则 PATH 上的 codebuddy，否则 WorkBuddy 安装目录里的 bundle。
+    """
+
+    DEFAULT_CLI_DIRS = (
+        Path("D:/3_Software/Download/WorkBuddy/resources/app.asar.unpacked/cli"),
+        Path.home() / "AppData" / "Local" / "Programs" / "WorkBuddy" / "resources" / "app.asar.unpacked" / "cli",
+    )
+
+    def __init__(self, role: str, model: str = "glm-5.1", cache: bool = True, timeout: float = 600):
+        self.role = role
+        self.model = model
+        self.base_url = "codebuddy-cli"
+        self.cache_dir = CACHE_DIR / "memcompass" if cache else None
+        self.cmd_prefix = self._resolve_cli()
+        self.workdir = Path(tempfile.gettempdir()) / "memcompass-codebuddy-cwd"
+        self.workdir.mkdir(parents=True, exist_ok=True)
+        self.timeout = timeout
+        self.last_usage: dict | None = None
+        self._sem = threading.Semaphore(int(os.environ.get("MC_CODEBUDDY_CONCURRENCY", "3")))
+
+    @classmethod
+    def _resolve_cli(cls) -> list[str]:
+        d = os.environ.get("CODEBUDDY_CLI_DIR")
+        dirs = [Path(d)] if d else []
+        dirs += list(cls.DEFAULT_CLI_DIRS)
+        for cand in dirs:
+            if (cand / "bin" / "codebuddy").exists():
+                node = shutil.which("node")
+                if not node:
+                    raise RuntimeError("找不到 node，CodeBuddy CLI 需要 Node.js >= 18.20.8")
+                return [node, str(cand / "bin" / "codebuddy")]
+        exe = shutil.which("codebuddy") or shutil.which("cbc")
+        if exe:
+            return [exe]
+        raise RuntimeError("找不到 CodeBuddy CLI：设 CODEBUDDY_CLI_DIR 指向 WorkBuddy 的 resources/app.asar.unpacked/cli")
+
+    def _key(self, kind: str, system: str, user: str, extra: str) -> str:
+        import hashlib
+
+        return hashlib.sha256(json.dumps([self.model, kind, system, user, extra], ensure_ascii=False).encode()).hexdigest()
+
+    def _cache_get(self, key: str):
+        if self.cache_dir and (self.cache_dir / f"{key}.json").exists():
+            try:
+                rec = json.loads((self.cache_dir / f"{key}.json").read_text(encoding="utf-8"))
+                self.last_usage = rec.get("usage")
+                return rec["response"]
+            except (OSError, json.JSONDecodeError, KeyError):
+                pass
+        return None
+
+    def _cache_put(self, key: str, response) -> None:
+        if not self.cache_dir:
+            return
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.cache_dir / f"{key}.{os.getpid()}.{threading.get_ident()}.tmp"
+        tmp.write_text(json.dumps({"model": self.model, "response": response, "usage": self.last_usage},
+                                  ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, self.cache_dir / f"{key}.json")
+
+    def _run(self, system: str, prompt: str) -> str:
+        cmd = self.cmd_prefix + [
+            "-p", "--model", self.model, "--output-format", "json", "--tools", "", "--max-turns", "1",
+            "--no-session-persistence", "--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": {}}),
+            "--system-prompt", system or "You are a careful assistant. Output only what is asked, nothing else.",
+        ]
+        backoff = [10, 30, 60, 120]
+        last: Exception | None = None
+        for attempt in range(len(backoff) + 1):
+            try:
+                with self._sem:
+                    with _count_lock:
+                        llm_calls[self.role] = llm_calls.get(self.role, 0) + 1
+                    proc = subprocess.run(cmd, cwd=self.workdir, input=prompt, capture_output=True, text=True,
+                                          encoding="utf-8", errors="replace", timeout=self.timeout)
+                if proc.returncode != 0:
+                    raise RuntimeError(f"codebuddy 退出码 {proc.returncode}：{(proc.stderr or proc.stdout)[-300:]}")
+                events = json.loads(proc.stdout)
+                result = [e for e in events if isinstance(e, dict) and e.get("type") == "result"]
+                if not result:
+                    raise RuntimeError("codebuddy 输出里没有 result 事件")
+                res = result[-1]
+                if res.get("is_error"):
+                    raise RuntimeError(f"codebuddy 报错：{str(res.get('result'))[:300]}")
+                self.last_usage = self._usage_from(events, res)
+                return str(res.get("result") or "")
+            except Exception as e:  # noqa: BLE001
+                last = e
+                msg = str(e).lower()
+                transient = any(t in msg for t in ("timeout", "timed out", "429", "rate", "overload", "busy",
+                                                    "connection", "502", "503", "econnreset", "没有 result"))
+                if attempt < len(backoff) and transient:
+                    time.sleep(backoff[attempt])
+                    continue
+                raise
+        raise RuntimeError(f"codebuddy 调用失败：{last}")
+
+    @staticmethod
+    def _usage_from(events: list, res: dict) -> dict:
+        u = res.get("usage") or {}
+        out = {"prompt_tokens": int(u.get("input_tokens") or 0), "completion_tokens": int(u.get("output_tokens") or 0),
+               "reasoning_tokens": 0, "cached_tokens": int(u.get("cache_read_input_tokens") or 0), "credit": 0.0}
+        # 每条 message 事件的 providerData.rawUsage 里带 completion_thinking_tokens 与 credit（积分），累加
+        for e in events:
+            ru = ((e.get("providerData") or {}).get("rawUsage") or {}) if isinstance(e, dict) else {}
+            out["reasoning_tokens"] += int(ru.get("completion_thinking_tokens") or 0)
+            out["credit"] += float(ru.get("credit") or 0)
+        out["credit"] = round(out["credit"], 4)
+        return out
+
+    def complete(self, system: str, user: str) -> str:
+        key = self._key("text", system, user, "")
+        cached = self._cache_get(key)
+        if cached is not None:
+            return cached
+        text = self._run(system, user).strip()
+        if not text:
+            raise RuntimeError("codebuddy 返回了空内容")
+        self._cache_put(key, text)
+        return text
+
+    def complete_json(self, system: str, user: str, schema: str, seed_tag: str = "") -> dict:
+        key = self._key("json", system, user, schema + seed_tag)
+        cached = self._cache_get(key)
+        if cached is not None:
+            return cached
+        sys_full = (f"{system}\n\n只输出一个 JSON object（不要 markdown 代码块，不要调用任何工具，不要任何解释），"
+                    f"结构：\n{schema}")
+        text = self._run(sys_full, user)
+        parsed = KimiCLIClient._parse(text)
+        try:  # 与 agent_memory 的 OpenAILLMClient 同样做一次 schema 层校验（可用时）
+            from agent_memory.llm import validate_json_response
+
+            parsed = validate_json_response(parsed, schema)
+        except Exception:  # noqa: BLE001  runner 独立于 agent_memory 版本时跳过
+            pass
+        self._cache_put(key, parsed)
+        return parsed
 
 
 # ---------------------------------------------------------------- 统计
