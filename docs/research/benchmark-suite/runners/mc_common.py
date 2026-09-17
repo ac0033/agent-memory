@@ -483,7 +483,8 @@ class CodeBuddyCLIClient:
         self.workdir.mkdir(parents=True, exist_ok=True)
         self.timeout = timeout
         self.last_usage: dict | None = None
-        self._sem = threading.Semaphore(int(os.environ.get("MC_CODEBUDDY_CONCURRENCY", "3")))
+        self._sem = threading.Semaphore(int(os.environ.get("MC_CODEBUDDY_CONCURRENCY", "2")))
+        self.fail_dir = CACHE_DIR.parent / "aml_selftest" / "codebuddy_failures"  # 失败时的 stdout/stderr 片段，便于事后排查
 
     @classmethod
     def _resolve_cli(cls) -> list[str]:
@@ -531,7 +532,7 @@ class CodeBuddyCLIClient:
             "--no-session-persistence", "--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": {}}),
             "--system-prompt", system or "You are a careful assistant. Output only what is asked, nothing else.",
         ]
-        backoff = [10, 30, 60, 120]
+        backoff = [5, 10, 20, 40]  # 2026-09-17 晚：长退避把吞吐拖到每会话 4 分钟，改短；失败原样落盘排查
         last: Exception | None = None
         for attempt in range(len(backoff) + 1):
             try:
@@ -541,8 +542,18 @@ class CodeBuddyCLIClient:
                     proc = subprocess.run(cmd, cwd=self.workdir, input=prompt, capture_output=True, text=True,
                                           encoding="utf-8", errors="replace", timeout=self.timeout)
                 if proc.returncode != 0:
+                    self._dump_failure(proc, f"exit {proc.returncode}")
                     raise RuntimeError(f"codebuddy 退出码 {proc.returncode}：{(proc.stderr or proc.stdout)[-300:]}")
-                events = json.loads(proc.stdout)
+                out = proc.stdout or ""
+                start = out.find("[")
+                if start < 0:
+                    self._dump_failure(proc, "no json array")
+                    raise RuntimeError(f"codebuddy 输出不是 JSON（timeout/临时故障）：{(proc.stderr or out)[:300]!r}")
+                try:
+                    events = json.loads(out[start:])
+                except json.JSONDecodeError as e:
+                    self._dump_failure(proc, f"json error {e}")
+                    raise RuntimeError(f"codebuddy 输出 JSON 解析失败（timeout/临时故障）：{out[start:start + 200]!r}") from e
                 result = [e for e in events if isinstance(e, dict) and e.get("type") == "result"]
                 if not result:
                     raise RuntimeError("codebuddy 输出里没有 result 事件")
@@ -565,6 +576,16 @@ class CodeBuddyCLIClient:
                     continue
                 raise
         raise RuntimeError(f"codebuddy 调用失败：{last}")
+
+    def _dump_failure(self, proc, why: str) -> None:
+        try:
+            self.fail_dir.mkdir(parents=True, exist_ok=True)
+            f = self.fail_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{threading.get_ident()}.txt"
+            body = chr(10).join([why, f"model={self.model}", "--- stderr ---", (proc.stderr or "")[-3000:],
+                                   "--- stdout head ---", (proc.stdout or "")[:3000], ""])
+            f.write_text(body, encoding="utf-8")
+        except OSError:
+            pass
 
     @staticmethod
     def _usage_from(events: list, res: dict) -> dict:
