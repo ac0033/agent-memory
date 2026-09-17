@@ -52,8 +52,10 @@ DEFAULTS = {
     "judge_qwen": {"base_url_env": "OPENAI_BASE_URL", "model": "qwen3.8-max", "key_env": "DASHSCOPE_API_KEY"},
     "judge_glm": {"base_url_env": "OPENAI_BASE_URL", "model": "glm-5.2", "key_env": "DASHSCOPE_API_KEY"},
     # 2026-09-17：Kimi 会员月额度与 token-plan 周额度同时耗尽，评委改走 WorkBuddy 内置的 CodeBuddy Code CLI
-    # （用户的 WorkBuddy 登录态，按积分计费；可选模型见 `codebuddy --help` 的 --model 列表）。
-    "judge_codebuddy": {"cli": "codebuddy", "model": "glm-5.1"},
+    # （用户的 WorkBuddy 登录态，按积分计费）。--help 里的模型列表只是静态子集：实测 --model 可直接用
+    # glm-5.3 / kimi-k3 / kimi-k3-1 / deepseek-v4-flash / glm-5.2 等最新模型。缺省 kimi-k3：与 MemCompass v0.3
+    # 的评委同一模型（当时经 Kimi CLI 调用），结果可比；单次评委调用约 3 积分（glm-5.3 约 1 积分，可用 --judge-model 换）。
+    "judge_codebuddy": {"cli": "codebuddy", "model": "kimi-k3"},
 }
 
 native_lock = threading.RLock()  # sqlite-vec / torch 原生调用串行（Windows + 3.14 多线程偶发段错误）
