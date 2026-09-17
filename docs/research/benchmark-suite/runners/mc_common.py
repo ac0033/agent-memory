@@ -554,8 +554,12 @@ class CodeBuddyCLIClient:
             except Exception as e:  # noqa: BLE001
                 last = e
                 msg = str(e).lower()
+                # CLI 子进程崩溃（如 0xC0000409 fail-fast）与网络类错误一样按临时故障重试；确定性错误（模型 id 无效等）不重试
                 transient = any(t in msg for t in ("timeout", "timed out", "429", "rate", "overload", "busy",
-                                                    "connection", "502", "503", "econnreset", "没有 result"))
+                                                    "connection", "502", "503", "econnreset", "没有 result",
+                                                    "退出码 3221", "退出码 -", "退出码 1：", "退出码 134", "退出码 139"))
+                if "valid model" in msg or "invalid" in msg and "model" in msg:
+                    transient = False
                 if attempt < len(backoff) and transient:
                     time.sleep(backoff[attempt])
                     continue
