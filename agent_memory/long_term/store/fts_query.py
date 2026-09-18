@@ -22,6 +22,8 @@ import re
 MIN_TERM_CHARS = 3
 # 词项上限：长问句切出的词太多会把候选池灌满噪声，也拖慢查询
 DEFAULT_MAX_TERMS = 12
+# RRF 常数，与 hybrid / raw_index 的融合口径一致
+RRF_K = 60
 
 _SPLIT_RE = re.compile(r"[\s，。、；：？！,.;:?!（）()“”\"'【】\[\]{}<>/\|~`@#$%^&*+=_-]+")
 
@@ -55,3 +57,25 @@ def fts_expressions(query: str, max_terms: int = DEFAULT_MAX_TERMS) -> list[str]
         if len(exprs) > max_terms:  # 1 个整句 + max_terms 个词项
             break
     return exprs
+
+
+def fuse_ranked_lists(rankings: list[list], rrf_k: int = RRF_K) -> list:
+    """把多个表达式各自的排序结果融合成一个排序（RRF，与检索层同一套公式）。
+
+    为什么不能按"表达式顺序依次拼接"：表达式的顺序就是词项在问句里出现的顺序，
+    而不是词项的信息量。"Where did I get my guitar serviced?" 里 "Where"、"did"
+    命中成百上千行，会把候选位置占满，真正有区分度的 "guitar" 反而挤不进来。
+    RRF 融合让"命中多个查询词项的行"自然累积更高的分——整句短语命中的行同时也
+    命中每个词项，因此拿到最高分，不需要再额外加权。
+
+    同一 id 在一个 ranking 里重复出现时只计首次排名。
+    """
+    fused: dict = {}
+    for ranking in rankings:
+        seen: set = set()
+        for rank, key in enumerate(ranking, start=1):
+            if key in seen:
+                continue
+            seen.add(key)
+            fused[key] = fused.get(key, 0.0) + 1.0 / (rrf_k + rank)
+    return [key for key, _ in sorted(fused.items(), key=lambda kv: -kv[1])]

@@ -3,6 +3,7 @@
 from agent_memory.long_term.store.fts_query import (
     DEFAULT_MAX_TERMS,
     fts_expressions,
+    fuse_ranked_lists,
     split_terms,
 )
 
@@ -51,3 +52,32 @@ class TestFtsExpressions:
         exprs = fts_expressions("guitar shop guitar repair")
         assert exprs.count('"guitar"') == 1
         assert exprs.index('"guitar"') < exprs.index('"repair"')
+
+
+class TestFuseRankedLists:
+    def test_row_matching_more_expressions_wins(self):
+        """命中多个查询词项的行应排在只命中一个词项的行之前。"""
+        # "guitar" 和 "serviced" 都命中 A；B 只命中高频词 "where" 且排第一
+        fused = fuse_ranked_lists([["B"], ["A"], ["A", "B"]])
+        assert fused[0] == "A"
+
+    def test_single_ranking_order_preserved(self):
+        assert fuse_ranked_lists([["a", "b", "c"]]) == ["a", "b", "c"]
+
+    def test_empty_input(self):
+        assert fuse_ranked_lists([]) == []
+        assert fuse_ranked_lists([[], []]) == []
+
+    def test_duplicate_within_one_ranking_counted_once(self):
+        # 同一 ranking 里重复出现只按首次排名计分，否则一个表达式能刷分
+        assert fuse_ranked_lists([["a", "a", "a"], ["b"]]) == ["a", "b"]
+
+    def test_high_frequency_term_cannot_bury_discriminative_term(self):
+        """回归：按表达式顺序拼接时，虚词命中会占满前排。
+
+        rankings[0] 是虚词 "where" 的命中（noise0..9 排在前），rankings[1] 是
+        "guitar" 的命中（evidence 排第一）。融合后 evidence 必须进入前列。
+        """
+        noise = [f"noise{i}" for i in range(10)]
+        fused = fuse_ranked_lists([noise, ["evidence"]])
+        assert fused.index("evidence") <= 1

@@ -9,7 +9,8 @@
 - raw_fts：FTS5 trigram 全文。
 检索 = 稠密 + 稀疏两路 → RRF 融合（与记忆层检索同一套公式），scope 过滤在 SQL 层完成。
 两路的候选数为 max(CANDIDATES, k * 2)，随调用方要的 k 伸缩；FTS 表达式由
-fts_query.fts_expressions 构造（整句短语 + 词项），与 index_db 共用一份实现。
+fts_query.fts_expressions 构造（整句短语 + 词项）并按 RRF 融合各表达式的排序，
+与 index_db 共用一份实现。
 
 会话级元数据（日期、作用域、宿主）存在 data/raw/<source>/<session_id>.meta.json，
 归档时写一次；它只是新增文件，不改写任何已归档的原文行。
@@ -26,7 +27,7 @@ from pathlib import Path
 
 import sqlite_vec
 
-from agent_memory.long_term.store.fts_query import fts_expressions
+from agent_memory.long_term.store.fts_query import fts_expressions, fuse_ranked_lists
 
 EMBEDDING_DIM = 1024
 RRF_K = 60
@@ -208,11 +209,8 @@ class RawIndex:
                 ).fetchall()
                 if allowed(r[0])
             ][:cand]
-            sparse: list[int] = []
-            seen: set[int] = set()
+            rankings: list[list[int]] = []
             for expr in fts_expressions(query):
-                if len(sparse) >= cand:
-                    break
                 try:
                     rows = self.conn.execute(
                         "SELECT rid FROM raw_fts WHERE raw_fts MATCH ? ORDER BY bm25(raw_fts)"
@@ -221,10 +219,9 @@ class RawIndex:
                     ).fetchall()
                 except sqlite3.OperationalError:
                     continue
-                for (rid,) in rows:
-                    if rid not in seen and allowed(rid):
-                        seen.add(rid)
-                        sparse.append(rid)
+                rankings.append([rid for (rid,) in rows if allowed(rid)])
+            # 按词项顺序拼接会让高频虚词占满候选位置，所以按 RRF 融合各表达式的排序
+            sparse: list[int] = fuse_ranked_lists(rankings)
             fused: dict[int, float] = {}
             for rank, rid in enumerate(dense, start=1):
                 fused[rid] = fused.get(rid, 0.0) + 1.0 / (RRF_K + rank)

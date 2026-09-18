@@ -18,7 +18,7 @@ from pathlib import Path
 
 import sqlite_vec
 
-from agent_memory.long_term.store.fts_query import fts_expressions
+from agent_memory.long_term.store.fts_query import fts_expressions, fuse_ranked_lists
 from agent_memory.long_term.store.markdown_store import entry_from_markdown
 from agent_memory.models import MemoryEntry
 
@@ -244,9 +244,11 @@ class IndexDB:
     ) -> list[tuple[str, float]]:
         """FTS5 全文检索（trigram，bm25），返回 [(id, bm25_score)] 按相关度降序。
 
-        整句短语优先，其后依次是查询里的各个词项（`fts_query.fts_expressions`，
-        与原文归档索引共用同一套构造）。只用整句短语的话，trigram 下等价于
-        整句子串匹配，自然语言长问句几乎恒为 0 命中，稀疏路会形同失效。
+        整句短语 + 查询里的各个词项各查一次（`fts_query.fts_expressions`，与原文
+        归档索引共用同一套构造），再用 RRF 融合成一个排序（`fuse_ranked_lists`）。
+        只用整句短语的话，trigram 下等价于整句子串匹配，自然语言长问句几乎恒为
+        0 命中，稀疏路形同失效；而按词项顺序依次拼接又会让高频虚词占满候选位置，
+        所以要融合而不是拼接。返回的分数取该条目在各表达式里最好的那个 bm25。
         注意：trigram 要求匹配串至少 3 个字符，更短的查询（如"端口"）拿不到
         任何表达式——混合检索里这类短词由稠密向量路兜底。
         """
@@ -254,12 +256,10 @@ class IndexDB:
         if not exprs:
             return []
         scope_sql, params = self._scope_clause(scopes)
-        hits: list[tuple[str, float]] = []
-        seen: set[str] = set()
+        rankings: list[list[str]] = []
+        best: dict[str, float] = {}
         with self._lock:
             for expr in exprs:
-                if len(hits) >= k:
-                    break
                 try:
                     rows = self.conn.execute(
                         f"""
@@ -275,14 +275,11 @@ class IndexDB:
                 except sqlite3.OperationalError:
                     # 单个表达式语法上不被 FTS5 接受时跳过它，不连带毁掉整次检索
                     continue
+                rankings.append([r[0] for r in rows])
                 for entry_id, score in rows:
-                    if entry_id in seen:
-                        continue
-                    seen.add(entry_id)
-                    hits.append((entry_id, float(score)))
-                    if len(hits) >= k:
-                        break
-        return hits
+                    if entry_id not in best or float(score) < best[entry_id]:
+                        best[entry_id] = float(score)
+        return [(entry_id, best[entry_id]) for entry_id in fuse_ranked_lists(rankings)[:k]]
 
     def rebuild_from_markdown(self, memory_dir: Path, embedder) -> int:
         """全量清空后从 Markdown 记忆层重建索引，返回索引条目数。
