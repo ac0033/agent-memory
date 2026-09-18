@@ -89,6 +89,42 @@ class TestSearch:
         # 不存在的词不命中
         assert populated.search_sparse("PostgreSQL", k=5) == []
 
+    def test_sparse_matches_natural_language_question_via_terms(self, index, entry_factory):
+        """自然语言长问句要靠词项命中。
+
+        回归：稀疏路原先只用整句短语做 trigram 匹配，等价于整句子串匹配，
+        于是长问句恒为 0 命中、混合检索退化成纯向量。
+        """
+        index.upsert(
+            entry_factory(entry_id="g1", content="The guitar was serviced at the shop on Main St."),
+            _vec(0),
+        )
+        hits = index.search_sparse("Where did I get my guitar serviced?", k=5)
+        assert [h[0] for h in hits] == ["g1"]
+
+    def test_sparse_whole_phrase_still_ranks_first(self, index, entry_factory):
+        """整句短语命中优先于只命中单个词项的条目。"""
+        exact = entry_factory(entry_id="exact", content="用户用 uv 管理环境，不用 pip")
+        index.upsert(exact, _vec(0))
+        index.upsert(entry_factory(entry_id="partial", content="环境变量统一放在 .env"), _vec(1))
+        hits = index.search_sparse("uv 管理环境", k=5)
+        assert hits[0][0] == "exact"
+
+    def test_sparse_unrelated_question_still_empty(self, index, entry_factory):
+        """分词不能把不相关的问句也变成命中——词项一个都不在库里就该是空。"""
+        index.upsert(entry_factory(entry_id="g1", content="用户用 uv 管理环境"), _vec(0))
+        assert index.search_sparse("How much does PostgreSQL licensing cost?", k=5) == []
+
+    def test_sparse_respects_k_across_expressions(self, index, entry_factory):
+        """多表达式合并后仍然不超过 k，且不重复返回同一条目。"""
+        for i in range(6):
+            index.upsert(
+                entry_factory(entry_id=f"m{i}", content=f"guitar serviced note {i}"), _vec(i)
+            )
+        hits = index.search_sparse("guitar serviced", k=3)
+        assert len(hits) == 3
+        assert len({h[0] for h in hits}) == 3
+
     def test_fts_indexes_detail_text(self, index, entry_factory):
         """FTS 索引的是 content + detail 拼接文本：只在 detail 出现的词也能命中。"""
         entry = entry_factory(entry_id="d1", content="用户偏好命令行工具。")

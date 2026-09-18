@@ -18,6 +18,7 @@ from pathlib import Path
 
 import sqlite_vec
 
+from agent_memory.long_term.store.fts_query import fts_expressions
 from agent_memory.long_term.store.markdown_store import entry_from_markdown
 from agent_memory.models import MemoryEntry
 
@@ -243,25 +244,45 @@ class IndexDB:
     ) -> list[tuple[str, float]]:
         """FTS5 全文检索（trigram，bm25），返回 [(id, bm25_score)] 按相关度降序。
 
-        查询整体作为短语匹配（trigram 下等价于子串匹配），双引号转义防注入。
-        注意：trigram 要求查询至少 3 个字符，更短的查询（如"端口"）不会命中——
-        混合检索里这类短词由稠密向量路兜底。
+        整句短语优先，其后依次是查询里的各个词项（`fts_query.fts_expressions`，
+        与原文归档索引共用同一套构造）。只用整句短语的话，trigram 下等价于
+        整句子串匹配，自然语言长问句几乎恒为 0 命中，稀疏路会形同失效。
+        注意：trigram 要求匹配串至少 3 个字符，更短的查询（如"端口"）拿不到
+        任何表达式——混合检索里这类短词由稠密向量路兜底。
         """
-        escaped = query.replace('"', '""')
+        exprs = fts_expressions(query)
+        if not exprs:
+            return []
         scope_sql, params = self._scope_clause(scopes)
+        hits: list[tuple[str, float]] = []
+        seen: set[str] = set()
         with self._lock:
-            rows = self.conn.execute(
-                f"""
-                SELECT memories_fts.id, bm25(memories_fts) AS score
-                FROM memories_fts
-                JOIN memories_meta m ON m.id = memories_fts.id
-                WHERE memories_fts MATCH ?{scope_sql}
-                ORDER BY score
-                LIMIT ?
-                """,
-                (f'"{escaped}"', *params, k),
-            ).fetchall()
-        return [(r[0], float(r[1])) for r in rows]
+            for expr in exprs:
+                if len(hits) >= k:
+                    break
+                try:
+                    rows = self.conn.execute(
+                        f"""
+                        SELECT memories_fts.id, bm25(memories_fts) AS score
+                        FROM memories_fts
+                        JOIN memories_meta m ON m.id = memories_fts.id
+                        WHERE memories_fts MATCH ?{scope_sql}
+                        ORDER BY score
+                        LIMIT ?
+                        """,
+                        (expr, *params, k),
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    # 单个表达式语法上不被 FTS5 接受时跳过它，不连带毁掉整次检索
+                    continue
+                for entry_id, score in rows:
+                    if entry_id in seen:
+                        continue
+                    seen.add(entry_id)
+                    hits.append((entry_id, float(score)))
+                    if len(hits) >= k:
+                        break
+        return hits
 
     def rebuild_from_markdown(self, memory_dir: Path, embedder) -> int:
         """全量清空后从 Markdown 记忆层重建索引，返回索引条目数。

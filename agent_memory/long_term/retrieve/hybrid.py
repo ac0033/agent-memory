@@ -1,7 +1,7 @@
 """混合检索：稠密（vec0 cosine knn）+ 稀疏（FTS5 bm25）→ RRF 融合 → 治理加权。
 
 融合公式（M1）：
-- 两路各取 top 20，RRF（k=60）：rrf_score = Σ 1/(60 + rank)，rank 从 1 起；
+- 两路各取 max(20, k*3) 个候选，RRF（k=60）：rrf_score = Σ 1/(60 + rank)，rank 从 1 起；
 - 综合分 = rrf_score × confidence_weight × time_decay；
   - confidence_weight：high 1.0 / medium 0.8 / low 0.6；
   - time_decay：last_verified 距今 ≤ stale_days 为 1.0，之后线性衰减，
@@ -18,7 +18,9 @@ from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.models import MemoryEntry
 
-# 两路召回各自取的候选数，之后 RRF 融合
+# 两路召回各自取的候选数下限；实际用 max(CANDIDATE_TOP_N, k * 3)。
+# 固定 20 会让 k>20 的调用（例如 AML 契约要 top_k=100）永远拿不到更多候选——
+# results[:k] 在最后才截断，但候选池早就封顶了。
 CANDIDATE_TOP_N = 20
 # RRF 常数
 RRF_K = 60
@@ -75,6 +77,9 @@ class SearchResult:
     dense_rank: int | None
     sparse_rank: int | None
     matched_text: str  # 命中的原始记忆文本
+    # 稠密路的 cosine 距离（0 最近、2 最远），未命中稠密路时为 None。
+    # RRF 分只反映排名、不含绝对相似度，校准"召回够不够"必须看这个。
+    dense_distance: float | None = None
 
 
 class HybridSearcher:
@@ -112,10 +117,12 @@ class HybridSearcher:
             raise NotImplementedError("reranker 在 M1 未实现（rerank_enabled 是 M2+ 的消融开关）")
 
         effective_scopes = self._with_global(scopes)
+        candidates = max(CANDIDATE_TOP_N, k * 3)
         dense = self.index.search_dense(
-            self.embedder.embed_texts([query])[0], k=CANDIDATE_TOP_N, scopes=effective_scopes
+            self.embedder.embed_texts([query])[0], k=candidates, scopes=effective_scopes
         )
-        sparse = self.index.search_sparse(query, k=CANDIDATE_TOP_N, scopes=effective_scopes)
+        sparse = self.index.search_sparse(query, k=candidates, scopes=effective_scopes)
+        distances = {i: d for i, d in dense}
         fused = rrf_fuse([i for i, _ in dense], [i for i, _ in sparse])
 
         today = date.today()
@@ -135,6 +142,7 @@ class HybridSearcher:
                     dense_rank=slot["dense_rank"],
                     sparse_rank=slot["sparse_rank"],
                     matched_text=entry.content,
+                    dense_distance=distances.get(entry_id),
                 )
             )
         results.sort(key=lambda r: r.score, reverse=True)

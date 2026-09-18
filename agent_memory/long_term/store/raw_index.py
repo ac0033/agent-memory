@@ -8,6 +8,8 @@
 - raw_vec：vec0 虚表（bge-m3 1024 维，cosine）；
 - raw_fts：FTS5 trigram 全文。
 检索 = 稠密 + 稀疏两路 → RRF 融合（与记忆层检索同一套公式），scope 过滤在 SQL 层完成。
+两路的候选数为 max(CANDIDATES, k * 2)，随调用方要的 k 伸缩；FTS 表达式由
+fts_query.fts_expressions 构造（整句短语 + 词项），与 index_db 共用一份实现。
 
 会话级元数据（日期、作用域、宿主）存在 data/raw/<source>/<session_id>.meta.json，
 归档时写一次；它只是新增文件，不改写任何已归档的原文行。
@@ -24,8 +26,12 @@ from pathlib import Path
 
 import sqlite_vec
 
+from agent_memory.long_term.store.fts_query import fts_expressions
+
 EMBEDDING_DIM = 1024
 RRF_K = 60
+# 两路各自召回的候选数下限；实际用 max(CANDIDATES, k * 2)，
+# 否则请求 k=100 时融合池最多只有 60 条，去重后填不满调用方要的位置
 CANDIDATES = 30
 
 
@@ -191,7 +197,8 @@ class RawIndex:
                 return scopes is None or row[0] is None or row[0] in scopes
 
             qv = embedder.embed_texts([query])[0]
-            fetch = min(total, max(CANDIDATES * 3, k * 6))
+            cand = max(CANDIDATES, k * 2)
+            fetch = min(total, max(cand * 3, k * 6))
             dense = [
                 r[0]
                 for r in self.conn.execute(
@@ -200,31 +207,28 @@ class RawIndex:
                     (sqlite_vec.serialize_float32(qv), fetch),
                 ).fetchall()
                 if allowed(r[0])
-            ][:CANDIDATES]
+            ][:cand]
             sparse: list[int] = []
-            q = query.strip()
-            if len(q) >= 3:
-                escaped = q.replace('"', '""')
-                terms = [t for t in _terms(q) if len(t) >= 3]
-                exprs = [f'"{escaped}"'] + [f'"{t.replace(chr(34), "")}"' for t in terms[:12]]
-                seen: set[int] = set()
-                for expr in exprs:
-                    try:
-                        rows = self.conn.execute(
-                            "SELECT rid FROM raw_fts WHERE raw_fts MATCH ? ORDER BY bm25(raw_fts)"
-                            " LIMIT ?",
-                            (expr, CANDIDATES),
-                        ).fetchall()
-                    except sqlite3.OperationalError:
-                        continue
-                    for (rid,) in rows:
-                        if rid not in seen and allowed(rid):
-                            seen.add(rid)
-                            sparse.append(rid)
+            seen: set[int] = set()
+            for expr in fts_expressions(query):
+                if len(sparse) >= cand:
+                    break
+                try:
+                    rows = self.conn.execute(
+                        "SELECT rid FROM raw_fts WHERE raw_fts MATCH ? ORDER BY bm25(raw_fts)"
+                        " LIMIT ?",
+                        (expr, cand),
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    continue
+                for (rid,) in rows:
+                    if rid not in seen and allowed(rid):
+                        seen.add(rid)
+                        sparse.append(rid)
             fused: dict[int, float] = {}
             for rank, rid in enumerate(dense, start=1):
                 fused[rid] = fused.get(rid, 0.0) + 1.0 / (RRF_K + rank)
-            for rank, rid in enumerate(sparse[:CANDIDATES], start=1):
+            for rank, rid in enumerate(sparse[:cand], start=1):
                 fused[rid] = fused.get(rid, 0.0) + 1.0 / (RRF_K + rank)
             hits = []
             for rid, score in sorted(fused.items(), key=lambda x: -x[1])[:k]:
@@ -277,13 +281,6 @@ class RawIndex:
                 host=meta.get("host"),
             )
         return n
-
-
-def _terms(text: str) -> list[str]:
-    """查询拆词：按空白与中文标点切开，保留 ≥3 字符的片段用于 trigram 全文匹配。"""
-    import re
-
-    return [t for t in re.split(r"[\s，。、；：？！,.;:?!（）()“”\"'【】\[\]]+", text) if t]
 
 
 def session_meta_path(archive_file: Path) -> Path:

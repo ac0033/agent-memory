@@ -4,7 +4,9 @@ from datetime import date, timedelta
 
 import pytest
 
+from agent_memory.config import Settings
 from agent_memory.long_term.retrieve.hybrid import (
+    CANDIDATE_TOP_N,
     DECAY_FLOOR,
     RRF_K,
     HybridSearcher,
@@ -59,8 +61,6 @@ class TestHybridSearchRanking:
 
     @pytest.fixture
     def env(self, tmp_path, store, index, entry_factory, fake_embedder):
-        from agent_memory.config import Settings
-
         def add(entry):
             store.create(entry)
             index.upsert(entry, fake_embedder.embed_texts([entry.content])[0])
@@ -100,8 +100,6 @@ class TestHybridSearchRanking:
 
     def test_scope_filtering_includes_global(self, tmp_path, store, index, entry_factory,
                                              fake_embedder):
-        from agent_memory.config import Settings
-
         store.create(entry_factory(entry_id="g", content="全局 uv 记忆"))
         store.create(
             entry_factory(entry_id="mine", scope="repo:mine", content="本仓库 uv 记忆")
@@ -132,3 +130,51 @@ class TestHybridSearchRanking:
         """默认不计数：写路径的近邻检索（reconcile/propagate）不是用户检索。"""
         env.search("uv", k=10)
         assert env.store.get("fresh-high").retrieval_count == 0
+
+
+class TestCandidatePoolScalesWithK:
+    """回归：候选池固定 20 时，k>20 的调用永远拿不到更多条目。
+
+    AML Search 契约要 top_k=100，记忆层却只能返回约 20 条，剩下的位置被浪费。
+    """
+
+    @pytest.fixture
+    def many(self, store, index, fake_embedder, entry_factory):
+        for i in range(60):
+            entry = entry_factory(entry_id=f"m{i:02d}", content=f"uv 相关记忆第 {i} 条")
+            store.create(entry)
+            index.upsert(entry, fake_embedder.embed_texts([entry.content])[0])
+        return HybridSearcher(store, index, fake_embedder, Settings())
+
+    def test_k_above_candidate_floor_returns_more_than_floor(self, many):
+        assert len(many.search("uv", scopes=["global"], k=40)) > CANDIDATE_TOP_N
+
+    def test_small_k_unchanged(self, many):
+        assert len(many.search("uv", scopes=["global"], k=10)) == 10
+
+
+class TestDenseDistanceCarried:
+    def test_dense_hit_carries_cosine_distance(self, store, index, fake_embedder, entry_factory):
+        entry = entry_factory(entry_id="d1", content="用户用 uv 管理环境")
+        store.create(entry)
+        index.upsert(entry, fake_embedder.embed_texts([entry.content])[0])
+        searcher = HybridSearcher(store, index, fake_embedder, Settings())
+        (hit,) = searcher.search("uv", scopes=["global"], k=5)
+        assert hit.dense_distance is not None
+        assert 0.0 <= hit.dense_distance <= 2.0
+
+    def test_sparse_only_hit_has_no_distance(self, store, index, fake_embedder, entry_factory):
+        """只命中稀疏路的条目没有 cosine 距离——置信度估计要能区分这种情况。"""
+        entry = entry_factory(entry_id="s1", content="PostgreSQL 连接串放在 secrets 里")
+        store.create(entry)
+        # 故意写入一个与任何查询都不同向的向量，让稠密路不会把它选进候选
+        vector = [0.0] * 1024
+        vector[1023] = 1.0
+        index.upsert(entry, vector)
+        other = entry_factory(entry_id="o1", content="用户用 uv 管理环境")
+        store.create(other)
+        index.upsert(other, fake_embedder.embed_texts([other.content])[0])
+        searcher = HybridSearcher(store, index, fake_embedder, Settings())
+        hits = {r.entry.id: r for r in searcher.search("PostgreSQL 连接串", scopes=["global"], k=1)}
+        assert "s1" in hits
+        assert hits["s1"].sparse_rank is not None
