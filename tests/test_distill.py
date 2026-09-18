@@ -263,6 +263,40 @@ def test_prompt_encourages_detail():
     assert "detail" in llm.calls[0]["system"]
 
 
+def test_prompt_requires_language_to_follow_conversation():
+    """蒸馏出的 content/detail 必须跟随对话语言，不再写死中文。
+
+    背景：schema 原先写死"一句话原子事实（中文）"，英文对话进来也沉淀中文条目，
+    既不符合 agent 语言中立的定位，也在检索时造成跨语言损耗。
+    """
+    _, llm = _distill({"memories": []})
+    system = llm.calls[0]["system"]
+    assert "12. 语言" in system
+    assert "用对话本身的主要语言书写" in system
+    assert "英文对话就写英文" in system
+    # id 是唯一的例外，仍然是英文 slug（normalize_entry_id 在下游强制）
+    assert "kebab-case slug" in system
+
+
+def test_schema_content_is_language_neutral():
+    from agent_memory.long_term.ingest.distill import get_distill_protocol
+
+    schema = get_distill_protocol()["schema_description"]
+    assert "与对话同一语言" in schema
+    assert "一句话原子事实（中文" not in schema
+    # llm.validate_json_response 靠这个子串判断 memories 是数组，不能被破坏
+    assert '"memories": [' in schema
+
+
+def test_prompt_requires_full_list_for_countable_entities():
+    """枚举/计数类事实要保住完整清单，否则跨会话计数会漏项（P37 写入侧）。"""
+    _, llm = _distill({"memories": []})
+    system = llm.calls[0]["system"]
+    assert "13. 枚举与计数" in system
+    assert "当前完整清单" in system
+    assert "把先前已知的" in system
+
+
 def test_format_conversation_numbers_turns():
     text = format_conversation(CONVERSATION)
     assert "[turn 1] user:" in text
