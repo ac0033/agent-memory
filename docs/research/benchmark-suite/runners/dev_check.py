@@ -27,6 +27,12 @@ import aml_selftest as A  # noqa: E402
 from mc_common import DEFAULTS, read_env_file  # noqa: E402
 from systems import AgentMemorySystem, NaiveRAGSystem, load_agent_memory, native_lock  # noqa: E402
 
+# 验证集历史里的相对时间说法及其应当换算出的日期（见 build_dev_qa.py 的会话日期）
+RELATIVE_TIME = [
+    ("yesterday", "2024-02-11"), ("last saturday", "2024-03-02"), ("three weeks ago", "2024-02-05"),
+    ("three weeks", "2024-04-10"), ("two months ago", "2023-11"),
+]
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -92,6 +98,15 @@ def main() -> None:
             "missing": [m for m in marks if m not in low],
             "rag_missing": [m for m in marks if m not in rag_low],
             "size_ratio": round(len(payload) / max(len(rag_payload), 1), 2)})
+    # ---- 写入质量（A 层，组件级）：相对时间是否"只增不减"——原说法还在，换算出的日期附在后面
+    entries = [e.content.lower() + " " + (e.detail or "").lower() for e in am.svc.store.list()]
+    print("\n== write check（相对时间：原说法 + 绝对日期）")
+    for said, resolved in RELATIVE_TIME:
+        both = sum(1 for t in entries if said in t and resolved in t)
+        dated = sum(1 for t in entries if resolved in t)
+        print(f"  {said!r:28s} -> {resolved}: 带日期的条目 {dated}，其中保留原说法 {both}")
+    with_cues = sum(1 for e in am.svc.store.list() if getattr(e, "cues", None))
+    print(f"  条目总数 {len(entries)}，带线索键 {with_cues}")
     am.close()
 
     # ---- 第 0 层报告

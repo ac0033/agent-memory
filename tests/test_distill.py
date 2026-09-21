@@ -426,3 +426,13 @@ def test_cues_extend_the_index_text_but_old_entries_index_exactly_as_before():
     cued = plain.model_copy(update={"cues": ["pet", "cat", "宠物"]})
     assert cued.index_text.endswith("pet cat 宠物")
     assert cued.index_text.startswith(plain.index_text)
+
+
+def test_prompt_keeps_the_users_relative_wording_and_appends_the_resolved_date():
+    """原则三（只增不减）：相对时间的原说法是证据，换算出的日期只是附在后面的注解。
+
+    第一版规则让蒸馏器用日期替换掉原说法；问"当时怎么说的"的题，答题器只能给出日期。"""
+    _, llm = _distill({"memories": []})
+    system = llm.calls[0]["system"]
+    assert "保留用户的原说法" in system
+    assert "不要用日期替换掉原说法" in system
