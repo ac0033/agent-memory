@@ -196,22 +196,26 @@ class V2ServiceMixin:
         return "\n".join(out)
 
     def recall(
-        self, query: str, scope: str, k: int = 5, track_retrieval: bool = False
+        self,
+        query: str,
+        scope: str,
+        k: int = 5,
+        track_retrieval: bool = False,
+        cut: bool = True,
     ) -> tuple[list, list[Bundle]]:
         """单一读路径（memory-v1 M1）：记忆路与原文路各取 k 个，归并成至多 k 束证据。
 
         零 LLM 调用。返回 (记忆路命中, 证据束)；search / context / 对外 Search 契约都走这里，
-        不存在第二条读路径。
+        不存在第二条读路径。cut=False 时不截到 k 束——供按会话打包的调用方（group_by_session）
+        把两路的全部命中都装进去。
         """
-        results = self.searcher.search(
-            query, scopes=[scope], k=k, track_retrieval=track_retrieval
-        )
+        results = self.searcher.search(query, scopes=[scope], k=k, track_retrieval=track_retrieval)
         raw_hits = []
         if self.raw_index.count() > 0:
-            raw_hits = self.raw_index.search(
-                query, self.embedder, k=k, scopes=[scope, "global"]
-            )
-        bundles = build_bundles(results, raw_hits, self.raw_index.session_records, k)
+            raw_hits = self.raw_index.search(query, self.embedder, k=k, scopes=[scope, "global"])
+        bundles = build_bundles(
+            results, raw_hits, self.raw_index.session_records, k if cut else None
+        )
         return results, bundles
 
     # ------------------------------------------------------------ P27 / P13 完整度与回读核验

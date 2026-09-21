@@ -280,22 +280,16 @@ def am_search(system: AgentMemorySystem, query: str) -> list[dict]:
 
     没有字符预算（契约按条数取 top_k），所以原话不截断——截了就少于朴素 RAG 给的。
     每条带 session_id 便于算证据召回。"""
-    from agent_memory.long_term.retrieve.recall import bundle_text
+    from agent_memory.long_term.retrieve.recall import group_by_session, session_item_text
 
     scope = f"repo:{SCOPE_TAG}"
     with native_lock:
-        _, bundles = system.svc.recall(query, scope, k=TOP_K)
-    items: list[dict] = []
-    for b in bundles:
-        if b.entry is not None:
-            sid = b.entry.evidence[0].session_id if b.entry.evidence else None
-            items.append({"id": b.entry.id, "kind": "memory", "session_id": sid,
-                          "content": bundle_text(b, excerpt_chars=None)})
-        else:
-            h = b.lines[0]
-            items.append({"id": f"raw:{h.session_id}:{h.line}", "kind": "raw", "session_id": h.session_id,
-                          "content": bundle_text(b, excerpt_chars=None)})
-    return items[:TOP_K]
+        _, bundles = system.svc.recall(query, scope, k=TOP_K, cut=False)
+    return [
+        {"id": f"{it.source}/{it.session_id}", "kind": "memory" if it.claims else "raw",
+         "session_id": it.session_id, "content": session_item_text(it)}
+        for it in group_by_session(bundles)[:TOP_K]
+    ]
 
 
 def rag_search(system: NaiveRAGSystem, query: str) -> list[dict]:
@@ -356,6 +350,11 @@ def run_one(q: dict, sys_name: str, ctx: dict, log) -> dict:
     row["evidence_hit"] = bool(answer_sids) and any(str(x.get("session_id")) in answer_sids for x in items)
     row["evidence_rank"] = next((i + 1 for i, x in enumerate(items) if str(x.get("session_id")) in answer_sids), None)
     row["items_head"] = [x["content"][:160] for x in items[:5]]
+    if ctx.get("payload_dir"):
+        # 整份载荷落盘：用来核验"记忆系统的载荷 ⊇ 朴素 RAG 的载荷"这条不变量，而不是靠猜
+        ctx["payload_dir"].mkdir(parents=True, exist_ok=True)
+        (ctx["payload_dir"] / f"{q['question_id']}.{sys_name}.json").write_text(
+            json.dumps(items, ensure_ascii=False), encoding="utf-8")
     memories = "\n".join(x["content"] for x in items) if items else "(no memories)"
     prompt = render_answer_prompt(q["question"], memories)
     row["prompt_chars"] = len(prompt)
@@ -537,7 +536,8 @@ def main() -> None:
         print(f"rejudged {n} rows with {judge_name}")
         return
     ctx = {"am_root": args.am_root.resolve(), "am_label": args.am_label, "embedder": embedder, "settings": settings,
-           "system_llm": system_llm, "answerer": answerer, "judge": judge, "judge_name": judge_name}
+           "system_llm": system_llm, "answerer": answerer, "judge": judge, "judge_name": judge_name,
+           "payload_dir": results.parent / "payloads"}
 
     bal0 = deepseek_balance(env)
     meta = {"run_id": args.run_id, "head": git_head(), "started": dt.datetime.now().isoformat(timespec="seconds"),

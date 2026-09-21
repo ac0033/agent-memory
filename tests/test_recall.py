@@ -162,3 +162,54 @@ def test_block_respects_budget_and_never_truncates_a_bundle():
     assert len(block) <= 900
     assert block.count("<memory") == block.count("</memory>") >= 1
     assert render_block([], 2000) == ""
+
+
+def test_without_a_budget_only_query_hit_lines_are_given_in_full():
+    """按条数取 top_k 的契约没有字符预算：原文路命中的行给全文（不少于只检索原文），
+    论断顺带引的上下文行限长（不靠多塞上下文取胜）。"""
+    long_hit, long_ctx = "命中" * 800, "上下文" * 800
+    sessions = {"s1": [raw("s1", 1, long_hit), raw("s1", 2, long_ctx, role="assistant")]}
+    b = build_bundles(
+        [hit(claim("c", "论断", "s1", 1, 2))], [sessions["s1"][0]], reader(sessions), k=5
+    )[0]
+    text = bundle_text(b, excerpt_chars=None)
+    assert long_hit in text
+    assert long_ctx not in text and len(text) < len(long_hit) + recall.CONTEXT_LINE_CHARS + 200
+
+
+def test_a_query_hit_line_is_never_dropped_when_the_excerpt_is_full():
+    """证据区间很宽、摘录已满时，原文路命中的行挤掉上下文行，而不是自己被丢掉。"""
+    sessions = {"s1": [raw("s1", i, f"闲聊第 {i} 行") for i in range(1, 30)]}
+    late_hit = raw("s1", 25, "第三个鱼缸：5 加仑斗鱼缸")
+    sessions["s1"][24] = late_hit
+    b = build_bundles(
+        [hit(claim("tanks", "用户养鱼", "s1", 1, 29))], [late_hit], reader(sessions), k=5
+    )[0]
+    assert any(h.line == 25 for h in b.lines)
+
+
+def test_session_packing_carries_every_raw_hit_and_every_claim():
+    """按条数限额的契约：论断不得挤占原文命中的名额。打包后两路的全部命中都在。"""
+    sessions = {f"s{i}": [raw(f"s{i}", 1, f"会话 {i} 的原话")] for i in range(30)}
+    mem = [hit(claim(f"m{i}", f"论断 {i}", f"s{i}", 1, 1)) for i in range(30)]
+    raw_hits = [raw(f"r{i}", 1, f"只在原文里的事实 {i}") for i in range(30)]
+    bundles = build_bundles(mem, raw_hits, reader(sessions), k=None)
+    items = recall.group_by_session(bundles)
+    payload = "\n".join(recall.session_item_text(it) for it in items)
+    assert all(h.content in payload for h in raw_hits)
+    assert all(f"论断 {i}" in payload for i in range(30))
+
+
+def test_session_packing_puts_a_sessions_claims_and_words_in_one_item():
+    sessions = {
+        "s1": [raw("s1", 1, "买了 20 加仑鱼缸"), raw("s1", 5, "又给朋友家孩子装了 1 加仑的")]
+    }
+    mem = [
+        hit(claim("t1", "用户有 20 加仑鱼缸", "s1", 1, 1)),
+        hit(claim("t2", "用户给朋友孩子装了小鱼缸", "s1", 5, 5)),
+    ]
+    items = recall.group_by_session(build_bundles(mem, [], reader(sessions), k=None))
+    assert len(items) == 1
+    text = recall.session_item_text(items[0])
+    assert text.index("20 加仑鱼缸") < text.index("买了 20 加仑鱼缸")  # 论断在前，原话在后
+    assert "1 加仑" in text
