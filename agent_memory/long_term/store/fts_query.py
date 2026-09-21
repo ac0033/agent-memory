@@ -79,3 +79,18 @@ def fuse_ranked_lists(rankings: list[list], rrf_k: int = RRF_K) -> list:
             seen.add(key)
             fused[key] = fused.get(key, 0.0) + 1.0 / (rrf_k + rank)
     return [key for key, _ in sorted(fused.items(), key=lambda kv: -kv[1])]
+
+
+def fts_or_query(query: str, max_terms: int = DEFAULT_MAX_TERMS) -> str | None:
+    """把整句短语和各词项用 OR 拼成**一个** FTS5 查询，交给 `bm25()` 一次排序。
+
+    为什么不再"每个词项各查一次、再按名次等权融合"：名次融合没有 IDF——问句里的
+    "with""that" 和 "guitar" 各出一个排名、权重一样，虚词命中的行会和真正相关的行平起平坐。
+    FTS5 的 bm25() 对 OR 查询按各短语的 IDF 加权求和，这才是标准 BM25 的口径
+    （朴素 RAG 基线用的就是它）。实测：改之前，朴素 RAG 取到的前 20 条原话只有 57% 也在
+    我们的原文路前 20 里。
+
+    查询短于 MIN_TERM_CHARS 时返回 None（trigram 不可能命中，由稠密路兜底）。
+    """
+    exprs = fts_expressions(query, max_terms)
+    return " OR ".join(exprs) if exprs else None

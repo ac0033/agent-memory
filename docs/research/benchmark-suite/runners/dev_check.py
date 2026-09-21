@@ -16,6 +16,7 @@ import argparse
 import collections
 import json
 import os
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -46,6 +47,15 @@ def main() -> None:
     ap.add_argument("--model", default="deepseek-v4.1-flash")
     ap.add_argument("--judge-model", default="glm-5.3-flash")
     ap.add_argument("--env-file", default=None)
+    ap.add_argument("--strip-notes", action="store_true",
+                    help="对照实验：去掉画像条目与各条里的 notes，只留原话（看注解是帮忙还是添乱）")
+    ap.add_argument("--flat", action="store_true",
+                    help="对照实验：不按片段打包，原文路命中逐条按名次给（与朴素 RAG 同形）")
+    ap.add_argument("--with-rag", action="store_true", help="同场让朴素 RAG 的载荷也答一遍")
+    ap.add_argument("--segment-gap", type=int, default=None,
+                    help="对照实验：覆盖片段打包的行距阈值（极大值 = 退回整场会话打包）")
+    ap.add_argument("--strip-protocol", action="store_true",
+                    help="对照实验：把载荷首条里的行为协议句子去掉再答题（只改 runner 里的副本，不改被测系统）")
     args = ap.parse_args()
 
     questions = json.loads(args.data.read_text(encoding="utf-8"))
@@ -80,6 +90,10 @@ def main() -> None:
     rag.setup(item, mode="manual")
     log(f"built: {add.get('entries_total')} entries, {add.get('add_seconds')}s")
 
+    if args.segment_gap is not None:
+        from agent_memory.long_term.retrieve import recall as recall_mod
+
+        recall_mod.SEGMENT_GAP = args.segment_gap
     out = A.OUT_ROOT / args.run_id
     out.mkdir(parents=True, exist_ok=True)
     scope = f"repo:{A.SCOPE_TAG}"
@@ -88,16 +102,31 @@ def main() -> None:
         with native_lock:
             items = am.svc.recall_items(q["question"], scope, k=args.top_k)
             rag_hits = rag.rag.search(q["question"], k=args.top_k)
+        if args.strip_protocol and items and items[0]["id"] == "header":
+            head = items[0]["content"]
+            cut_from, cut_to = head.find("When a question asks"), head.find("Recorded conversations")
+            if cut_from >= 0:
+                items[0] = {**items[0], "content": head[:cut_from] + (head[cut_to:] if cut_to >= 0 else "")}
+        if args.strip_notes:
+            items = [{**x, "content": x["content"].split("\nnotes:")[0]} for x in items if x["id"] != "profile"]
+        if args.flat:
+            with native_lock:
+                raw_only = am.svc.raw_index.search(q["question"], embedder, k=args.top_k, scopes=[scope, "global"])
+            items = [x for x in items if x["id"] in ("header", "profile")] + [
+                {"id": f"raw:{h.session_id}:{h.line}", "content": f"[{h.date}] {h.role}: {h.content}"} for h in raw_only]
         payload = "\n".join(x["content"] for x in items)
         rag_payload = "\n".join(h.chunk.text for h in rag_hits)
         low, rag_low = payload.lower(), rag_payload.lower()
         marks = q.get("evidence") or []
         rows.append({
             "question_id": q["question_id"], "question_type": q["question_type"], "question": q["question"],
-            "gold": q["answer"], "rubric": q.get("rubric"), "payload": payload,
+            "gold": q["answer"], "rubric": q.get("rubric"), "options": q.get("options"), "payload": payload,
+            "rag_payload": "\n".join(f"[{h.chunk.date}] {h.chunk.role}: {h.chunk.text}" for h in rag_hits),
             "missing": [m for m in marks if m not in low],
             "rag_missing": [m for m in marks if m not in rag_low],
-            "size_ratio": round(len(payload) / max(len(rag_payload), 1), 2)})
+            "size_ratio": round(len(payload) / max(len(rag_payload), 1), 2),
+            # 检索对等性：朴素 RAG 取到的原话里，有多少条也在我们的载荷里（不调 LLM）
+            "rag_overlap": round(sum(1 for h in rag_hits if h.chunk.text[:160] in payload) / max(len(rag_hits), 1), 2)})
     # ---- 写入质量（A 层，组件级）：相对时间是否"只增不减"——原说法还在，换算出的日期附在后面
     entries = [e.content.lower() + " " + (e.detail or "").lower() for e in am.svc.store.list()]
     print("\n== write check（相对时间：原说法 + 绝对日期）")
@@ -114,10 +143,11 @@ def main() -> None:
     for r in rows:
         by[r["question_type"]].append(r)
     print(f"\n== tier 0（证据到场 / 体量）  top_k={args.top_k}")
-    print(f"{'bucket':7s} n  am到场 rag到场  体量比")
+    print(f"{'bucket':7s} n  am到场 rag到场  体量比  与RAG原话重合")
     for b, g in by.items():
         print(f"{b:7s} {len(g):<2d} {sum(not r['missing'] for r in g):>5d} {sum(not r['rag_missing'] for r in g):>6d}"
-              f"  {sum(r['size_ratio'] for r in g) / len(g):>5.2f}")
+              f"  {sum(r['size_ratio'] for r in g) / len(g):>5.2f}  {sum(r['rag_overlap'] for r in g) / len(g):>8.0%}")
+    print(f"ALL     {len(rows):<2d} 与 RAG 原话重合 {sum(r['rag_overlap'] for r in rows) / len(rows):.0%}")
     for r in rows:
         if r["missing"]:
             print(f"  MISSING {r['question_id']}: {r['missing']}" + ("  (rag 也缺)" if r["rag_missing"] else "  (rag 有!)"))
@@ -128,6 +158,11 @@ def main() -> None:
         judge = A.CodeBuddyCLIClient("judge", args.judge_model)
 
         def solve(r: dict) -> None:
+            if r.get("options"):
+                r["answer"] = answerer.complete(A.render_mcq_prompt(r["question"], r["options"], r["payload"]))
+                m = re.search(r"\(([a-d])\)", r["answer"].lower())
+                r["passed"] = bool(m) and f"({m.group(1)})" == r["gold"]
+                return
             r["answer"] = answerer.complete(A.render_answer_prompt(r["question"], r["payload"]))
             if r["rubric"]:
                 r["passed"] = A.rubric_pass(r["rubric"], r["answer"])
@@ -136,6 +171,13 @@ def main() -> None:
 
         with ThreadPoolExecutor(max_workers=args.threads) as ex:
             list(ex.map(solve, rows))
+        if args.with_rag:
+            rag_rows = [{**r, "payload": r["rag_payload"]} for r in rows]
+            with ThreadPoolExecutor(max_workers=args.threads) as ex:
+                list(ex.map(solve, rag_rows))
+            print(f"\n== 朴素 RAG 同场答题: {sum(r['passed'] for r in rag_rows)}/{len(rag_rows)}")
+            for r, rr in zip(rows, rag_rows):
+                r["rag_passed"] = rr["passed"]
         print("\n== tier 1（答题）")
         for b, g in by.items():
             print(f"{b:7s} {sum(r['passed'] for r in g)}/{len(g)}")

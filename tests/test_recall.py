@@ -194,25 +194,38 @@ def test_session_packing_carries_every_raw_hit_and_every_claim():
     mem = [hit(claim(f"m{i}", f"论断 {i}", f"s{i}", 1, 1)) for i in range(30)]
     raw_hits = [raw(f"r{i}", 1, f"只在原文里的事实 {i}") for i in range(30)]
     bundles = build_bundles(mem, raw_hits, reader(sessions), k=None)
-    items = recall.group_by_session(bundles)
+    items = recall.group_into_segments(bundles)
     payload = "\n".join(recall.evidence_first_text(it) for it in items)
     assert all(h.content in payload for h in raw_hits)
     assert all(f"论断 {i}" in payload for i in range(30))
 
 
-def test_session_packing_puts_a_sessions_claims_and_words_in_one_item():
+def test_adjacent_hit_lines_form_one_segment_with_their_claims():
     sessions = {
-        "s1": [raw("s1", 1, "买了 20 加仑鱼缸"), raw("s1", 5, "又给朋友家孩子装了 1 加仑的")]
+        "s1": [raw("s1", 1, "买了 20 加仑鱼缸"), raw("s1", 2, "又给朋友家孩子装了 1 加仑的")]
     }
     mem = [
         hit(claim("t1", "用户有 20 加仑鱼缸", "s1", 1, 1)),
-        hit(claim("t2", "用户给朋友孩子装了小鱼缸", "s1", 5, 5)),
+        hit(claim("t2", "用户给朋友孩子装了小鱼缸", "s1", 2, 2)),
     ]
-    items = recall.group_by_session(build_bundles(mem, [], reader(sessions), k=None))
+    items = recall.group_into_segments(build_bundles(mem, [], reader(sessions), k=None))
     assert len(items) == 1
     text = recall.evidence_first_text(items[0])
     assert text.index("买了 20 加仑鱼缸") < text.index("用户有 20 加仑鱼缸")  # 原话在前，论断为注
     assert "1 加仑" in text
+
+
+def test_a_long_session_is_split_into_segments_ranked_by_relevance():
+    """长会话不能并成一大块：相隔很远的命中行各成片段，最相关的片段排最前，
+    而不是按时间顺序埋在一整场会话中间。"""
+    lines = [raw("s1", i, f"第 {i} 行闲聊") for i in range(1, 41)]
+    lines[29] = raw("s1", 30, "关键：我其实不喜欢法律主题的桌游")
+    sessions = {"s1": lines}
+    raw_hits = [lines[29], lines[2], lines[15]]  # 原文路名次：第 30 行最相关
+    items = recall.group_into_segments(build_bundles([], raw_hits, reader(sessions), k=None))
+    assert len(items) == 3
+    assert "不喜欢法律主题" in recall.evidence_first_text(items[0])
+    assert all(len(it.lines) == 1 for it in items)
 
 
 # ---- 呈现层：原话在前、论断为注；体量对齐
@@ -221,7 +234,7 @@ def test_session_packing_puts_a_sessions_claims_and_words_in_one_item():
 def test_words_come_before_notes_and_notes_are_labelled_as_derived():
     sessions = {"s1": [raw("s1", 1, "我把 5 加仑的缸留给了斗鱼，又买了 20 加仑的")]}
     wrong = claim("tank", "20 加仑缸由 5 加仑缸升级而来", "s1", 1, 1)
-    items = recall.group_by_session(
+    items = recall.group_into_segments(
         build_bundles([hit(wrong)], [sessions["s1"][0]], reader(sessions), k=None)
     )
     text = recall.evidence_first_text(items[0])

@@ -32,6 +32,8 @@ OUT = REPO / "data" / "external" / "personamem_sample.json"
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--contexts", type=int, default=4)
+    ap.add_argument("--skip", type=int, default=0, help="跳过题量最大的前 N 份历史（留给验收用的不拿来诊断）")
+    ap.add_argument("--out", type=Path, default=OUT)
     args = ap.parse_args()
 
     csv.field_size_limit(10**9)
@@ -44,7 +46,7 @@ def main() -> None:
         by_ctx[q["shared_context_id"]].append(q)
 
     out = []
-    for cid, group in sorted(by_ctx.items(), key=lambda kv: (-len(kv[1]), kv[0]))[: args.contexts]:
+    for cid, group in sorted(by_ctx.items(), key=lambda kv: (-len(kv[1]), kv[0]))[args.skip : args.skip + args.contexts]:
         ctx = contexts[cid]
         end = len(ctx) - 1
         sessions: list[list[dict]] = []
@@ -76,9 +78,9 @@ def main() -> None:
                 "haystack_session_ids": ids, "haystack_dates": dates, "haystack_sessions": sessions,
                 "answer_session_ids": [],
             })
-    OUT.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    args.out.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
     n = collections.Counter(q["haystack_session_ids"][0] for q in out)
-    print(f"{len(out)} questions over {len(n)} histories {dict(n)} -> {OUT}")
+    print(f"{len(out)} questions over {len(n)} histories {dict(n)} -> {args.out}")
 
 
 if __name__ == "__main__":

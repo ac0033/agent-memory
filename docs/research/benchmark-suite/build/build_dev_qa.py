@@ -17,6 +17,7 @@
 | agg | K6 | 散在多场会话的实例：计数、求和、列举；陷阱按"记录数≠实例数"的成因埋 |
 | pref | K11 | 开放式求助，答案应体现用户说过的偏好与约束 |
 | abs | K12 | 前提不成立的近似题，应当说没有依据 |
+| use | K11 | 选择题：用户随口说一句话，四个候选回复里一个用对了记得的事实、一个是不提任何记忆的客套话、两个记错了。考的是回复时敢不敢、会不会用记忆——过度保守的系统会选客套话 |
 
 题目与会话全部手写，不用 LLM 生成：金标逐字可控。
 
@@ -26,6 +27,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -473,8 +475,73 @@ EVIDENCE: dict[str, list[str]] = {
 }
 
 
+# use 桶（K11）：(id, 用户这句话, 选项, 正确选项字母)。正确项用对了记得的事实；
+# 每题都有一个"不提任何记忆的客套话"选项——它从不算错得离谱，所以过度保守的系统会被它吸走。
+USE_QUESTIONS: list[tuple[str, str, list[str], str]] = [
+    ("use-1", "I'm cooking dinner for a couple of friends tonight.",
+     ["(a) Sounds fun! Since you love mushrooms, a creamy mushroom risotto would be a crowd-pleaser.",
+      "(b) Sounds fun! Cooking for friends is always a nice way to spend an evening. What are you planning to make?",
+      "(c) Sounds fun! Since you're vegetarian and not a fan of mushrooms, maybe a halloumi and chickpea traybake with a tahini dressing?",
+      "(d) Sounds fun! Since you eat mostly fish these days, a baked salmon with lemon would be easy for a group."], "(c)"),
+    ("use-2", "I just got back from a run.",
+     ["(a) Nice! An evening run is a great way to unwind after work. How did the knee-free, injury-free legs feel?",
+      "(b) Nice! Another morning run in the bank. How is the left knee holding up now that you're around 22 miles a week?",
+      "(c) Nice! Running is such a good habit to keep up. How did it go?",
+      "(d) Nice! You're up to 40 miles a week now, right? How is the right ankle holding up?"], "(b)"),
+    ("use-3", "I need to jot down some ideas from a workshop I attended today.",
+     ["(a) Good idea to capture them while they're fresh. Where do you usually keep notes like that?",
+      "(b) Good idea to capture them while they're fresh. Your paper planner is probably the easiest place, since that's what has always worked for you.",
+      "(c) Good idea to capture them while they're fresh. A new entry in your Notion notes database would keep them with everything else.",
+      "(d) Good idea to capture them while they're fresh. You could add them to the Evernote notebooks you rely on."], "(c)"),
+    ("use-4", "I have a free evening and feel like starting a new novel.",
+     ["(a) Lovely. Since you're into fast-paced thrillers, the new Lee Child might be just the thing.",
+      "(b) Lovely. A free evening with a new book is hard to beat. What kind of thing are you in the mood for?",
+      "(c) Lovely. Since you haven't read Piranesi yet, that would be a great short one to begin with.",
+      "(d) Lovely. Given your taste for literary and science fiction, A Memory Called Empire is still on your list, and it isn't a thriller."], "(d)"),
+    ("use-5", "Rent is due again next week.",
+     ["(a) Time flies. That's the $1,525 since the lease renewal, so worth checking the rent category in YNAB is topped up.",
+      "(b) Time flies. That's the usual $1,450, so nothing new to plan for.",
+      "(c) Time flies. It's always good to have it set aside in advance. Are you all set?",
+      "(d) Time flies. With the rent having dropped to $1,375 this year, it should be a bit easier on the budget."], "(a)"),
+    ("use-6", "My daughter has her music lesson this afternoon.",
+     ["(a) Hope it goes well! How is she getting on with Mrs. Alvarez these days?",
+      "(b) Hope it goes well! How is she settling in with Mr. Chen since Mrs. Alvarez retired?",
+      "(c) Hope it goes well! Music lessons are such a great thing for kids. Is she enjoying them?",
+      "(d) Hope it goes well! How are the violin lessons with Mr. Chen coming along?"], "(b)"),
+    ("use-7", "I'm putting together a snack bag for a long hike.",
+     ["(a) Good plan. Just keep an eye on the trail mix labels, given your cashew allergy.",
+      "(b) Good plan. A mix with plenty of cashews is a great energy-dense option for you.",
+      "(c) Good plan. Snacks make a long hike so much more enjoyable. What are you thinking of packing?",
+      "(d) Good plan. Just keep an eye on the labels, given your peanut allergy."], "(a)"),
+    ("use-8", "Thinking about what to do with the pets while I'm in Lisbon.",
+     ["(a) Worth sorting out early. Someone will need to look after Miso, Biscuit and the foster kitten for that week.",
+      "(b) Worth sorting out early. Pets can make travel planning a little more complicated. What options are you considering?",
+      "(c) Worth sorting out early. With just Miso to think about, a neighbour dropping in once a day might be enough.",
+      "(d) Worth sorting out early. Miso could manage with drop-in visits, but Biscuit will need a sitter or boarding."], "(d)"),
+]
+
+
+def merge_sessions(sessions: list, size: int) -> list:
+    """长会话变体：把相邻的 size 场会话并成一场（日期取第一场的）。
+
+    内容一字不变，只是会话边界变粗——用来检验"按会话组织载荷"的机制在长会话下会不会把
+    最相关的那句埋进一大块里（PersonaMem 的历史就是每份 5 场、每场 30 多条消息）。
+    并场之后"昨天""上周六"相对的是块首日期，tmp 桶的金标不再成立，所以该变体不含 tmp 桶。
+    """
+    merged = []
+    for i in range(0, len(sessions), size):
+        block = sessions[i : i + size]
+        merged.append((f"m{i // size + 1:02d}", block[0][1], [t for s in block for t in s[2]]))
+    return merged
+
+
 def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--merge", type=int, default=0, help="长会话变体：每 N 场并成一场（0 = 不并）")
+    args = ap.parse_args()
     sessions = sorted(SESSIONS + FILLERS, key=lambda s: s[1])
+    if args.merge:
+        sessions = merge_sessions(sessions, args.merge)
     evidence_ids = [s[0] for s in SESSIONS]
     out = []
     for qid, bucket, question, gold, rubric in QUESTIONS:
@@ -494,10 +561,23 @@ def main() -> None:
             # 共享历史下不逐题标证据会话；证据召回在这套题上不是被测量
             "answer_session_ids": evidence_ids,
         })
+    for qid, question, options, answer in USE_QUESTIONS:
+        out.append({
+            "question_id": qid, "question_type": "use", "question": question, "options": options,
+            "answer": answer, "rubric": None, "evidence": [], "question_date": QUESTION_DATE,
+            "haystack_session_ids": [s[0] for s in sessions],
+            "haystack_dates": [s[1] for s in sessions],
+            "haystack_sessions": [[{"role": r, "content": c} for r, c in s[2]] for s in sessions],
+            "answer_session_ids": evidence_ids,
+        })
+    target = OUT
+    if args.merge:
+        out = [q for q in out if q["question_type"] != "tmp"]
+        target = OUT.with_name(f"dev_qa_v1_merge{args.merge}.json")
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+    target.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     n_msgs = sum(len(s[2]) for s in sessions)
-    print(f"{len(out)} questions, {len(sessions)} sessions, {n_msgs} messages -> {OUT}")
+    print(f"{len(out)} questions, {len(sessions)} sessions, {n_msgs} messages -> {target}")
 
 
 if __name__ == "__main__":

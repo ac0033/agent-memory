@@ -160,14 +160,20 @@ def build_bundles(
     return bundles if k is None else bundles[:k]
 
 
+# 同一场会话里，行号相差不超过这个数的命中行算同一个片段（一问一答加上紧接着的追问）
+SEGMENT_GAP = 2
+
+
 @dataclass
 class SessionItem:
-    """同一场会话的证据束打包成一条：该会话的论断 + 命中的原话（按行序）。
+    """载荷里的一条：同一场会话中**相邻**的命中行聚成的片段 + 落在这个片段上的论断。
 
-    按条数限额的契约（top_k 条）下，论断和原文命中各占一条就会互相挤名额——实测 100 个名额
-    被 77 条论断占走，原文路第 50 名以后的命中进不了载荷，载荷反而少于只检索原文。
-    按会话打包后，两路的全部命中都装得下；一场会话的论断与原话放在一起，也正是
-    "唤起完整情节"（K7）的单元。只是确定性的归并，不产出任何新内容。
+    为什么要打包：按条数限额的契约（top_k 条）下，论断和原文命中各占一条会互相挤名额。
+    为什么按片段而不是按整场会话：会话很长时（一场几十条消息），整场打包会把二十条命中并成
+    寥寥几大块、块内按时间排，最相关的那句被埋在几千字中间，相关度排序就丢了
+    （PersonaMem 验收：每份历史 5 场长会话，朴素 RAG 53/60，整场打包 45/60）。
+    片段是事件边界内的一小段经过，也更接近"唤起完整情节"（K7）要的单元；会话短时两者等价。
+    只是确定性的归并，不产出任何新内容。
     """
 
     source: str
@@ -179,41 +185,57 @@ class SessionItem:
     score: float
 
 
-def group_by_session(bundles: list[Bundle]) -> list[SessionItem]:
-    items: dict[tuple[str, str], SessionItem] = {}
-    loose: list[SessionItem] = []
-    for b in bundles:
-        if b.lines:
-            key = (b.lines[0].source, b.lines[0].session_id)
-        elif b.entry is not None and b.entry.evidence:
-            key = (b.entry.evidence[0].source, b.entry.evidence[0].session_id)
+def _display_lines(b: Bundle) -> list[RawHit]:
+    """这一束要展示的原话行。体量纪律（按论断执行）：有原文路命中的行，就只带命中行（全文）；
+    一行命中都没有的论断只带一行限长原话——与论断字面重合度最高的那一行（宽证据区间的第一行
+    往往是寒暄），让论断不至于裸奔。"""
+    hits = [h for h in b.lines if h.line in b.hit_lines]
+    if not hits and b.lines and b.entry is not None:
+        hits = [max(b.lines, key=lambda h: _overlap(b.entry.content, h.content))]
+    return hits
+
+
+def group_into_segments(bundles: list[Bundle]) -> list[SessionItem]:
+    """把证据束归并成片段条目，按片段里最好的那一束的名次排序。"""
+    shown = [(b, _display_lines(b)) for b in bundles]
+    by_session: dict[tuple[str, str], dict[int, RawHit]] = {}
+    for _, lines in shown:
+        for h in lines:
+            by_session.setdefault((h.source, h.session_id), {}).setdefault(h.line, h)
+
+    # 每场会话里按行号切片段：相邻两行行号差 > SEGMENT_GAP 就断开
+    segment_of: dict[tuple[str, str, int], SessionItem] = {}
+    items: list[SessionItem] = []
+    for (source, session_id), by_line in by_session.items():
+        current: SessionItem | None = None
+        last = None
+        for line in sorted(by_line):
+            h = by_line[line]
+            if current is None or line - last > SEGMENT_GAP:
+                current = SessionItem(source, session_id, h.date, [], [], set(), 0.0)
+                items.append(current)
+            current.lines.append(h)
+            segment_of[(source, session_id, line)] = current
+            last = line
+
+    for b, lines in shown:
+        if lines:
+            it = segment_of[(lines[0].source, lines[0].session_id, lines[0].line)]
+        elif b.entry is not None:
+            # 没有可展示原话的论断（手工写入的画像、证据已不在归档里）：自成一条
+            ev = b.entry.evidence[0] if b.entry.evidence else None
+            source, session_id = (ev.source, ev.session_id) if ev else ("", b.entry.id)
+            it = SessionItem(source, session_id, b.date, [], [], set(), 0.0)
+            items.append(it)
         else:
-            # 没有证据指针的论断（手工写入的画像等）：自成一条
-            loose.append(SessionItem("", b.entry.id, b.date, [b.entry], [], set(), b.score))
             continue
-        it = items.get(key)
-        if it is None:
-            it = items[key] = SessionItem(key[0], key[1], b.date, [], [], set(), 0.0)
-        # 会话的名次取它最好的那一束，不累加：长会话不该因为命中行多就排到前面
+        # 片段的名次取它最好的那一束，不累加：命中行多不该把片段顶到前面
         it.score = max(it.score, b.score)
         if b.entry is not None:
             it.claims.append(b.entry)
-        # 体量纪律（按论断执行）：这一束里有原文路命中的行，就只带命中行（全文）；
-        # 一行命中都没有的论断只带一行限长原话，让论断不至于裸奔。
-        # 否则载荷会涨到只检索原文的两倍（实测 17 万对 8 万字符）——靠多塞上下文赢不算赢
-        hits = [h for h in b.lines if h.line in b.hit_lines]
-        if not hits and b.lines and b.entry is not None:
-            # 宽证据区间的第一行往往是寒暄：带与论断字面重合度最高的那一行
-            hits = [max(b.lines, key=lambda h: _overlap(b.entry.content, h.content))]
-        for h in hits:
-            if all(x.line != h.line for x in it.lines):
-                it.lines.append(h)
-        it.hit_lines |= b.hit_lines
-    out = [*items.values(), *loose]
-    for it in out:
-        it.lines.sort(key=lambda h: h.line)
-    out.sort(key=lambda it: -it.score)
-    return out
+        it.hit_lines |= {h.line for h in lines if h.line in b.hit_lines}
+    items.sort(key=lambda it: -it.score)
+    return items
 
 
 def _history_note(entry: MemoryEntry) -> str:
@@ -340,7 +362,7 @@ def pack(bundles: list[Bundle], raw_hits: list[RawHit], k: int) -> list[SessionI
     """
     raw_chars = sum(len(h.content) for h in raw_hits[:k])
     if raw_chars == 0:
-        return group_by_session(bundles)[:k]
+        return group_into_segments(bundles)[:k]
     allowance = max(int(raw_chars * ANNOTATION_ALLOWANCE), MIN_ALLOWANCE_CHARS)
     used = 0
     kept: list[Bundle] = []
@@ -360,7 +382,7 @@ def pack(bundles: list[Bundle], raw_hits: list[RawHit], k: int) -> list[SessionI
             # 论断放不下：只丢注解，命中行照留
             lines = [h for h in b.lines if h.line in b.hit_lines]
             kept.append(Bundle(None, lines, b.score, None, b.raw_rank, set(b.hit_lines)))
-    return group_by_session(kept)
+    return group_into_segments(kept)
 
 
 def header_text(first_date: str | None, last_date: str | None) -> str:
@@ -390,8 +412,11 @@ def header_text(first_date: str | None, last_date: str | None) -> str:
 
 
 # 常驻画像（K11，框架 P31）：长期稳定的身份性事实与偏好不该取决于这一次的查询词撞没撞上。
-# 本次检索命中的画像排前面，其余按置信度补足；有字符上限，超出的整条不放。
+# 按与本次查询的相关度排（调用方给出加深检索后的整条名次表），没上榜的排最后；
+# 有字符上限，超出的整条不放。
 PROFILE_CHARS = 1500
+# 给画像排序时记忆路检索取多深：要盖得住全部画像条目，又只是一次本地检索
+PROFILE_RANK_DEPTH = 200
 
 
 def profile_text(profile_entries: list[MemoryEntry], ranked_ids: list[str]) -> str | None:

@@ -28,6 +28,7 @@ from agent_memory.long_term.ingest.gate import gate_candidates
 from agent_memory.long_term.ingest.redact import redact
 from agent_memory.long_term.retrieve import surface as surface_mod
 from agent_memory.long_term.retrieve.recall import (
+    PROFILE_RANK_DEPTH,
     Bundle,
     build_bundles,
     evidence_first_text,
@@ -214,7 +215,7 @@ class V2ServiceMixin:
         """单一读路径（memory-v1 M1）：记忆路与原文路各取 k 个，归并成至多 k 束证据。
 
         零 LLM 调用。返回 (记忆路命中, 证据束)；search / context / 对外 Search 契约都走这里，
-        不存在第二条读路径。cut=False 时不截到 k 束——供按会话打包的调用方（group_by_session）
+        不存在第二条读路径。cut=False 时不截到 k 束——供按会话打包的调用方（group_into_segments）
         把两路的全部命中都装进去。
         """
         results = self.searcher.search(query, scopes=[scope], k=k, track_retrieval=track_retrieval)
@@ -229,7 +230,11 @@ class V2ServiceMixin:
     def recall_items(self, query: str, scope: str, k: int) -> list[dict[str, Any]]:
         """按条数限额的 Search 契约用的载荷：证据按会话打包、原话在前论断为注、体量对齐到
         只检索原文、首条附时间锚点。与 search 同走 recall，零 LLM。"""
-        results = self.searcher.search(query, scopes=[scope], k=k)
+        # 记忆路检索加深一次、前 k 名进证据束，整条名次表用来给常驻画像排序：
+        # 画像条目一多，字符上限就得截断——按库里的任意顺序截，会把正好相关的那条截掉
+        # （验证集：问"怎么攒钱"，画像里的"用 YNAB、注重预算"没进载荷）
+        deep = self.searcher.search(query, scopes=[scope], k=max(k, PROFILE_RANK_DEPTH))
+        results = deep[:k]
         raw_hits = []
         if self.raw_index.count() > 0:
             raw_hits = self.raw_index.search(query, self.embedder, k=k, scopes=[scope, "global"])
@@ -237,7 +242,7 @@ class V2ServiceMixin:
         out: list[dict[str, Any]] = []
         head = header_text(*self.raw_index.date_span([scope, "global"]))
         out.append({"id": "header", "kind": "meta", "session_id": None, "content": head})
-        profile = profile_text(_profile_entries(self.store, scope), [r.entry.id for r in results])
+        profile = profile_text(_profile_entries(self.store, scope), [r.entry.id for r in deep])
         if profile:
             out.append({"id": "profile", "kind": "memory", "session_id": None, "content": profile})
         shown = {line[2:] for line in (profile or "").splitlines()[1:]}
@@ -254,7 +259,18 @@ class V2ServiceMixin:
                     "content": evidence_first_text(it),
                 }
             )
-        return out[:k]
+        if len(out) > k:
+            # 条数上限下也不丢证据：把名次最低的几条并进最后一个名额，而不是截掉
+            tail = out[k - 1 :]
+            out = out[: k - 1] + [
+                {
+                    "id": tail[0]["id"],
+                    "kind": tail[0]["kind"],
+                    "session_id": tail[0]["session_id"],
+                    "content": "\n".join(x["content"] for x in tail),
+                }
+            ]
+        return out
 
     # ------------------------------------------------------------ P27 / P13 完整度与回读核验
 
