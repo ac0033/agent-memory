@@ -276,34 +276,25 @@ def am_add_all(system: AgentMemorySystem, item: dict, log) -> dict:
 
 
 def am_search(system: AgentMemorySystem, query: str) -> list[dict]:
-    """Search 契约：记忆条目在前、原文归档命中补足，最多 TOP_K 条。每条带 session_id 便于算证据召回。"""
+    """Search 契约：走服务的单一读路径 recall（memory-v1 M1），每束证据一条。
+
+    没有字符预算（契约按条数取 top_k），所以原话不截断——截了就少于朴素 RAG 给的。
+    每条带 session_id 便于算证据召回。"""
+    from agent_memory.long_term.retrieve.recall import bundle_text
+
     scope = f"repo:{SCOPE_TAG}"
+    with native_lock:
+        _, bundles = system.svc.recall(query, scope, k=TOP_K)
     items: list[dict] = []
-    seen: set[str] = set()
-    with native_lock:
-        r = system.svc.search(query, scope=scope, k=MEM_K, acknowledge_pending=True)
-    for h in r.get("hits") or []:
-        sid = None
-        try:
-            e = system.svc.store.get(h["id"])
-            sid = e.evidence[0].session_id if e.evidence else None
-            date = (e.valid_from or e.last_verified).isoformat()[:10] if getattr(e, "valid_from", None) or e.last_verified else ""
-        except Exception:  # noqa: BLE001
-            date = str(h.get("last_verified", ""))[:10]
-        content = h["content"] + (f" {h['detail']}" if h.get("detail") else "")
-        items.append({"id": h["id"], "kind": "memory", "session_id": sid, "content": f"[{date}] {content}"})
-        seen.add(f"mem:{h['id']}")
-    with native_lock:
-        raw = system.svc.archive_search(query, scope=scope, k=TOP_K)
-    for h in raw.get("hits") or []:
-        key = f"raw:{h['session_id']}:{h['line']}"
-        if key in seen:
-            continue
-        seen.add(key)
-        items.append({"id": key, "kind": "raw", "session_id": h["session_id"],
-                      "content": f"[{h.get('date') or ''}] {h.get('role', '')}: {h['content']}"})
-        if len(items) >= TOP_K:
-            break
+    for b in bundles:
+        if b.entry is not None:
+            sid = b.entry.evidence[0].session_id if b.entry.evidence else None
+            items.append({"id": b.entry.id, "kind": "memory", "session_id": sid,
+                          "content": bundle_text(b, excerpt_chars=None)})
+        else:
+            h = b.lines[0]
+            items.append({"id": f"raw:{h.session_id}:{h.line}", "kind": "raw", "session_id": h.session_id,
+                          "content": bundle_text(b, excerpt_chars=None)})
     return items[:TOP_K]
 
 

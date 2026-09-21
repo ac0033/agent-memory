@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from types import SimpleNamespace
 
 import pytest
 
@@ -180,8 +179,7 @@ def test_raw_index_rebuild_matches(tmp_path, mk_service, fake_embedder):
         idx.close()
 
 
-def test_search_appends_raw_evidence_for_gist_memory(mk_service):
-    svc = mk_service()
+def _archive_weekly_rules(svc):
     svc.archive_records(
         [
             {
@@ -192,40 +190,36 @@ def test_search_appends_raw_evidence_for_gist_memory(mk_service):
         source="eval",
         session_id="s1",
     )
-    e = make_entry(
-        "weekly-rules", "用户定了周报规则（端口等细节见原文）。", memory_type="procedural"
-    )
+
+
+def test_search_delivers_the_claim_together_with_its_verbatim_evidence(mk_service):
+    """memory-v1 M1：论断和它的原话同束到场，不需要任何触发条件。
+
+    这条记忆自评 complete——v0.2 的 P23 回退在这种情况下一行原文都不给，
+    蒸馏磨掉的细节（文件名、编码）答题器就拿不到了。"""
+    svc = mk_service()
+    _archive_weekly_rules(svc)
+    e = make_entry("weekly-rules", "用户定了周报规则。", memory_type="procedural")
     e = e.model_copy(
         update={
-            "completeness": "gist",
+            "completeness": "complete",
             "evidence": [EvidenceRef(session_id="s1", source="eval", line_range=(1, 1))],
         }
     )
     svc.writer.create(e)
-    out = svc.search("周报端口规则", scope="global")
-    assert "<raw_evidence>" in out["block"] and out["archive_hits"]
+    out = svc.search("周报规则", scope="global")
+    assert "用户定了周报规则" in out["block"]
+    assert "weekly_YYYYMMDD.csv" in out["block"] and "UTF-8-BOM" in out["block"]
+    assert out["archive_hits"]
 
 
-def test_raw_fallback_only_checks_top_two_hits(mk_service):
+def test_search_returns_raw_evidence_even_when_nothing_was_distilled(mk_service):
+    """蒸馏漏掉的事实由纯原文束补上：漏抽的代价是少一个键，不是丢一个事实。"""
     svc = mk_service()
-    svc.archive_records(
-        [{"role": "user", "content": "周报规则：文件名 weekly_YYYYMMDD.csv，编码 UTF-8-BOM"}],
-        source="eval",
-        session_id="s1",
-    )
-    gist = make_entry("weekly-rules", "用户定了周报规则。", memory_type="procedural")
-    gist = gist.model_copy(
-        update={
-            "completeness": "gist",
-            "evidence": [EvidenceRef(session_id="s1", source="eval", line_range=(1, 1))],
-        }
-    )
-    ranked = [
-        SimpleNamespace(entry=e)
-        for e in (make_entry("m1", "完整记忆一"), make_entry("m2", "完整记忆二"), gist)
-    ]
-    assert svc._raw_fallback("周报规则", ranked) == []  # 排第三：不回退
-    assert svc._raw_fallback("周报规则", [ranked[2], *ranked[:2]])  # 排第一：回退
+    _archive_weekly_rules(svc)
+    out = svc.search("周报规则", scope="global")
+    assert out["hits"] == []
+    assert "weekly_YYYYMMDD.csv" in out["block"]
 
 
 # ---------------------------------------------------------------- P27 / P13

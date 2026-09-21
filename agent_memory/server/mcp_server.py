@@ -69,14 +69,14 @@ from agent_memory.long_term.ingest.review_queue import (
 )
 from agent_memory.long_term.retrieve.embedder import get_embedder
 from agent_memory.long_term.retrieve.hybrid import HybridSearcher
-from agent_memory.long_term.retrieve.inject import render_recall_block
+from agent_memory.long_term.retrieve.recall import render_block as render_bundles
 from agent_memory.long_term.retrieve.resident import build_system_context
 from agent_memory.long_term.store.coordinator import MemoryWriter
 from agent_memory.long_term.store.index_db import IndexDB
 from agent_memory.long_term.store.markdown_store import MarkdownStore, MemoryStoreError
 from agent_memory.long_term.store.raw_index import RawIndex, session_meta_path
 from agent_memory.models import MemoryEntry, is_valid_scope, normalize_scope, validate_entry_id
-from agent_memory.server.service_v2 import V2ServiceMixin, render_raw_hits
+from agent_memory.server.service_v2 import V2ServiceMixin
 from agent_memory.short_term.adapter import detect_adapter, get_adapter
 from agent_memory.working.models import TodoItem, WorkingMemory
 from agent_memory.working.render import is_stale, render_working_memory_block
@@ -250,13 +250,11 @@ class MemoryService(V2ServiceMixin):
         pending_count, blocked = self._review_gate_block(acknowledge_pending)
         if blocked:
             return blocked
-        results = self.searcher.search(query, scopes=[scope], k=k, track_retrieval=True)
-        block = render_recall_block(results, self.settings.recall_budget_chars)
-        # v0.2 P23：命中"只有要点 / 核验不一致"的记忆时，附上它们引用的原文片段
-        archive_hits = self._raw_fallback(query, results)
-        raw_block = render_raw_hits(archive_hits, title="raw_evidence")
-        if raw_block:
-            block = f"{block}\n{raw_block}" if block else raw_block
+        # 单一读路径（memory-v1 M1）：记忆命中与原文命中归并成证据束，论断和它的原话一起到。
+        # 取代了 v0.2 的 P23 启发式原文回退——原话不再需要触发条件
+        results, bundles = self.recall(query, scope, k=k, track_retrieval=True)
+        block = render_bundles(bundles, self.settings.recall_budget_chars)
+        archive_hits = [h for b in bundles for h in b.lines]
         hits = [
             {
                 "id": r.entry.id,

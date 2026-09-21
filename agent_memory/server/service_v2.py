@@ -27,6 +27,7 @@ from agent_memory.long_term.ingest.annotate import annotate_entries
 from agent_memory.long_term.ingest.gate import gate_candidates
 from agent_memory.long_term.ingest.redact import redact
 from agent_memory.long_term.retrieve import surface as surface_mod
+from agent_memory.long_term.retrieve.recall import Bundle, build_bundles
 from agent_memory.long_term.store.raw_index import read_session_meta
 from agent_memory.models import EvidenceRef, MemoryEntry, normalize_entry_id
 from agent_memory.working.models import SubTask, TodoItem, WorkingMemory
@@ -194,31 +195,24 @@ class V2ServiceMixin:
             out.append(f"{r.get('role')}: {r.get('content')}")
         return "\n".join(out)
 
-    def _raw_fallback(self, query: str, results) -> list:
-        """P23 原文回退：排在前两位的命中里有"只有要点 / 核验不一致"的记忆时，
-        到它们引用的原文会话里再查一次。
+    def recall(
+        self, query: str, scope: str, k: int = 5, track_retrieval: bool = False
+    ) -> tuple[list, list[Bundle]]:
+        """单一读路径（memory-v1 M1）：记忆路与原文路各取 k 个，归并成至多 k 束证据。
 
-        v0.2.2 起只看前两位：v0.2 对全部命中都回退，评测里不需要回溯的用例有 5/8 也附上了原文，
-        多为排在后面、被标了 gist 的背景记忆；它们与问题关系弱，附原文只增加 token。"""
-        if self.raw_index.count() == 0:
-            return []
-        hits = []
-        seen = set()
-        for r in results[:2]:
-            e = r.entry
-            if e.completeness != "gist" and e.verify_flag != "mismatch":
-                continue
-            for ev in e.evidence[:1]:
-                for h in self.raw_index.search(
-                    query + "\n" + e.content, self.embedder, k=2, session_id=ev.session_id
-                ):
-                    key = (h.source, h.session_id, h.line)
-                    if key not in seen:
-                        seen.add(key)
-                        hits.append(h)
-            if len(hits) >= 4:
-                break
-        return hits
+        零 LLM 调用。返回 (记忆路命中, 证据束)；search / context / 对外 Search 契约都走这里，
+        不存在第二条读路径。
+        """
+        results = self.searcher.search(
+            query, scopes=[scope], k=k, track_retrieval=track_retrieval
+        )
+        raw_hits = []
+        if self.raw_index.count() > 0:
+            raw_hits = self.raw_index.search(
+                query, self.embedder, k=k, scopes=[scope, "global"]
+            )
+        bundles = build_bundles(results, raw_hits, self.raw_index.session_records, k)
+        return results, bundles
 
     # ------------------------------------------------------------ P27 / P13 完整度与回读核验
 
