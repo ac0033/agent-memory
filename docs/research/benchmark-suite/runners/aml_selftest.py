@@ -346,13 +346,16 @@ def run_one(q: dict, sys_name: str, ctx: dict, log) -> dict:
     sig = (sys_name, hashlib.sha256(json.dumps(
         [[s["session_id"], s["date"], s["messages"]] for s in item["history"]["sessions"]],
         ensure_ascii=False).encode("utf-8")).hexdigest())
-    # 按系统名各留一份：任务是"逐题 × 各系统"交错跑的，共用一格会来回重建
-    # 多线程（--jobs > 1）时不复用：另一个线程可能正用着那套系统，换签名时 close 它会出事
-    cached = ctx.setdefault("system_cache", {}).setdefault(sys_name, {}) if ctx.get("reuse_systems") else {}
+    # 按（系统名, 历史签名）各留一份：抽样会把不同历史的题交错排，只留一格就会来回重建。
+    # 多线程（--jobs > 1）时不复用：另一个线程可能正用着那套系统
+    pool = ctx.setdefault("system_cache", {})
+    cached = pool.setdefault(sig, {}) if ctx.get("reuse_systems") else {}
     if cached.get("sig") != sig:
-        if cached.get("system") is not None and hasattr(cached["system"], "close"):
-            cached["system"].close()
-        cached.clear()
+        while ctx.get("reuse_systems") and len(pool) > 8:  # 留得太多时关掉最早建的那份
+            old_sig = next(k for k in pool if k != sig)
+            old_system = pool.pop(old_sig).get("system")
+            if old_system is not None and hasattr(old_system, "close"):
+                old_system.close()
         if sys_name == "am":
             system = AgentMemorySystem(ctx["am_root"], ctx["am_label"], ctx["embedder"], ctx["settings"], ctx["system_llm"])
             system.setup(item, mode="manual")
