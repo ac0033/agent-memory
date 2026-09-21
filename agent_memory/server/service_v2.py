@@ -33,7 +33,9 @@ from agent_memory.long_term.retrieve.recall import (
     evidence_first_text,
     header_text,
     pack,
+    profile_text,
 )
+from agent_memory.long_term.retrieve.resident import _profile_entries
 from agent_memory.long_term.store.raw_index import read_session_meta
 from agent_memory.models import EvidenceRef, MemoryEntry, normalize_entry_id
 from agent_memory.working.models import SubTask, TodoItem, WorkingMemory
@@ -235,6 +237,14 @@ class V2ServiceMixin:
         out: list[dict[str, Any]] = []
         head = header_text(*self.raw_index.date_span([scope, "global"]))
         out.append({"id": "header", "kind": "meta", "session_id": None, "content": head})
+        profile = profile_text(_profile_entries(self.store, scope), [r.entry.id for r in results])
+        if profile:
+            out.append({"id": "profile", "kind": "memory", "session_id": None, "content": profile})
+        shown = {line[2:] for line in (profile or "").splitlines()[1:]}
+        for b in bundles:
+            # 已经在常驻画像里出现的论断不在会话条目里重复
+            if b.entry is not None and b.entry.content in shown and not b.hit_lines:
+                b.lines = []
         for it in pack(bundles, raw_hits, k):
             out.append(
                 {

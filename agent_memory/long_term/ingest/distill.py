@@ -46,6 +46,8 @@ _SCHEMA_DESCRIPTION = """{
       "completeness": "complete | gist",
       "valid_from": "YYYY-MM-DD 或 null",
       "valid_to": "YYYY-MM-DD 或 null",
+      "event_date": "YYYY-MM-DD 或 null",
+      "cues": ["线索词", "..."],
       "source_type": "user | third_party | tool"
     }
   ],
@@ -55,6 +57,12 @@ _SCHEMA_DESCRIPTION = """{
 }
 completeness：content+detail 是否保住了对话里这件事的全部具体细节。
 valid_from / valid_to：事实开始生效 / 失效的日期，只在对话明确给出或可由会话日期推出时填写。
+event_date：这条记忆所述事件实际发生（或计划发生）的那一天。对话里说"昨天""上周六""三周前"
+"三周后"时，按会话日期换算成具体日期；只知道月份时填该月 1 日并在 content 里写明"某年某月"；
+不是事件（偏好、画像、长期约定）时填 null。
+cues：3–8 个线索词，与对话同一语言——涉及的实体名与别名、它所属的上位类名词（养了只猫 → pet、cat；
+买了盆龟背竹 → houseplant、plant；去看了演出 → concert、live music）、活动类型。
+线索词用来让日后换一种说法的提问也能找到这条记忆，不要写进 content。
 source_type：信息来自用户本人、用户粘贴的第三方材料或传言、还是工具输出；
 用户转述知情方的明确答复算 user。
 forget_requests.description 例：“8 月 20 日所说两件事中的第一件”。
@@ -105,7 +113,10 @@ _SYSTEM_PROMPT = (
     "只写了概括、细节放不下时 completeness 填 gist，细节齐全时填 complete。\n"
     "9. 时间：对话开头会给出会话日期，用它把“下周三”“9 月 1 日起”这类说法换算成 YYYY-MM-DD 填进 "
     "valid_from / valid_to；事后更正“其实从某日起就改了”时，valid_from 填更正所说的那一天；"
-    "计划、安排（尚未发生的事）用 episodic，并在 content 里写明“计划于……”，不要写成已经完成。\n"
+    "计划、安排（尚未发生的事）用 episodic，并在 content 里写明“计划于……”，不要写成已经完成。"
+    "content 里不允许留下“昨天”“上周六”“三周前”这类相对说法——一律按会话日期换算成"
+    "具体日期写进去（如“于 2024-02-11 领养了猫”），并同步填 event_date；"
+    "读这条记忆的人不知道它是哪天写下的。\n"
     "10. 来源：用户粘贴的第三方材料、网上帖子与传言、工具输出里的说法，source_type 填 third_party"
     " 或 tool，"
     "不能写成用户确认的事实；确需记录时写成“某来源声称……（未经证实）”，confidence 用 low。"
@@ -117,11 +128,11 @@ _SYSTEM_PROMPT = (
     "12. 语言：content 与 detail 一律用对话本身的主要语言书写——英文对话就写英文，"
     "中文对话就写中文，不要翻译。记忆服务对宿主语言中立，把英文对话译成中文会在"
     "检索时造成跨语言损耗。只有 id 例外，始终用英文 kebab-case slug。\n"
-    "13. 枚举与计数：涉及可计数实体或成员清单（拥有几个什么、清单里有哪些项、"
-    "参与者名单、配置项集合）时，把当前完整清单写进 content 并给出数量，detail 里"
-    "逐项列出（每项带各自的时间或来处）。后续会话新增或移除成员时，把先前已知的"
-    "成员一并复述进新条目，让下游对账能把旧条目收敛掉——只写“又加了一个”会导致"
-    "跨会话计数漏项。"
+    "13. 可计数的实例：用户提到自己拥有、做过、去过、买过的具体一件东西或一次事件时，"
+    "每个实例单独沉淀一条（一盆植物一条、一场演出一条、一笔开销一条并带金额），"
+    "并在 cues 里写上它的上位类名词。不要写“共有 N 个”这类总数——你只看得到当前这一场会话，"
+    "总数要由读到全部记录的人去数。区分清楚：已经发生的、只是计划或考虑中的、"
+    "别人的（家人朋友的）、已经结束或处置掉的——这些限定必须写进 content。"
 )
 
 _USER_TEMPLATE = """以下是一段对话（turn 从 1 开始编号）：
@@ -271,6 +282,12 @@ def _build_entry(
     if source_type in {"third_party", "tool"}:
         confidence = "low"  # P15：非用户本人来源的说法不自动入正式库，交人工复核
     valid_from, valid_to = _parse_date(raw.get("valid_from")), _parse_date(raw.get("valid_to"))
+    cues_raw = raw.get("cues")
+    cues = (
+        [str(c).strip()[:40] for c in cues_raw if isinstance(c, str) and c.strip()][:8]
+        if isinstance(cues_raw, list)
+        else []
+    )
     if valid_from and valid_to and valid_to < valid_from:
         valid_from = valid_to = None
     return MemoryEntry(
@@ -279,6 +296,8 @@ def _build_entry(
         detail=detail or None,
         completeness=completeness,
         valid_from=valid_from,
+        event_date=_parse_date(raw.get("event_date")),
+        cues=cues,
         valid_to=valid_to,
         source_type=source_type,
         memory_type=memory_type,

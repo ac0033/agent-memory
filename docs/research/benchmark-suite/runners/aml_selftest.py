@@ -276,20 +276,10 @@ def am_add_all(system: AgentMemorySystem, item: dict, log) -> dict:
 
 
 def am_search(system: AgentMemorySystem, query: str) -> list[dict]:
-    """Search 契约：走服务的单一读路径 recall（memory-v1 M1），每束证据一条。
-
-    没有字符预算（契约按条数取 top_k），所以原话不截断——截了就少于朴素 RAG 给的。
-    每条带 session_id 便于算证据召回。"""
-    from agent_memory.long_term.retrieve.recall import group_by_session, session_item_text
-
-    scope = f"repo:{SCOPE_TAG}"
+    """Search 契约：直接取服务的 recall_items（memory-v1 M1）——载荷怎么组装是被测系统的事，
+    runner 不参与，评测与线上因此不会各自漂移。"""
     with native_lock:
-        _, bundles = system.svc.recall(query, scope, k=TOP_K, cut=False)
-    return [
-        {"id": f"{it.source}/{it.session_id}", "kind": "memory" if it.claims else "raw",
-         "session_id": it.session_id, "content": session_item_text(it)}
-        for it in group_by_session(bundles)[:TOP_K]
-    ]
+        return system.svc.recall_items(query, f"repo:{SCOPE_TAG}", k=TOP_K)
 
 
 def rag_search(system: NaiveRAGSystem, query: str) -> list[dict]:

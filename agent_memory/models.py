@@ -136,6 +136,13 @@ class MemoryEntry(BaseModel):
     source_type: SourceType | None = None
     # P19 被本条取代的旧版本（UPDATE 时由对账追加），按时间先后
     history: list[VersionRecord] = Field(default_factory=list)
+    # memory-v1 M2：这条记忆描述的事件实际发生（或计划发生）的日期。对话里的相对说法
+    # （"昨天""上周六""三周后"）在写入时按会话日期换算成绝对日期——读取期没有人替它算
+    event_date: date | None = None
+    # memory-v1 M3：线索键（实体、别名、上位类名词、活动类型）。只进索引当额外的键，
+    # 不参与渲染：线索与原文字面不一致时也要能唤起（K7），散在多场会话的同类实例要能被
+    # 同一个上位类词一起拉到场（K6）
+    cues: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validity_window_ordered(self) -> "MemoryEntry":
@@ -188,10 +195,10 @@ class MemoryEntry(BaseModel):
 
     @property
     def index_text(self) -> str:
-        """索引（向量嵌入 + FTS 全文）用文本：detail 存在时拼接在 content 后。"""
-        if self.detail:
-            return f"{self.content}\n{self.detail}"
-        return self.content
+        """索引（向量嵌入 + FTS 全文）用文本：content + detail + 线索键（memory-v1 M3）。"""
+        text = f"{self.content}\n{self.detail}" if self.detail else self.content
+        # 线索键只进索引、不进渲染：没有 cues 的老条目索引文本与从前逐字节相同
+        return f"{text}\n{' '.join(self.cues)}" if self.cues else text
 
     @model_validator(mode="after")
     def profile_memory_cannot_be_low_confidence(self) -> "MemoryEntry":

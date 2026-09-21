@@ -288,13 +288,16 @@ def test_schema_content_is_language_neutral():
     assert '"memories": [' in schema
 
 
-def test_prompt_requires_full_list_for_countable_entities():
-    """枚举/计数类事实要保住完整清单，否则跨会话计数会漏项（P37 写入侧）。"""
+def test_prompt_records_each_countable_instance_and_never_a_total():
+    """memory-v1：可计数的实例逐个沉淀、带上位类线索词；蒸馏器不许写总数。
+
+    v0.4 的规则 13 要求"把先前已知的成员一并复述"——蒸馏器只看得到当前这一场会话，
+    做不到；写出来的总数一旦错了，读取时会压过原话（设计稿 §8 鱼缸题）。"""
     _, llm = _distill({"memories": []})
     system = llm.calls[0]["system"]
-    assert "13. 枚举与计数" in system
-    assert "当前完整清单" in system
-    assert "把先前已知的" in system
+    assert "13. 可计数的实例" in system
+    assert "每个实例单独沉淀一条" in system
+    assert "不要写“共有 N 个”" in system
 
 
 def test_format_conversation_numbers_turns():
@@ -404,3 +407,22 @@ def test_build_entries_redacted_too_short_dropped():
     )
     assert result.entries == []
     assert result.dropped_redacted == 1  # 脱敏后不足 10 字符，唯一保留的丢弃路径
+
+
+def test_event_date_and_cues_are_carried_from_distill_output_to_the_entry():
+    """memory-v1 M2 / M3：绝对事件日期与线索键由蒸馏产出，经规范化进入条目。"""
+    from agent_memory.long_term.ingest.distill import _SCHEMA_DESCRIPTION, _SYSTEM_PROMPT
+
+    assert "event_date" in _SCHEMA_DESCRIPTION and "cues" in _SCHEMA_DESCRIPTION
+    # 蒸馏器只看得到当前这一场会话：不许它替读者数总数
+    assert "共有 N 个" in _SYSTEM_PROMPT and "不要写" in _SYSTEM_PROMPT
+
+
+def test_cues_extend_the_index_text_but_old_entries_index_exactly_as_before():
+    from tests.conftest import make_entry
+
+    plain = make_entry("cat", "用户于 2024-02-11 领养了猫 Miso")
+    assert plain.index_text == "用户于 2024-02-11 领养了猫 Miso"
+    cued = plain.model_copy(update={"cues": ["pet", "cat", "宠物"]})
+    assert cued.index_text.endswith("pet cat 宠物")
+    assert cued.index_text.startswith(plain.index_text)

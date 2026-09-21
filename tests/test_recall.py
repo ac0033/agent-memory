@@ -195,7 +195,7 @@ def test_session_packing_carries_every_raw_hit_and_every_claim():
     raw_hits = [raw(f"r{i}", 1, f"只在原文里的事实 {i}") for i in range(30)]
     bundles = build_bundles(mem, raw_hits, reader(sessions), k=None)
     items = recall.group_by_session(bundles)
-    payload = "\n".join(recall.session_item_text(it) for it in items)
+    payload = "\n".join(recall.evidence_first_text(it) for it in items)
     assert all(h.content in payload for h in raw_hits)
     assert all(f"论断 {i}" in payload for i in range(30))
 
@@ -210,8 +210,8 @@ def test_session_packing_puts_a_sessions_claims_and_words_in_one_item():
     ]
     items = recall.group_by_session(build_bundles(mem, [], reader(sessions), k=None))
     assert len(items) == 1
-    text = recall.session_item_text(items[0])
-    assert text.index("20 加仑鱼缸") < text.index("买了 20 加仑鱼缸")  # 论断在前，原话在后
+    text = recall.evidence_first_text(items[0])
+    assert text.index("买了 20 加仑鱼缸") < text.index("用户有 20 加仑鱼缸")  # 原话在前，论断为注
     assert "1 加仑" in text
 
 
@@ -263,3 +263,16 @@ def test_header_states_stored_facts_and_the_reading_rule_once():
     text = recall.header_text("2024-01-08", "2024-03-28")
     assert "2024-03-28" in text and "2024-01-08" in text and "trust the words" in text
     assert "span" not in recall.header_text(None, None)
+
+
+def test_profile_is_resident_regardless_of_the_query_and_bounded():
+    """K11：画像常驻——本次检索没命中的画像也在；命中的排前面；超出上限的整条不放。"""
+    hit_one = make_entry("p-hit", "用户是素食者", memory_type="profile")
+    others = [
+        make_entry(f"p{i}", f"画像事实 {i} " + "字" * 200, memory_type="profile") for i in range(12)
+    ]
+    text = recall.profile_text([*others, hit_one], ranked_ids=["p-hit"])
+    assert text.splitlines()[1] == "· 用户是素食者"
+    assert "画像事实 0" in text
+    assert len(text) <= recall.PROFILE_CHARS
+    assert recall.profile_text([], []) is None
