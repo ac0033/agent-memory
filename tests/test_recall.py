@@ -213,3 +213,53 @@ def test_session_packing_puts_a_sessions_claims_and_words_in_one_item():
     text = recall.session_item_text(items[0])
     assert text.index("20 加仑鱼缸") < text.index("买了 20 加仑鱼缸")  # 论断在前，原话在后
     assert "1 加仑" in text
+
+
+# ---- 呈现层：原话在前、论断为注；体量对齐
+
+
+def test_words_come_before_notes_and_notes_are_labelled_as_derived():
+    sessions = {"s1": [raw("s1", 1, "我把 5 加仑的缸留给了斗鱼，又买了 20 加仑的")]}
+    wrong = claim("tank", "20 加仑缸由 5 加仑缸升级而来", "s1", 1, 1)
+    items = recall.group_by_session(
+        build_bundles([hit(wrong)], [sessions["s1"][0]], reader(sessions), k=None)
+    )
+    text = recall.evidence_first_text(items[0])
+    assert text.index("留给了斗鱼") < text.index("升级而来")
+    assert "notes:" in text
+
+
+def test_pack_budget_limits_annotations_but_never_drops_a_raw_hit():
+    """体量预算只约束注解：原文路命中的每一行都必须留在载荷里。"""
+    sessions = {f"s{i}": [raw(f"s{i}", 1, f"第 {i} 场的原话 " + "字" * 400)] for i in range(10)}
+    mem = [hit(claim(f"m{i}", "论断" * 150, f"s{i}", 1, 1)) for i in range(10)]
+    raw_hits = [sessions[f"s{i}"][0] for i in range(10)]
+    bundles = build_bundles(mem, raw_hits, reader(sessions), k=None)
+    items = recall.pack(bundles, raw_hits, k=10)
+    payload = "\n".join(recall.evidence_first_text(it) for it in items)
+    assert all(h.content in payload for h in raw_hits)
+    raw_only = sum(len(h.content) for h in raw_hits)
+    allowance = max(raw_only * recall.ANNOTATION_ALLOWANCE, recall.MIN_ALLOWANCE_CHARS)
+    notes = sum(len(e.content) for it in items for e in it.claims)
+    assert 0 < notes <= allowance
+    assert sum(len(it.claims) for it in items) < 10  # 放不下的论断被丢掉，而不是证据
+
+
+def test_pack_admits_claims_in_memory_rank_order():
+    sessions = {f"s{i}": [raw(f"s{i}", 1, "原话" * 300)] for i in range(6)}
+    mem = [hit(claim(f"m{i}", "论断" * 200, f"s{i}", 1, 1)) for i in range(6)]
+    raw_hits = [sessions[f"s{i}"][0] for i in range(6)]
+    items = recall.pack(build_bundles(mem, raw_hits, reader(sessions), k=None), raw_hits, k=6)
+    admitted = {e.id for it in items for e in it.claims}
+    assert "m0" in admitted and "m5" not in admitted
+
+
+def test_pack_is_unbounded_when_there_is_no_raw_archive():
+    mem = [hit(claim(f"m{i}", f"论断 {i}", f"s{i}", 1, 1)) for i in range(3)]
+    assert len(recall.pack(build_bundles(mem, [], reader({}), k=None), [], k=5)) == 3
+
+
+def test_header_states_stored_facts_and_the_reading_rule_once():
+    text = recall.header_text("2024-01-08", "2024-03-28")
+    assert "2024-03-28" in text and "2024-01-08" in text and "trust the words" in text
+    assert "span" not in recall.header_text(None, None)

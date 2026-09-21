@@ -245,6 +245,22 @@ class RawIndex:
             ).fetchall()
         return [RawHit(r[0], r[1], r[2], r[3], r[4], r[5], r[6], 0.0) for r in rows]
 
+    def date_span(self, scopes: list[str] | None = None) -> tuple[str | None, str | None]:
+        """可见范围内最早与最近的会话日期（scope 口径与 search 相同）。"""
+        with self._lock:
+            if scopes is None:
+                row = self.conn.execute(
+                    "SELECT MIN(date), MAX(date) FROM raw_meta WHERE date IS NOT NULL"
+                ).fetchone()
+            else:
+                marks = ",".join("?" * len(scopes))
+                row = self.conn.execute(
+                    "SELECT MIN(date), MAX(date) FROM raw_meta WHERE date IS NOT NULL"
+                    f" AND (scope IS NULL OR scope IN ({marks}))",
+                    scopes,
+                ).fetchone()
+        return (row[0], row[1]) if row else (None, None)
+
     def count(self) -> int:
         with self._lock:
             return self.conn.execute("SELECT COUNT(*) FROM raw_meta").fetchone()[0]

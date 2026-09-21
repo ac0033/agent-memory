@@ -313,3 +313,87 @@ def render_block(bundles: list[Bundle], budget_chars: int) -> str:
         return ""
     lines.append(_CLOSE_TAG)
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- 呈现层（原则二的延伸）
+#
+# 阶段一实测（memory-v1-design.md §8）：原话证据齐全时，一条写错的写入期论断排在原话前面，
+# 答题器照样采信论断。"裁决否决证据"不只发生在读取期。所以呈现上原话在前、论断降为
+# 注解，并明说以原话为准；载荷体量与"只检索原文"对齐——靠多塞上下文赢不算赢（Q1）。
+
+# 论断是注解，允许的体量余量：相对"只检索原文会给的字符数"
+ANNOTATION_ALLOWANCE = 0.15
+# 标签的解释只在载荷开头说一次（header_text），每条里只留短标签——逐条重复是纯开销
+_NOTES_LABEL = "notes:"
+
+
+def evidence_first_text(it: SessionItem) -> str:
+    """一条会话证据的文本：日期 → 原话 → 注解。命中行给全文，上下文行限长。"""
+    parts = [f"[{it.date or '?'}]"]
+    for h in it.lines:
+        limit = None if h.line in it.hit_lines else CONTEXT_LINE_CHARS
+        parts.append(f"{h.role}: {_clip(h.content, limit)}")
+    if it.claims:
+        parts.append(_NOTES_LABEL)
+        for e in it.claims:
+            note = _history_note(e)
+            if e.valid_to:
+                note += f"（已于 {e.valid_to.isoformat()} 失效）"
+            if e.source_type and e.source_type != "user":
+                note += f"（出处：{e.source_type}）"
+            parts.append(f"· {e.content}{note}")
+    return "\n".join(parts)
+
+
+# 余量的下限：载荷本身很小时，15% 连一条论断都放不下
+MIN_ALLOWANCE_CHARS = 800
+
+
+def pack(bundles: list[Bundle], raw_hits: list[RawHit], k: int) -> list[SessionItem]:
+    """按会话打包，体量对齐到"只检索原文"。
+
+    预算只约束注解，绝不挤掉证据：原文路的命中行全部保留（那正是只检索原文会给的量），
+    论断按记忆路名次在余量（原文字符数 × ANNOTATION_ALLOWANCE）内逐条加入；放不下的论断
+    只丢注解，它名下的命中行照留。没有原文命中时（库里还没有归档）不设上限。
+    """
+    raw_chars = sum(len(h.content) for h in raw_hits[:k])
+    if raw_chars == 0:
+        return group_by_session(bundles)[:k]
+    allowance = max(int(raw_chars * ANNOTATION_ALLOWANCE), MIN_ALLOWANCE_CHARS)
+    used = 0
+    kept: list[Bundle] = []
+    with_claim = sorted((b for b in bundles if b.entry is not None), key=lambda b: b.mem_rank or 0)
+    admitted: set[str] = set()
+    for b in with_claim:
+        cost = len(b.entry.content) + len(_history_note(b.entry)) + 4
+        if not b.hit_lines and b.lines:
+            cost += min(len(b.lines[0].content), CONTEXT_LINE_CHARS)
+        if used + cost <= allowance:
+            used += cost
+            admitted.add(b.entry.id)
+    for b in bundles:
+        if b.entry is None or b.entry.id in admitted:
+            kept.append(b)
+        elif b.hit_lines:
+            # 论断放不下：只丢注解，命中行照留
+            lines = [h for h in b.lines if h.line in b.hit_lines]
+            kept.append(Bundle(None, lines, b.score, None, b.raw_rank, set(b.hit_lines)))
+    return group_by_session(kept)
+
+
+def header_text(first_date: str | None, last_date: str | None) -> str:
+    """载荷首条：怎么读这份载荷 + 时间锚点（K5）。
+
+    时间锚点是库里查得到的事实——问"多久以前"时，答题的一方需要知道记录截止到哪天；
+    "以原话为准"是原则二在呈现层的落点。两者都不是结论。
+    """
+    text = (
+        "[how to read] Each entry gives the conversation date, the words actually said, and "
+        "optionally 'notes:' - summaries derived later. If notes and words differ, trust the words."
+    )
+    if last_date:
+        text += (
+            f" Recorded conversations span {first_date or '?'} to {last_date}; "
+            f"the most recent one is dated {last_date}."
+        )
+    return text

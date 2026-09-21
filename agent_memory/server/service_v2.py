@@ -27,7 +27,13 @@ from agent_memory.long_term.ingest.annotate import annotate_entries
 from agent_memory.long_term.ingest.gate import gate_candidates
 from agent_memory.long_term.ingest.redact import redact
 from agent_memory.long_term.retrieve import surface as surface_mod
-from agent_memory.long_term.retrieve.recall import Bundle, build_bundles
+from agent_memory.long_term.retrieve.recall import (
+    Bundle,
+    build_bundles,
+    evidence_first_text,
+    header_text,
+    pack,
+)
 from agent_memory.long_term.store.raw_index import read_session_meta
 from agent_memory.models import EvidenceRef, MemoryEntry, normalize_entry_id
 from agent_memory.working.models import SubTask, TodoItem, WorkingMemory
@@ -217,6 +223,28 @@ class V2ServiceMixin:
             results, raw_hits, self.raw_index.session_records, k if cut else None
         )
         return results, bundles
+
+    def recall_items(self, query: str, scope: str, k: int) -> list[dict[str, Any]]:
+        """按条数限额的 Search 契约用的载荷：证据按会话打包、原话在前论断为注、体量对齐到
+        只检索原文、首条附时间锚点。与 search 同走 recall，零 LLM。"""
+        results = self.searcher.search(query, scopes=[scope], k=k)
+        raw_hits = []
+        if self.raw_index.count() > 0:
+            raw_hits = self.raw_index.search(query, self.embedder, k=k, scopes=[scope, "global"])
+        bundles = build_bundles(results, raw_hits, self.raw_index.session_records, None)
+        out: list[dict[str, Any]] = []
+        head = header_text(*self.raw_index.date_span([scope, "global"]))
+        out.append({"id": "header", "kind": "meta", "session_id": None, "content": head})
+        for it in pack(bundles, raw_hits, k):
+            out.append(
+                {
+                    "id": f"{it.source}/{it.session_id}",
+                    "kind": "memory" if it.claims else "raw",
+                    "session_id": it.session_id,
+                    "content": evidence_first_text(it),
+                }
+            )
+        return out[:k]
 
     # ------------------------------------------------------------ P27 / P13 完整度与回读核验
 

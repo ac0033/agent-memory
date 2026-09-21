@@ -315,6 +315,15 @@ def warm_embeddings(item: dict, embedder, log, batch: int = 32) -> None:
             log(f"    embed {min(i + batch, len(uniq))}/{len(uniq)} ({time.time() - t0:.0f}s)")
 
 
+def rubric_pass(rubric: dict, answer: str) -> bool:
+    """all_of 全部命中、any_of 至少命中一个、none_of 一个都不命中；模式是小写正则。"""
+    text = answer.lower()
+    hit = lambda pat: re.search(pat, text) is not None  # noqa: E731
+    return (all(hit(p) for p in rubric.get("all_of", []))
+            and (not rubric.get("any_of") or any(hit(p) for p in rubric["any_of"]))
+            and not any(hit(p) for p in rubric.get("none_of", [])))
+
+
 def run_one(q: dict, sys_name: str, ctx: dict, log) -> dict:
     item = to_item(q)
     qid = str(q["question_id"])
@@ -323,27 +332,42 @@ def run_one(q: dict, sys_name: str, ctx: dict, log) -> dict:
            "system": sys_name, "question": q["question"], "gold": q["answer"], "question_date": q["question_date"],
            "n_sessions": len(item["history"]["sessions"]), "ts": dt.datetime.now().isoformat(timespec="seconds")}
     t_all = time.time()
-    if sys_name == "am":
-        system = AgentMemorySystem(ctx["am_root"], ctx["am_label"], ctx["embedder"], ctx["settings"], ctx["system_llm"])
-        system.setup(item, mode="manual")
-        try:
+    # 共享历史（自建 dev 集：所有题同一份 haystack）时复用已经建好的系统——
+    # 否则每道题都要把同一份历史重写一遍，纯浪费
+    sig = (sys_name, hashlib.sha256(json.dumps(
+        [[s["session_id"], s["date"], s["messages"]] for s in item["history"]["sessions"]],
+        ensure_ascii=False).encode("utf-8")).hexdigest())
+    # 按系统名各留一份：任务是"逐题 × 各系统"交错跑的，共用一格会来回重建
+    cached = ctx.setdefault("system_cache", {}).setdefault(sys_name, {})
+    if cached.get("sig") != sig:
+        if cached.get("system") is not None and hasattr(cached["system"], "close"):
+            cached["system"].close()
+        cached.clear()
+        if sys_name == "am":
+            system = AgentMemorySystem(ctx["am_root"], ctx["am_label"], ctx["embedder"], ctx["settings"], ctx["system_llm"])
+            system.setup(item, mode="manual")
             row["add"] = am_add_all(system, item, log)
-            t1 = time.time()
-            items = am_search(system, q["question"])
-            row["search_seconds"] = round(time.time() - t1, 2)
-            row["cost_sys"] = system.meter.as_dict()
-        finally:
-            system.close()
+        elif sys_name == "naive_rag":
+            system = NaiveRAGSystem(ctx["embedder"])
+            system.setup(item, mode="manual")
+        elif sys_name == "full_context":
+            system = None
+        else:
+            raise ValueError(sys_name)
+        cached.update({"sig": sig, "system": system})
+    system = cached["system"]
+    t1 = time.time()
+    if sys_name == "am":
+        items = am_search(system, q["question"])
+        row["cost_sys"] = system.meter.as_dict()
     elif sys_name == "naive_rag":
-        system = NaiveRAGSystem(ctx["embedder"])
-        t0 = time.time()
-        system.setup(item, mode="manual")
-        row["add"] = {"sessions": len(item["history"]["sessions"]), "add_seconds": round(time.time() - t0, 1)}
-        t1 = time.time()
         items = rag_search(system, q["question"])
-        row["search_seconds"] = round(time.time() - t1, 2)
     else:
-        raise ValueError(sys_name)
+        # 全文上下文对照组（框架 §7.2）：历史放得下时整份给答题器，每场会话一条
+        items = [{"id": s["session_id"], "kind": "raw", "session_id": s["session_id"],
+                  "content": f"[{s['date']}]\n" + "\n".join(f"{m['role']}: {m['content']}" for m in s["messages"])}
+                 for s in item["history"]["sessions"]]
+    row["search_seconds"] = round(time.time() - t1, 2)
     answer_sids = set(map(str, q.get("answer_session_ids") or []))
     row["n_items"] = len(items)
     row["n_memory_items"] = sum(1 for x in items if x["kind"] == "memory")
@@ -361,9 +385,14 @@ def run_one(q: dict, sys_name: str, ctx: dict, log) -> dict:
     answer = ctx["answerer"].complete(prompt)
     row["answer"] = answer
     row["cost_answer"] = ctx["answerer"].last_usage
-    row["label"] = judge_label(ctx["judge"], render_judge_prompt(q["question"], str(q["answer"]), answer))
-    row["judge"] = ctx["judge_name"]
-    row["labels"] = {ctx["judge_name"]: row["label"]}
+    if q.get("rubric"):
+        # 自建 dev 集的确定性判分：不调评委，零成本、零评委噪声
+        row["label"] = "CORRECT" if rubric_pass(q["rubric"], answer) else "WRONG"
+        row["judge"] = "rubric"
+    else:
+        row["label"] = judge_label(ctx["judge"], render_judge_prompt(q["question"], str(q["answer"]), answer))
+        row["judge"] = ctx["judge_name"]
+    row["labels"] = {row["judge"]: row["label"]}
     row["passed"] = row["label"] == "CORRECT"
     row["total_seconds"] = round(time.time() - t_all, 1)
     return row
@@ -448,6 +477,7 @@ def git_head() -> str:
 
 
 def main() -> None:
+    global TOP_K  # --top-k 覆盖模块常量；声明必须在首次使用之前
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", type=Path, default=REPO / "data" / "external" / "longmemeval_s_cleaned.json")
     ap.add_argument("--run-id", required=True)
@@ -471,9 +501,12 @@ def main() -> None:
     ap.add_argument("--rejudge", action="store_true",
                     help="不跑系统，只用 --judge-role 指定的评委重判 results.jsonl 里已有的回答，标签写入 labels[<评委>]")
     ap.add_argument("--jobs", type=int, default=1)
+    ap.add_argument("--top-k", type=int, default=TOP_K,
+                    help="Search 返回条数。外部契约固定 100；自建 dev 集历史短，调小才有检索压力")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--no-cache", action="store_true")
     args = ap.parse_args()
+    TOP_K = args.top_k
 
     out = OUT_ROOT / args.run_id
     out.mkdir(parents=True, exist_ok=True)
@@ -546,7 +579,7 @@ def main() -> None:
             "judge": getattr(judge, "model", type(judge).__name__), "system_model": settings.llm_model,
             "judge_is_cli": isinstance(judge, KimiCLIClient), "balance_before": bal0,
             "embedding_max_seq_length": settings.embedding_max_seq_length,
-            "question_ids": [str(q["question_id"]) for q in questions]}
+            "top_k": TOP_K, "question_ids": [str(q["question_id"]) for q in questions]}
     (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
     lock = threading.Lock()
