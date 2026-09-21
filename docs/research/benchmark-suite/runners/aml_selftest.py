@@ -141,6 +141,25 @@ def render_answer_prompt(question: str, memories: str) -> str:
                   lambda m: values[m.group(1)], OPEN_ENDED_ANSWER_TEMPLATE)
 
 
+MCQ_TEMPLATE = """You are a personal assistant with memories of your past conversations with this user.
+
+<memories>
+{memories}
+</memories>
+
+The user now says: {question}
+
+Which of the following replies fits this particular user best, given what you remember about them?
+{options}
+
+Answer with the letter of the best reply in parentheses, for example (a). No explanation."""
+
+
+def render_mcq_prompt(question: str, options: list[str], memories: str) -> str:
+    return (MCQ_TEMPLATE.replace("{memories}", memories).replace("{question}", question)
+            .replace("{options}", "\n".join(options)))
+
+
 def render_judge_prompt(question: str, gold: str, generated: str) -> str:
     values = {"question": question, "gold_answer": gold, "generated_answer": generated}
     return re.sub(r"\{(question|gold_answer|generated_answer)\}", lambda m: values[m.group(1)], ACCURACY_PROMPT)
@@ -373,12 +392,18 @@ def run_one(q: dict, sys_name: str, ctx: dict, log) -> dict:
         (ctx["payload_dir"] / f"{q['question_id']}.{sys_name}.json").write_text(
             json.dumps(items, ensure_ascii=False), encoding="utf-8")
     memories = "\n".join(x["content"] for x in items) if items else "(no memories)"
-    prompt = render_answer_prompt(q["question"], memories)
+    prompt = (render_mcq_prompt(q["question"], q["options"], memories) if q.get("options")
+              else render_answer_prompt(q["question"], memories))
     row["prompt_chars"] = len(prompt)
     answer = ctx["answerer"].complete(prompt)
     row["answer"] = answer
     row["cost_answer"] = ctx["answerer"].last_usage
-    if q.get("rubric"):
+    if q.get("options"):
+        # 选择题（PersonaMem）：取答案里第一个 (a)–(d)，确定性判分
+        m = re.search(r"\(([a-d])\)", answer.lower())
+        row["label"] = "CORRECT" if m and f"({m.group(1)})" == str(q["answer"]).lower() else "WRONG"
+        row["judge"] = "mcq"
+    elif q.get("rubric"):
         # 自建 dev 集的确定性判分：不调评委，零成本、零评委噪声
         row["label"] = "CORRECT" if rubric_pass(q["rubric"], answer) else "WRONG"
         row["judge"] = "rubric"
