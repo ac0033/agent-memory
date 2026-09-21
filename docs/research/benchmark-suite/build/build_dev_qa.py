@@ -441,8 +441,8 @@ QUESTIONS: list[tuple[str, str, str, str, dict | None]] = [
      "The information provided is not enough. You mentioned your sister Priya lives in Leeds, but nothing about a brother.", None),
     ("abs-4", "abs", "On what date did I adopt my parrot?",
      "The information provided is not enough. You adopted a cat, Miso; you never mentioned a parrot of your own.", None),
-    ("abs-5", "abs", "What hydration did you recommend for my pizza dough when I told you about my dense crust?",
-     "The information provided is not enough. The dense-result conversation was about sourdough bread (72% hydration); the user never reported a dense pizza crust.", None),
+    ("abs-5", "abs", "What oven temperature did you tell me to bake my sourdough at?",
+     "The information provided is not enough. The sourdough advice covered hydration and fermentation; no oven temperature was ever given for it.", None),
     ("abs-6", "abs", "Who is my daughter's violin teacher?",
      "The information provided is not enough. Your daughter takes piano lessons (now with Mr. Chen); no violin teacher was mentioned.", None),
 ]
@@ -478,6 +478,8 @@ def main() -> None:
     evidence_ids = [s[0] for s in SESSIONS]
     out = []
     for qid, bucket, question, gold, rubric in QUESTIONS:
+        if bucket == "abs":
+            rubric = {"any_of": [r"\b(no|not|never|none|nothing|unknown)\b", r"n't\b", "insufficient", "unclear"]}
         out.append({
             "question_id": f"{qid}_abs" if bucket == "abs" else qid,
             "question_type": bucket,

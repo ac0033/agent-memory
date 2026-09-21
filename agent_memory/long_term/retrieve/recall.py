@@ -371,10 +371,16 @@ def header_text(first_date: str | None, last_date: str | None) -> str:
     """
     text = (
         "[how to read] Each entry gives the conversation date, the words actually said, and "
-        "optionally 'notes:' - summaries derived later. If notes and words differ, trust the words."
+        "optionally 'notes:' - summaries derived later. If notes and words differ, trust the words. "
+        "When a question asks for a fact about the user's own past (something they did, own, said or "
+        "were told) and names a specific person, thing or event that never appears in these entries, "
+        "say it was never mentioned instead of substituting a similar one. "
+        "Requests for suggestions, recommendations or tips are not such questions: always answer "
+        "them with concrete suggestions tailored to what is known here, even if the topic itself "
+        "never came up."
     )
-    # 试过在这里加一句"问到这些条目从没提过的事，就说没提过"（K12）：自建集上错误前提 +1，
-    # 但开放式求助题被带成"never mentioned"（偏好 −1）。与 v0.4 的前提核验同一种失败，不采纳。
+    # 行为协议（M7 / K12）。第一版只写了前半句，开放式求助题被带成"never mentioned"
+    # （验证集偏好桶 −1）；根因是没区分"问事实"与"求建议"，所以补了后半句。
     if last_date:
         text += (
             f" Recorded conversations span {first_date or '?'} to {last_date}; "
