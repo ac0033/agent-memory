@@ -328,7 +328,8 @@ def run_one(q: dict, sys_name: str, ctx: dict, log) -> dict:
         [[s["session_id"], s["date"], s["messages"]] for s in item["history"]["sessions"]],
         ensure_ascii=False).encode("utf-8")).hexdigest())
     # 按系统名各留一份：任务是"逐题 × 各系统"交错跑的，共用一格会来回重建
-    cached = ctx.setdefault("system_cache", {}).setdefault(sys_name, {})
+    # 多线程（--jobs > 1）时不复用：另一个线程可能正用着那套系统，换签名时 close 它会出事
+    cached = ctx.setdefault("system_cache", {}).setdefault(sys_name, {}) if ctx.get("reuse_systems") else {}
     if cached.get("sig") != sig:
         if cached.get("system") is not None and hasattr(cached["system"], "close"):
             cached["system"].close()
@@ -358,6 +359,8 @@ def run_one(q: dict, sys_name: str, ctx: dict, log) -> dict:
                   "content": f"[{s['date']}]\n" + "\n".join(f"{m['role']}: {m['content']}" for m in s["messages"])}
                  for s in item["history"]["sessions"]]
     row["search_seconds"] = round(time.time() - t1, 2)
+    if not ctx.get("reuse_systems") and system is not None and hasattr(system, "close"):
+        system.close()
     answer_sids = set(map(str, q.get("answer_session_ids") or []))
     row["n_items"] = len(items)
     row["n_memory_items"] = sum(1 for x in items if x["kind"] == "memory")
@@ -560,7 +563,7 @@ def main() -> None:
         return
     ctx = {"am_root": args.am_root.resolve(), "am_label": args.am_label, "embedder": embedder, "settings": settings,
            "system_llm": system_llm, "answerer": answerer, "judge": judge, "judge_name": judge_name,
-           "payload_dir": results.parent / "payloads"}
+           "payload_dir": results.parent / "payloads", "reuse_systems": args.jobs == 1}
 
     bal0 = deepseek_balance(env)
     meta = {"run_id": args.run_id, "head": git_head(), "started": dt.datetime.now().isoformat(timespec="seconds"),
