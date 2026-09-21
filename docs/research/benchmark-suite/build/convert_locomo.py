@@ -51,7 +51,7 @@ def main() -> None:
     for ci in (int(x) for x in args.conversations.split(",")):
         sample = data[ci]
         conv = sample["conversation"]
-        a, b = conv["speaker_a"], conv["speaker_b"]
+        a = conv["speaker_a"]
         keys = sorted((k for k in conv if re.fullmatch(r"session_\d+", k)), key=lambda k: int(k.split("_")[1]))
         ids, dates, sessions, last = [], [], [], None
         for k in keys:
