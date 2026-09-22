@@ -35,6 +35,40 @@ RELATIVE_TIME = [
 ]
 
 
+def _query_rows(args, questions, am, rag, embedder, scope):
+    rows = []
+    for q in questions:
+        with native_lock:
+            items = am.svc.recall_items(q["question"], scope, k=args.top_k)
+            rag_hits = rag.rag.search(q["question"], k=args.top_k)
+        if args.strip_protocol and items and items[0]["id"] == "header":
+            head = items[0]["content"]
+            cut_from, cut_to = head.find("When a question asks"), head.find("Recorded conversations")
+            if cut_from >= 0:
+                items[0] = {**items[0], "content": head[:cut_from] + (head[cut_to:] if cut_to >= 0 else "")}
+        if args.strip_notes:
+            items = [{**x, "content": x["content"].split("\nnotes:")[0]} for x in items if x["id"] != "profile"]
+        if args.flat:
+            with native_lock:
+                raw_only = am.svc.raw_index.search(q["question"], embedder, k=args.top_k, scopes=[scope, "global"])
+            items = [x for x in items if x["id"] in ("header", "profile")] + [
+                {"id": f"raw:{h.session_id}:{h.line}", "content": f"[{h.date}] {h.role}: {h.content}"} for h in raw_only]
+        payload = "\n".join(x["content"] for x in items)
+        rag_payload = "\n".join(h.chunk.text for h in rag_hits)
+        low, rag_low = payload.lower(), rag_payload.lower()
+        marks = q.get("evidence") or []
+        rows.append({
+            "question_id": q["question_id"], "question_type": q["question_type"], "question": q["question"],
+            "gold": q["answer"], "rubric": q.get("rubric"), "options": q.get("options"), "payload": payload,
+            "rag_payload": "\n".join(f"[{h.chunk.date}] {h.chunk.role}: {h.chunk.text}" for h in rag_hits),
+            "missing": [m for m in marks if m not in low],
+            "rag_missing": [m for m in marks if m not in rag_low],
+            "size_ratio": round(len(payload) / max(len(rag_payload), 1), 2),
+            # 检索对等性：朴素 RAG 取到的原话里，有多少条也在我们的载荷里（不调 LLM）
+            "rag_overlap": round(sum(1 for h in rag_hits if h.chunk.text[:160] in payload) / max(len(rag_hits), 1), 2)})
+    return rows
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", type=Path, default=A.REPO / "data" / "external" / "dev_qa_v1.json")
@@ -81,14 +115,6 @@ def main() -> None:
     embedder = A.CachedEmbedder(get_embedder(settings), A.OUT_ROOT / "embedding_cache.pkl")
     log = lambda m: print(m, flush=True)  # noqa: E731
 
-    item = A.to_item(questions[0])
-    A.warm_embeddings(item, embedder, log)
-    am = AgentMemorySystem(A.REPO, "am_v2", embedder, settings, system_llm)
-    am.setup(item, mode="manual")
-    add = A.am_add_all(am, item, log)
-    rag = NaiveRAGSystem(embedder)
-    rag.setup(item, mode="manual")
-    log(f"built: {add.get('entries_total')} entries, {add.get('add_seconds')}s")
 
     if args.segment_gap is not None:
         from agent_memory.long_term.retrieve import recall as recall_mod
@@ -97,46 +123,33 @@ def main() -> None:
     out = A.OUT_ROOT / args.run_id
     out.mkdir(parents=True, exist_ok=True)
     scope = f"repo:{A.SCOPE_TAG}"
-    rows = []
+    # 多份历史（外部 dev 样本）：按历史分组、逐组建库，行与库条目汇总后再报告
+    groups: dict[str, list[dict]] = {}
     for q in questions:
-        with native_lock:
-            items = am.svc.recall_items(q["question"], scope, k=args.top_k)
-            rag_hits = rag.rag.search(q["question"], k=args.top_k)
-        if args.strip_protocol and items and items[0]["id"] == "header":
-            head = items[0]["content"]
-            cut_from, cut_to = head.find("When a question asks"), head.find("Recorded conversations")
-            if cut_from >= 0:
-                items[0] = {**items[0], "content": head[:cut_from] + (head[cut_to:] if cut_to >= 0 else "")}
-        if args.strip_notes:
-            items = [{**x, "content": x["content"].split("\nnotes:")[0]} for x in items if x["id"] != "profile"]
-        if args.flat:
-            with native_lock:
-                raw_only = am.svc.raw_index.search(q["question"], embedder, k=args.top_k, scopes=[scope, "global"])
-            items = [x for x in items if x["id"] in ("header", "profile")] + [
-                {"id": f"raw:{h.session_id}:{h.line}", "content": f"[{h.date}] {h.role}: {h.content}"} for h in raw_only]
-        payload = "\n".join(x["content"] for x in items)
-        rag_payload = "\n".join(h.chunk.text for h in rag_hits)
-        low, rag_low = payload.lower(), rag_payload.lower()
-        marks = q.get("evidence") or []
-        rows.append({
-            "question_id": q["question_id"], "question_type": q["question_type"], "question": q["question"],
-            "gold": q["answer"], "rubric": q.get("rubric"), "options": q.get("options"), "payload": payload,
-            "rag_payload": "\n".join(f"[{h.chunk.date}] {h.chunk.role}: {h.chunk.text}" for h in rag_hits),
-            "missing": [m for m in marks if m not in low],
-            "rag_missing": [m for m in marks if m not in rag_low],
-            "size_ratio": round(len(payload) / max(len(rag_payload), 1), 2),
-            # 检索对等性：朴素 RAG 取到的原话里，有多少条也在我们的载荷里（不调 LLM）
-            "rag_overlap": round(sum(1 for h in rag_hits if h.chunk.text[:160] in payload) / max(len(rag_hits), 1), 2)})
+        groups.setdefault(q["haystack_session_ids"][0], []).append(q)
+    rows: list[dict] = []
+    entries_all: list = []
+    for gi, group in enumerate(groups.values(), 1):
+        item = A.to_item(group[0])
+        A.warm_embeddings(item, embedder, log)
+        am = AgentMemorySystem(A.REPO, "am_v2", embedder, settings, system_llm)
+        am.setup(item, mode="manual")
+        add = A.am_add_all(am, item, log)
+        rag = NaiveRAGSystem(embedder)
+        rag.setup(item, mode="manual")
+        log(f"built history {gi}/{len(groups)}: {add.get('entries_total')} entries, {add.get('add_seconds')}s")
+        rows.extend(_query_rows(args, group, am, rag, embedder, scope))
+        entries_all.extend(am.svc.store.list())
+        am.close()
     # ---- 写入质量（A 层，组件级）：相对时间是否"只增不减"——原说法还在，换算出的日期附在后面
-    entries = [e.content.lower() + " " + (e.detail or "").lower() for e in am.svc.store.list()]
+    entries = [e.content.lower() + " " + (e.detail or "").lower() for e in entries_all]
     print("\n== write check（相对时间：原说法 + 绝对日期）")
     for said, resolved in RELATIVE_TIME:
         both = sum(1 for t in entries if said in t and resolved in t)
         dated = sum(1 for t in entries if resolved in t)
         print(f"  {said!r:28s} -> {resolved}: 带日期的条目 {dated}，其中保留原说法 {both}")
-    with_cues = sum(1 for e in am.svc.store.list() if getattr(e, "cues", None))
+    with_cues = sum(1 for e in entries_all if getattr(e, "cues", None))
     print(f"  条目总数 {len(entries)}，带线索键 {with_cues}")
-    am.close()
 
     # ---- 第 0 层报告
     by = collections.defaultdict(list)

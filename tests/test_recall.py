@@ -197,22 +197,23 @@ def test_session_packing_carries_every_raw_hit_and_every_claim():
     items = recall.group_into_segments(bundles)
     payload = "\n".join(recall.evidence_first_text(it) for it in items)
     assert all(h.content in payload for h in raw_hits)
-    assert all(f"论断 {i}" in payload for i in range(30))
+    kept = {e.id for it in items for e in it.claims}
+    assert kept == {f"m{i}" for i in range(30)}  # 论断都还在（作为键）；复述型的不渲染
 
 
 def test_adjacent_hit_lines_form_one_segment_with_their_claims():
     sessions = {
         "s1": [raw("s1", 1, "买了 20 加仑鱼缸"), raw("s1", 2, "又给朋友家孩子装了 1 加仑的")]
     }
-    mem = [
-        hit(claim("t1", "用户有 20 加仑鱼缸", "s1", 1, 1)),
-        hit(claim("t2", "用户给朋友孩子装了小鱼缸", "s1", 2, 2)),
-    ]
+    t1 = claim("t1", "用户有 20 加仑鱼缸", "s1", 1, 1).model_copy(
+        update={"history": [VersionRecord(content="用户有 5 加仑鱼缸")]}
+    )
+    mem = [hit(t1), hit(claim("t2", "用户给朋友孩子装了小鱼缸", "s1", 2, 2))]
     items = recall.group_into_segments(build_bundles(mem, [], reader(sessions), k=None))
     assert len(items) == 1
     text = recall.evidence_first_text(items[0])
-    assert text.index("买了 20 加仑鱼缸") < text.index("用户有 20 加仑鱼缸")  # 原话在前，论断为注
-    assert "1 加仑" in text
+    assert text.index("买了 20 加仑鱼缸") < text.index("用户有 20 加仑鱼缸")  # 原话在前，注解在后
+    assert "1 加仑" in text and "此前" in text
 
 
 def test_a_long_session_is_split_into_segments_ranked_by_relevance():
@@ -233,7 +234,9 @@ def test_a_long_session_is_split_into_segments_ranked_by_relevance():
 
 def test_words_come_before_notes_and_notes_are_labelled_as_derived():
     sessions = {"s1": [raw("s1", 1, "我把 5 加仑的缸留给了斗鱼，又买了 20 加仑的")]}
-    wrong = claim("tank", "20 加仑缸由 5 加仑缸升级而来", "s1", 1, 1)
+    wrong = claim("tank", "20 加仑缸由 5 加仑缸升级而来", "s1", 1, 1).model_copy(
+        update={"history": [VersionRecord(content="用户有一个 5 加仑缸")]}
+    )
     items = recall.group_into_segments(
         build_bundles([hit(wrong)], [sessions["s1"][0]], reader(sessions), k=None)
     )
@@ -289,3 +292,23 @@ def test_profile_is_resident_regardless_of_the_query_and_bounded():
     assert "画像事实 0" in text
     assert len(text) <= recall.PROFILE_CHARS
     assert recall.profile_text([], []) is None
+
+
+def test_a_claim_that_merely_restates_present_words_is_not_rendered():
+    """原则一：复述型论断是键不是注解——原话到场时不渲染；带取代史的才渲染。"""
+    sessions = {"s1": [raw("s1", 1, "我住在杭州")]}
+    plain = claim("city", "用户住在杭州", "s1", 1, 1)
+    with_history = plain.model_copy(update={"history": [VersionRecord(content="用户住在上海")]})
+    for e, expect in ((plain, False), (with_history, True)):
+        items = recall.group_into_segments(
+            build_bundles([hit(e)], [sessions["s1"][0]], reader(sessions), k=None)
+        )
+        text = recall.evidence_first_text(items[0])
+        assert ("notes:" in text) is expect
+        assert "我住在杭州" in text
+
+
+def test_a_claim_without_its_words_is_rendered_as_the_only_carrier():
+    e = claim("orphan", "用户住在杭州", "s1", 1, 1)
+    items = recall.group_into_segments(build_bundles([hit(e)], [], reader({}), k=None))
+    assert "用户住在杭州" in recall.evidence_first_text(items[0])

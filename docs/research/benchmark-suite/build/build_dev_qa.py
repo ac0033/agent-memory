@@ -17,6 +17,7 @@
 | agg | K6 | 散在多场会话的实例：计数、求和、列举；陷阱按"记录数≠实例数"的成因埋 |
 | pref | K11 | 开放式求助，答案应体现用户说过的偏好与约束 |
 | abs | K12 | 前提不成立的近似题，应当说没有依据 |
+| why | K5 | 变更的原因：用户改了安排/取值/偏好并说了原因，问"当初为什么改" |
 | use | K11 | 选择题：用户随口说一句话，四个候选回复里一个用对了记得的事实、一个是不提任何记忆的客套话、两个记错了。考的是回复时敢不敢、会不会用记忆——过度保守的系统会选客套话 |
 
 题目与会话全部手写，不用 LLM 生成：金标逐字可控。
@@ -421,6 +422,13 @@ QUESTIONS: list[tuple[str, str, str, str, dict | None]] = [
     ("agg-5", "agg", "How many pets do I currently have?", "2 (Miso the cat and Biscuit the dog; the foster kitten went back)", {"any_of": [num("2", "two")]}),
     ("agg-6", "agg", "How many books have I finished reading this year?", "3 (Piranesi; Tomorrow, and Tomorrow, and Tomorrow; The Overstory)", {"any_of": [num("3", "three")]}),
     ("agg-7", "agg", "Which languages do I speak or study?", "English, Hindi and Portuguese", {"all_of": ["hindi", "portuguese"]}),
+    # ---- why（K5 变更原因保留率）
+    ("why-1", "why", "Why did my daughter switch piano teachers?", "Mrs. Alvarez retired", {"all_of": ["retir"]}),
+    ("why-2", "why", "Why did my rent go up in February?", "The landlord renewed the lease (with a rise to $1,525)", {"any_of": ["renew", "lease"]}),
+    ("why-3", "why", "Why did I buy a new bike saddle?", "The old one was killing me on longer rides", {"any_of": ["old (one|saddle)", "hurt", "killing", "uncomfortable", "pain", "longer rides"]}),
+    ("why-4", "why", "Why did you tell me to raise my sourdough hydration to 72%?", "The loaves were coming out dense (at 65%)", {"any_of": ["dense", r"65"]}),
+    ("why-5", "why", "Why did I increase my weekly running mileage to 22 miles?", "To build a base for the half marathon", {"any_of": ["half marathon", "half-marathon", "race"]}),
+    ("why-6", "why", "What made me start learning Portuguese?", "A spring trip to Portugal last year", {"any_of": ["portugal", "trip"]}),
     # ---- pref（评委）
     ("pref-1", "pref", "Can you suggest a dinner I could cook tonight?",
      "The user would prefer a vegetarian dinner that contains no mushrooms. A suggestion with meat or fish, or one built around mushrooms, does not fit.", None),
@@ -470,6 +478,8 @@ EVIDENCE: dict[str, list[str]] = {
     "agg-5": ["her name is miso", "my dog biscuit"],
     "agg-6": ["finished piranesi", "finished tomorrow", "finished the overstory"],
     "agg-7": ["hindi and english", "learning portuguese"],
+    "why-1": ["mrs. alvarez retired"], "why-2": ["renewed the lease"], "why-3": ["killing me on longer rides"],
+    "why-4": ["dense"], "why-5": ["half marathon"], "why-6": ["which is why i started learning the language"],
     "pref-1": ["vegetarian"], "pref-2": ["aisle seat"], "pref-3": ["notion"], "pref-4": ["ynab"],
     "pref-5": ["dislike thrillers"], "pref-6": ["left knee"],
 }

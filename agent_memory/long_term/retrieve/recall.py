@@ -331,21 +331,40 @@ ANNOTATION_ALLOWANCE = 0.15
 _NOTES_LABEL = "notes:"
 
 
+def _annotation(e: MemoryEntry) -> str:
+    """论断上原话里没有的信息：取代史、失效、出处类型。"""
+    note = _history_note(e)
+    if e.valid_to:
+        note += f"（已于 {e.valid_to.isoformat()} 失效）"
+    if e.source_type and e.source_type != "user":
+        note += f"（出处：{e.source_type}）"
+    return note
+
+
+def _is_annotation(e: MemoryEntry, words_present: bool) -> bool:
+    """这条论断该不该渲染成 note。
+
+    "记忆是键和注解"（原则一）：只是把原话复述一遍的论断是**键**——它已经在检索里起过作用，
+    原话到场后再渲染出来只会让答题器拿概括当事实（PersonaMem dev：去掉复述型 notes，
+    事实回忆 8/12 → 11/12）。只有带着原话里没有的信息的才是**注解**：取代史 / 失效 /
+    非用户出处 / 换算出的事件日期；以及原话根本没到场时，论断本身就是唯一载体。
+    """
+    if not words_present:
+        return True
+    return bool(_annotation(e)) or e.event_date is not None
+
+
 def evidence_first_text(it: SessionItem) -> str:
     """一条会话证据的文本：日期 → 原话 → 注解。命中行给全文，上下文行限长。"""
     parts = [f"[{it.date or '?'}]"]
     for h in it.lines:
         limit = None if h.line in it.hit_lines else CONTEXT_LINE_CHARS
         parts.append(f"{h.role}: {_clip(h.content, limit)}")
-    if it.claims:
+    notes = [e for e in it.claims if _is_annotation(e, bool(it.lines))]
+    if notes:
         parts.append(_NOTES_LABEL)
-        for e in it.claims:
-            note = _history_note(e)
-            if e.valid_to:
-                note += f"（已于 {e.valid_to.isoformat()} 失效）"
-            if e.source_type and e.source_type != "user":
-                note += f"（出处：{e.source_type}）"
-            parts.append(f"· {e.content}{note}")
+        for e in notes:
+            parts.append(f"· {e.content}{_annotation(e)}")
     return "\n".join(parts)
 
 
