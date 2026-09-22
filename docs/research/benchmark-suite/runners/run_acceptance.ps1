@@ -1,10 +1,11 @@
 # Acceptance chain for external test sets. ASCII only (PowerShell 5.1 reads .ps1 as ANSI).
 # Runs each stage in a supervisor loop: native crashes (0xC0000005) are resumed with --resume.
 # Usage (repo root, hidden window recommended):
-#   Start-Process pwsh -WindowStyle Hidden -ArgumentList '-NoProfile','-File','docs/research/benchmark-suite/runners/run_acceptance.ps1','-Stages','locomo,longmemeval','-EnvFile','D:\4_Projects\.env'
+#   Start-Process pwsh -WindowStyle Hidden -ArgumentList '-NoProfile','-File','docs/research/benchmark-suite/runners/run_acceptance.ps1','-Stages','locomo,longmemeval','-EnvFile','<path to your .env>'
+# -EnvFile: a dotenv file holding the API keys (default: .env in the repo root).
 param(
     [string]$Stages = "personamem,locomo,longmemeval",
-    [string]$EnvFile = "D:\4_Projects\.env",
+    [string]$EnvFile = ".env",
     [string]$Tag = "final",
     [int]$Jobs = 1
 )

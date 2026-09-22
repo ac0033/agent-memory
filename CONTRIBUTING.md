@@ -27,6 +27,8 @@ uv run ruff check .          # lint（E / F / I / UP，行长 100）
 - 保持 fail-closed：配置非法、校验失败、证据缺失直接报错，不静默降级；但写入路径的内容不能因故障丢失。
 - 改动行为语义（评价门、蒸馏硬规则、对账、复核队列、scope 归一化）前先读 [AGENTS.md](AGENTS.md) 的"关键行为语义"一节。
 - 新增 MCP tool 时同步更新 `skills/agent-memory/SKILL.md`、`docs/agent-integration.md` §三 与根目录两份 README 的工具表；写类工具的 description 需注明"仅限主 agent 调用"，并加进 `agents/coder.md` 的 `disallowedTools`。
+- 行为有变化的改动在 `docs/CHANGELOG.md` 顶部条目里加一行。升版本时 `pyproject.toml`、`agent_memory/__init__.py` 的 `__version__` 与 CHANGELOG 顶部条目三处同步，`tests/test_public_hygiene.py` 会核对。
+- 仓库里只放产品本身：本机路径、邮箱、密钥、私人材料不进版本库（同一测试会检查跟踪的文本文件）；开发者私人材料放 `.notes/`（已 gitignore）。
 
 ## 提 issue 时最有用的信息
 

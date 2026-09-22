@@ -469,7 +469,6 @@ class CodeBuddyCLIClient:
     """
 
     DEFAULT_CLI_DIRS = (
-        Path("D:/3_Software/Download/WorkBuddy/resources/app.asar.unpacked/cli"),
         Path.home() / "AppData" / "Local" / "Programs" / "WorkBuddy" / "resources" / "app.asar.unpacked" / "cli",
     )
 

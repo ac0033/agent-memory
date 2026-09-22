@@ -44,3 +44,7 @@ Thumbs.db
 
 # ---- 仅本地保留、不公开的个人草稿 ----
 docs/research/benchmark-suite/aml-inquiry-email-draft.md
+
+# ---- 开发者私人材料与编码助手的仓库本地配置（只忽略根目录）----
+/.notes/
+/.claude/
