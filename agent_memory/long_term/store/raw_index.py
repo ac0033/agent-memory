@@ -6,7 +6,7 @@
 - raw_meta：source、session_id、line（1 起，与 EvidenceRef.line_range 同口径）、
   role、date、scope、host；
 - raw_vec：vec0 虚表（bge-m3 1024 维，cosine）；
-- raw_fts：FTS5 trigram 全文。
+- raw_fts：FTS5 trigram 全文（中文子串）；raw_words：FTS5 unicode61 词级全文（英文 BM25 口径）。
 检索 = 稠密 + 稀疏两路 → RRF 融合（与记忆层检索同一套公式），scope 过滤在 SQL 层完成。
 两路的候选数为 max(CANDIDATES, k * 2)，随调用方要的 k 伸缩；稀疏路用
 fts_query.fts_or_query 把整句短语与词项拼成一个 OR 查询，由 bm25() 按 IDF 加权排序，
@@ -27,13 +27,20 @@ from pathlib import Path
 
 import sqlite_vec
 
-from agent_memory.long_term.store.fts_query import fts_or_query
+from agent_memory.long_term.store.fts_query import (
+    fts_or_query,
+    fuse_ranked_lists,
+    has_cjk,
+    words_or_query,
+)
 
 EMBEDDING_DIM = 1024
 RRF_K = 60
 # 两路各自召回的候选数下限；实际用 max(CANDIDATES, k * 2)，
 # 否则请求 k=100 时融合池最多只有 60 条，去重后填不满调用方要的位置
 CANDIDATES = 30
+# 稠密路全量排名的上限：归档很大时不把整库拉进内存
+DENSE_DEPTH = 5000
 
 
 @dataclass
@@ -78,8 +85,18 @@ class RawIndex:
                 content,
                 tokenize='trigram'
             );
+            CREATE VIRTUAL TABLE IF NOT EXISTS raw_words USING fts5 (
+                rid UNINDEXED,
+                content,
+                tokenize='unicode61'
+            );
             """
         )
+        # 词级表是后加的：老库里没有时从 trigram 表回填一次（派生物，随时可重建）
+        if self.conn.execute("SELECT COUNT(*) FROM raw_words").fetchone()[0] == 0:
+            self.conn.execute(
+                "INSERT INTO raw_words (rid, content) SELECT rid, content FROM raw_fts"
+            )
         self.conn.commit()
 
     def close(self) -> None:
@@ -131,6 +148,9 @@ class RawIndex:
                 self.conn.execute(
                     "INSERT INTO raw_fts (rid, content) VALUES (?, ?)", (rid, content)
                 )
+                self.conn.execute(
+                    "INSERT INTO raw_words (rid, content) VALUES (?, ?)", (rid, content)
+                )
                 added += 1
             self.conn.commit()
         return added
@@ -158,6 +178,8 @@ class RawIndex:
             )
             self.conn.execute("DELETE FROM raw_fts WHERE rid = ?", (rid,))
             self.conn.execute("INSERT INTO raw_fts (rid, content) VALUES (?, ?)", (rid, content))
+            self.conn.execute("DELETE FROM raw_words WHERE rid = ?", (rid,))
+            self.conn.execute("INSERT INTO raw_words (rid, content) VALUES (?, ?)", (rid, content))
             self.conn.commit()
         return True
 
@@ -198,8 +220,9 @@ class RawIndex:
                 return scopes is None or row[0] is None or row[0] in scopes
 
             qv = embedder.embed_texts([query])[0]
-            cand = max(CANDIDATES, k * 2)
-            fetch = min(total, max(cand * 3, k * 6))
+            # 稠密路给全量排名（上限 DENSE_DEPTH）：截在 2k 个候选时，RRF 里稀疏路排前、稠密路
+            # 排 41 名的行拿不到稠密分——朴素 RAG 是全量 RRF，原文路必须与它对等（原则一）
+            fetch = min(total, DENSE_DEPTH)
             dense = [
                 r[0]
                 for r in self.conn.execute(
@@ -208,24 +231,32 @@ class RawIndex:
                     (sqlite_vec.serialize_float32(qv), fetch),
                 ).fetchall()
                 if allowed(r[0])
-            ][:cand]
-            # 稀疏路：整句短语 + 词项用 OR 拼成一个查询，bm25() 按 IDF 加权排序（标准 BM25）
-            sparse: list[int] = []
-            expr = fts_or_query(query)
-            if expr:
+            ]
+            # 稀疏路：词级 BM25（unicode61，与朴素 RAG 同口径）与 trigram BM25（中文子串）各排一次，
+            # RRF 融合；trigram 的 OR 查询里高频虚词会把整句短语的贡献冲淡，词级表按 IDF 处理得更好
+            rankings: list[list[int]] = []
+            plans = [("raw_words", words_or_query(query))]
+            if has_cjk(query):
+                # trigram 表只在查询含中日韩文时参与：unicode61 切不开中文，
+                # 纯英文时它与词级表重复，只会把同一批行的名次算两遍
+                plans.append(("raw_fts", fts_or_query(query)))
+            for table, expr in plans:
+                if not expr:
+                    continue
                 try:
                     rows = self.conn.execute(
-                        "SELECT rid FROM raw_fts WHERE raw_fts MATCH ? ORDER BY bm25(raw_fts)"
+                        f"SELECT rid FROM {table} WHERE {table} MATCH ? ORDER BY bm25({table})"
                         " LIMIT ?",
-                        (expr, cand * 3),
+                        (expr, fetch),
                     ).fetchall()
-                    sparse = [rid for (rid,) in rows if allowed(rid)]
+                    rankings.append([rid for (rid,) in rows if allowed(rid)])
                 except sqlite3.OperationalError:
-                    sparse = []
+                    continue
+            sparse: list[int] = fuse_ranked_lists(rankings)
             fused: dict[int, float] = {}
             for rank, rid in enumerate(dense, start=1):
                 fused[rid] = fused.get(rid, 0.0) + 1.0 / (RRF_K + rank)
-            for rank, rid in enumerate(sparse[:cand], start=1):
+            for rank, rid in enumerate(sparse, start=1):
                 fused[rid] = fused.get(rid, 0.0) + 1.0 / (RRF_K + rank)
             hits = []
             for rid, score in sorted(fused.items(), key=lambda x: -x[1])[:k]:
@@ -271,7 +302,8 @@ class RawIndex:
         """清空后从 data/raw 全量重建（派生索引可重建，D1）。"""
         with self._lock:
             self.conn.executescript(
-                "DELETE FROM raw_vec; DELETE FROM raw_fts; DELETE FROM raw_meta;"
+                "DELETE FROM raw_vec; DELETE FROM raw_fts; DELETE FROM raw_words;"
+                " DELETE FROM raw_meta;"
             )
             self.conn.commit()
         n = 0

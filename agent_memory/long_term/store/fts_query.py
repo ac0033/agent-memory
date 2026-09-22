@@ -94,3 +94,22 @@ def fts_or_query(query: str, max_terms: int = DEFAULT_MAX_TERMS) -> str | None:
     """
     exprs = fts_expressions(query, max_terms)
     return " OR ".join(exprs) if exprs else None
+
+
+_WORD_RE = re.compile(r"[A-Za-z0-9]+")
+_CJK_RE = re.compile(r"[぀-ヿ㐀-鿿]")
+
+
+def has_cjk(text: str) -> bool:
+    return _CJK_RE.search(text) is not None
+
+
+def words_or_query(query: str) -> str | None:
+    """词级（unicode61）表用的 OR 查询：全部拉丁/数字词元，不限长、不截数。
+
+    与 trigram 表不同，词级表不需要 3 字符下限；"I""my""is" 这类词 IDF 很低但不是零，
+    朴素 RAG 的 BM25 就是这样给几乎每一行一个稀疏名次的。原文路要与它对等（原则一），
+    就不能让没命中长词的行在稀疏路里没有名次。
+    """
+    terms = list(dict.fromkeys(t.lower() for t in _WORD_RE.findall(query)))
+    return " OR ".join(f'"{t}"' for t in terms) if terms else None
