@@ -1,0 +1,57 @@
+# CHANGELOG
+
+版本号遵循 SemVer；1.0 之前接口随时可能调整。每个条目只写实质变化。
+
+## v0.3.0 · 2026-09-22 · 证据锚定记忆（memory-v1）
+
+读路径重做为"原话 + 注解"的证据束，写入期补上原话里没有的信息，机制推导自能力框架 K1–K13。
+
+**读路径**
+
+- 新增单一读路径 `MemoryService.recall`（`long_term/retrieve/recall.py`）：记忆命中与原文命中按证据位置归并为证据束，同一会话内相邻命中行聚成片段，原话在前、注解在后；`memory_search`、`memory_context`、对外 Search 契约与全部评测 runner 都走这一条路，零 LLM 调用。
+- 只渲染带原话没有的信息的注解（取代史、失效日期、非用户出处、换算出的事件日期）；只是复述在场原话的条目不渲染，常驻画像块同一规则。
+- 体量预算只约束注解，原文路命中的行一行不丢；载荷体量目标不超过朴素 RAG 的 1.15 倍。
+- 载荷首条写明读法、记录的时间跨度和一段静态的行为协议：问到记录里从未出现的具体人或物时说没提过，求建议的问题照常给建议。
+- 常驻画像按与当前查询的相关度排序后再截断。
+- 稀疏检索改为带 IDF 的标准 BM25；原文归档索引新增词级 FTS5 表 `raw_words`，英文与朴素 RAG 同口径，中文由 trigram 兜底。
+- 移除读取期的 LLM 合成机制（前提核验、读取期计数、启发式原文回退、交错渲染）。
+
+**写入路径**
+
+- 蒸馏新增 `event_date`（事件实际发生日期，按会话日期换算，原说法保留、日期括号附后）与 `cues`（线索词，只进索引、永不渲染）。
+- 可计数的实例逐条沉淀，蒸馏器不再写总数。
+- 记忆条目语言跟随对话语言。
+
+**检索缺陷修复**
+
+- 长问句上稀疏路失效；FTS 多词项名次改为 RRF 融合；不同历史之间不再共用已建好的系统实例。
+
+**评测**
+
+- 自建验证集（一份 55 场会话的共享历史，60 题 9 个能力桶）与 `dev_check.py`（第 0 层不调 LLM 查证据到场、体量比、检索对等率；第 1 层并发答题）。
+- LoCoMo、PersonaMem-32k 转换器，选择题确定性判分，配对报告 `paired_report.py`，验收链脚本 `run_acceptance.ps1`。
+- 能力框架新增记忆采纳率、检索对等率、载荷体量比、变更原因保留率四个指标。
+- 外部验收读数：LoCoMo 未见过的两段对话 42 对 33（p=0.049）；PersonaMem-32k 51 对 53（持平）；LongMemEval-S 读路径版本 46 对 46（持平）。
+
+**文档与仓库**
+
+- 新增 `docs/design/memory-v1-mechanism.md`（机制现状说明）与 `docs/research/memory-v1-design.md`（推导与逐轮实测）。
+- 外部测试集按来源放在 `data/external/<来源>/`，验证集在 `data/dev/`。
+- 新增公开卫生测试 `tests/test_public_hygiene.py`，守住版本号一致、无本机路径与密钥形状的字符串。
+
+## v0.2.0 · 2026-09-16 · 治理能力与 MemCompass
+
+- 归档先脱敏并持续归档（`memory_archive_sync`）；原文可检索（`memory_archive_search` / `memory_archive_read`）。
+- 记忆条目完整度自评与回读核验（`completeness` / `verify_flag`）。
+- 主动浮现（`memory_surface`、HTTP `POST /surface`、宿主 hook）：线索扩展 + 一跳扩散，精确率优先。
+- 待确认队列（`memory_confirm_*`）；工作记忆增加约束、未决问题、子任务与服务端整理（`memory_wm_refresh`）；事件边界情节卡片（`memory_episode_pack`）。
+- 双时态字段 `valid_from` / `valid_to` / `history`；来源类型（第三方与工具来源的说法降为 low 进复核）。
+- 遗忘请求（`memory_forget_request`）：删除记忆并把原文片段擦成占位符，审计只记元数据。
+- MCP tool 由 15 个增至 25 个；新增能力集中在 `server/service_v2.py`。
+- 评测套件 MemCompass v0.3（8 个子集 373 条合成用例）及正式报告；冻结副本迁入 `evals/memcompass/`。
+
+## v0.1.0 · 2026-09-05 · 三层记忆基础
+
+- 长期记忆：Markdown 记忆层 + SQLite 派生索引（sqlite-vec + FTS5），bge-m3 混合检索，脱敏 → 蒸馏 → 评价门 → 对账 → 变更传播的写入管线，人工复核队列，离线进化闭环（提案、三档验证、快照、回滚）。
+- 工作记忆层（目标 / 约束 / 待办）与短期记忆的 transcript 适配层。
+- MCP stdio 与 HTTP 常驻服务、LangGraph 适配、Skill；scope 纪律；宿主蒸馏协议（无 API key 也能用）；会话开头自动注入工作记忆。

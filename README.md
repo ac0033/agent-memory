@@ -2,7 +2,7 @@
 
 **给 LLM agent 的本地长期记忆基础设施。** 一个跑在你自己机器上的小服务，让任何 agent（Claude Code、Kimi Code、LangGraph 应用……）跨会话记住用户偏好、项目约定和踩过的坑；写入必须过门、可按要求遗忘、能在合适的时候主动想起来，并且用一套 373 条用例的评测集把效果量出来。
 
-> English: [README.en.md](README.en.md) · License: [MIT](LICENSE) · Python ≥ 3.12 · 789 个测试无需网络与 API key
+> English: [README.en.md](README.en.md) · License: [MIT](LICENSE) · Python ≥ 3.12 · 846 个测试无需网络与 API key · 当前版本 v0.3.0（[CHANGELOG](docs/CHANGELOG.md)）
 
 ---
 
@@ -44,7 +44,7 @@ agent-memory 把记忆分成三层（长期 / 工作 / 短期），写入走"脱
 - **写入期把原文里没有的东西加上去**：绝对日期、取代史、有效期、出处、线索词、用户画像——这些是朴素 RAG 结构上给不出的，也是领先的来源；
 - 治理能力照旧是它做不到的：按要求遗忘（泄漏 0%）、投毒拦截（误拦 0%）、任务状态、主动浮现、跨 agent 不串线。
 
-在没见过的外部对话上的读数（同一套默认配置，答题器与评委固定）：LoCoMo 两段新对话 60 题 **42 对 33**（p=0.049）；PersonaMem-32k 60 道选择题 51 对 53（持平）；LongMemEval-S 验收待完成。推导与逐轮记录见 [docs/research/memory-v1-design.md](docs/research/memory-v1-design.md)，机制说明见 [docs/design/memory-v1-mechanism.md](docs/design/memory-v1-mechanism.md)。
+在没见过的外部对话上的读数（同一套默认配置，答题器与评委固定）：LoCoMo 两段新对话 60 题 **42 对 33**（p=0.049）；PersonaMem-32k 60 道选择题 51 对 53（持平）；LongMemEval-S 60 题 46 对 46（持平，读路径版本）。推导与逐轮记录见 [docs/research/memory-v1-design.md](docs/research/memory-v1-design.md)，机制说明见 [docs/design/memory-v1-mechanism.md](docs/design/memory-v1-mechanism.md)。
 
 ## 核心亮点
 
@@ -61,15 +61,18 @@ agent-memory 把记忆分成三层（长期 / 工作 / 短期），写入走"脱
 
 ## 评测结果
 
-**外部验收（memory-v1，2026-09-22，每个来源只测一次；朴素 RAG 同场、同答题器 deepseek-v4.1-flash、同评委）**：
+**外部验收（memory-v1，2026-09-22，每个来源只测一次；朴素 RAG 同场、同答题器 deepseek-v4.1-flash、同评委 glm-5.3-flash，AML 公开的答题与评分提示词）**：
 
 | 来源 | 题量 | 朴素 RAG | memory-v1 | 配对 |
 |---|---|---|---|---|
-| LoCoMo（未见过的 conv-41/42） | 60 | 33 | **42** | 独赢 13 / 独输 4，McNemar p=0.049 |
-| PersonaMem-32k（4 份历史，选择题） | 60 | 53 | 51 | 独赢 2 / 独输 4，p=0.69；全文上下文 47 |
-| LongMemEval-S（n=60） | 60 | 46 | 待测 | 阶段一版本 46（持平） |
+| LoCoMo（未见过的 conv-41/42） | 60 | 33（55%） | **42（70%）** | 独赢 13 / 独输 4，McNemar p=0.049 |
+| LoCoMo 首测（conv-26/30） | 54 | 31（57%） | **37（69%）** | 独赢 10 / 独输 4，p=0.18，方向一致 |
+| PersonaMem-32k（4 份历史，选择题） | 60 | 53 | 51 | 独赢 2 / 独输 4，p=0.69（持平）；全文上下文 47 |
+| LongMemEval-S（读路径版本） | 60 | 46 | 46 | 可答题 45 对 45，错误弃答 1 对 1（持平） |
 
-自建验证集（60 题 9 个能力桶）58/60，朴素 RAG 39/45、全文上下文 40/45，每桶不低于两个对照。方法：[docs/research/benchmark-suite/README.md §8](docs/research/benchmark-suite/README.md)。
+LoCoMo 上的领先主要来自前提不成立的对抗题（9 对 0，载荷首条的静态行为协议起作用），多跳与时间题各 +1，单跳与开放域各 −1；载荷体量 1.15 倍于朴素 RAG。PersonaMem 上事实回忆 21/21、变更原因 6/6、推荐 7/7 与朴素 RAG 相等，唯一落后的 suggest_new_ideas 类（5 对 8 / 14）对全文上下文也只有 6/14。
+
+自建验证集（一份 55 场会话的共享历史，60 题 9 个能力桶）58/60，朴素 RAG 39/45、全文上下文 40/45，每桶不低于两个对照；34 道可答事实题没有一次错误弃答。方法：[docs/research/benchmark-suite/README.md §8](docs/research/benchmark-suite/README.md)。
 
 **内部评测集**（v0.2.2 时的读数）[MemCompass v0.3](docs/research/benchmark-suite/README.md)（8 个子集 / 373 条用例，本仓库自建，全部合成数据）。下表是 test 切分（193 条）上 **v0.2.2 与前一版本的逐题配对比较**，McNemar 精确检验：
 
@@ -129,7 +132,7 @@ agent-memory 把记忆分成三层（长期 / 工作 / 短期），写入走"脱
 git clone https://github.com/ac0033/agent-memory.git
 cd agent-memory
 uv sync                 # Python ≥ 3.12；bge-m3 嵌入模型首次使用时下载（约 2 GB）
-uv run pytest -q        # 789 个测试，不需要网络与 API key
+uv run pytest -q        # 846 个测试，不需要网络与 API key
 
 export AGENT_MEMORY_LLM_API_KEY=sk-...   # 任意 OpenAI 兼容端点；默认 DeepSeek deepseek-flash
 # 可选：AGENT_MEMORY_LLM_BASE_URL / AGENT_MEMORY_LLM_MODEL / AGENT_MEMORY_DATA_DIR
@@ -222,7 +225,7 @@ agent-memory/
 ├── examples/                # LangGraph 最小接入示例
 ├── evals/                   # 可信根（agent 不得修改）：layer1–3 / prefix 回归集 + MemCompass 冻结副本
 ├── docs/                    # 使用手册、接入指南、设计文档、研究与评测（见下）
-├── tests/                   # 842 个测试（慢测试默认跳过：uv run pytest -m slow）
+├── tests/                   # 846 个测试（慢测试默认跳过：uv run pytest -m slow）
 └── data/                    # 运行时数据（gitignored）：raw / memory / working / review_queue / snapshots / logs
                              #   + dev/（自建验证集）、external/<来源>/（外部测试集）
 ```
@@ -240,6 +243,7 @@ agent-memory/
 | 评测集 MemCompass 的设计、构造脚本、校验与运行 | [docs/research/benchmark-suite/README.md](docs/research/benchmark-suite/README.md) |
 | 最新评测报告 | [docs/research/benchmark-suite/results/](docs/research/benchmark-suite/results/) |
 | v0.2 每个机制为什么这么做 | [docs/research/optimization-v02.md](docs/research/optimization-v02.md) |
+| 各版本改了什么 | [docs/CHANGELOG.md](docs/CHANGELOG.md) |
 | 各阶段交付记录、缺陷复盘、可靠性加固 | [docs/history/](docs/history/) |
 | 给在本仓库工作的人和 agent 的规范（红线、约定、行为语义） | [AGENTS.md](AGENTS.md) |
 | 参与贡献 | [CONTRIBUTING.md](CONTRIBUTING.md) |
@@ -254,8 +258,8 @@ agent-memory/
 
 ## 已知局限与路线图
 
-- **LongMemEval-S 的 memory-v1 验收尚未完成**（需全量重蒸馏，约 10 小时机器时间）；MemCompass 内部套件在 memory-v1 上的回归也待重跑。
-- **PersonaMem 的 suggest_new_ideas 类仍略低于朴素 RAG**（5 对 8 / 14）；该类对全文上下文也只有 6/14，属答题者层面的"选泛泛选项"。
+- **领先不是在每个外部集上都显著**：LoCoMo 显著领先，PersonaMem 与 LongMemEval-S 与朴素 RAG 持平。LongMemEval-S 的读数来自读路径版本（写入期的绝对日期、线索词、逐实例沉淀之前）；MemCompass 内部表格的读数来自 v0.2.2。
+- **PersonaMem 的 suggest_new_ideas 类略低于朴素 RAG**（5 对 8 / 14）；该类对全文上下文也只有 6/14，属答题者层面的"选泛泛选项"。
 - **关联与图式归纳（K6 离线归纳）未实现**：离线整理的验证逻辑属于可信根，需要新的提案类型。
 - **写入成本**：同一人物会话密集时，对账对每条候选各调一次 LLM，几十场会话的重写可达小时级；按批判定是待办。
 - **LangGraph 适配只覆盖 15 个基础工具**，v0.2 新增的 10 个目前仅 MCP 侧提供。

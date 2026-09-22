@@ -3,4 +3,13 @@
 from agent_memory.config import Settings, get_settings
 from agent_memory.models import EvidenceRef, MemoryEntry, MemoryProposal
 
-__all__ = ["EvidenceRef", "MemoryEntry", "MemoryProposal", "Settings", "get_settings"]
+__version__ = "0.3.0"
+
+__all__ = [
+    "EvidenceRef",
+    "MemoryEntry",
+    "MemoryProposal",
+    "Settings",
+    "__version__",
+    "get_settings",
+]
