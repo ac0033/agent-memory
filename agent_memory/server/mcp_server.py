@@ -1,7 +1,8 @@
 """MCP Server：把记忆内核暴露为二十五个 MCP tool（v0.2 新增十个，见文末），stdio 传输。
 
 长期记忆 tool（八个）：
-- memory_search：单一读路径 recall（记忆命中 + 原文命中归并成证据束，原话在前）+ render_block 渲染，scope 过滤在检索层强制
+- memory_search：单一读路径 recall（记忆命中 + 原文命中归并成证据束，原话在前）
+  + render_block 渲染，scope 过滤在检索层强制
   （只查调用方给的 scope + global，global 由 HybridSearcher 自动并入）。
   M5 复核门：复核队列有积压时按 settings.review_gate 处置——ask 档拦截并等
   用户确认（acknowledge_pending=true 放行），strict 档一律拒读，off 不拦；
