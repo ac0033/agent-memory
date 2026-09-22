@@ -37,14 +37,14 @@ agent-memory 把记忆分成三层（长期 / 工作 / 短期），写入走"脱
 
 ## 为什么不是"再做一个 RAG"
 
-我们自己的评测说得很直白：在 2–8 个会话的短历史上，**朴素 RAG（原文全留、每轮检索）在多数纯问答子集上追平甚至超过本系统**。结构化记忆的价值不在"答题更准"，而在原文检索**结构上做不到**的事：
+朴素 RAG（原文全留、每轮检索）是很强的基线——我们自己早期的评测里，它在多数纯问答子集上追平甚至超过当时的记忆系统。memory-v1（2026-09-21 起）的答案不是"不跟它比问答"，而是把它当成**地板**：
 
-- **按要求遗忘**：朴素 RAG 与全文上下文的检索层硬泄漏都是 100%，本系统 0%；
-- **投毒鲁棒**：写入门把可疑内容挡在库外，攻击成功率 0%（朴素 RAG 11%），同时对用户本人的合法更新误拦 0%；
-- **任务状态与主动浮现**：朴素 RAG 没有状态结构（任务状态系统层 14% vs 92%），也没有"该不该提"的判断（负例误插话 11/13 vs 2/13）；
-- **跨 agent 不串线**：朴素 RAG 迁移成功率 100% 但串线率 58%，本系统串线 0%。
+- **载荷按构造包含原话**：记忆条目只是通向原文的键和贴在原文上的注解，答题者看到的信息不少于朴素 RAG 给的（检索对等率约 90%，载荷体量 ≤ 1.15 倍）；
+- **读取时只组织、不裁决**：不合成"库里没有 X"、不替答题者数数，读路径零 LLM 调用；
+- **写入期把原文里没有的东西加上去**：绝对日期、取代史、有效期、出处、线索词、用户画像——这些是朴素 RAG 结构上给不出的，也是领先的来源；
+- 治理能力照旧是它做不到的：按要求遗忘（泄漏 0%）、投毒拦截（误拦 0%）、任务状态、主动浮现、跨 agent 不串线。
 
-完整对照见 [评测报告 §1.3c](docs/research/benchmark-suite/results/2026-09-16-v03-report.md)。
+在没见过的外部对话上的读数（同一套默认配置，答题器与评委固定）：LoCoMo 两段新对话 60 题 **42 对 33**（p=0.049）；PersonaMem-32k 60 道选择题 51 对 53（持平）；LongMemEval-S 验收待完成。推导与逐轮记录见 [docs/research/memory-v1-design.md](docs/research/memory-v1-design.md)，机制说明见 [docs/design/memory-v1-mechanism.md](docs/design/memory-v1-mechanism.md)。
 
 ## 核心亮点
 
@@ -54,14 +54,24 @@ agent-memory 把记忆分成三层（长期 / 工作 / 短期），写入走"脱
 4. **可验证的遗忘。** `memory_forget_request` 同时删除记忆条目和原文归档中的对应片段，审计日志只记元数据，检索层与回答层泄漏均为 0%。
 5. **主动浮现（精确率优先）。** LLM 线索扩展 + 一跳扩散 + 逐条判断"不提就会出错 / 原理相通值得点明"，宁可少说。系统层 F0.5 77%，误插话率 2/13。
 6. **双时态与变更史。** 每条记忆带 `valid_from / valid_to`，对账 UPDATE 时旧版本折进 `history`；蒸馏时按会话日期换算相对时间、识别追溯更正。"截至某时"问答准确率 97%。
-7. **原文可检索、只有要点时自己知道。** 归档脱敏后建派生索引；每条记忆带完整度自评（complete / gist / mismatch），命中"只有要点"的记忆时自动附上原文证据，回溯补全率从 19% 提升到 88%。
+7. **原话随记忆一起到场。** 归档脱敏后建派生索引（向量 + 词级 / trigram 全文）；检索返回的是"证据束"——同一处原话及其注解（取代史、有效期、出处、事件日期），原话在前、注解在后，只是复述原话的条目不再渲染。答题者永远能回到证据核实。
 8. **离线进化闭环，可回滚。** `agent-memory evolve` 做去重合并、离线复核、降权归档，产出**提案**而非直接改库；三档验证（边界 / 留存 / 安全）任一不过即否决，晋升前快照、晋升后审计、随时回滚。
 9. **宿主中立，没有 API key 也能用。** MCP over HTTP / MCP stdio / LangGraph 库 / Skill 四种接入；订阅制 agent 拿 `memory_distill_prompt` 的协议在自己的上下文里蒸馏，服务端照样校验、脱敏、过门、对账。
 10. **自带评测集与诚实的报告。** MemCompass：8 个子集 373 条合成用例，覆盖公开评测集没有的能力（遗忘、投毒、主动浮现、任务状态、跨 agent、双时态……），程序化金标、异源评委、配对统计、消融、对照组，报告里连"朴素 RAG 在哪里赢了我们"都写清楚。
 
 ## 评测结果
 
-评测集 [MemCompass v0.3](docs/research/benchmark-suite/README.md)（8 个子集 / 373 条用例，本仓库自建，全部合成数据）。下表是 test 切分（193 条）上 **v0.2.2 与前一版本的逐题配对比较**，McNemar 精确检验：
+**外部验收（memory-v1，2026-09-22，每个来源只测一次；朴素 RAG 同场、同答题器 deepseek-v4.1-flash、同评委）**：
+
+| 来源 | 题量 | 朴素 RAG | memory-v1 | 配对 |
+|---|---|---|---|---|
+| LoCoMo（未见过的 conv-41/42） | 60 | 33 | **42** | 独赢 13 / 独输 4，McNemar p=0.049 |
+| PersonaMem-32k（4 份历史，选择题） | 60 | 53 | 51 | 独赢 2 / 独输 4，p=0.69；全文上下文 47 |
+| LongMemEval-S（n=60） | 60 | 46 | 待测 | 阶段一版本 46（持平） |
+
+自建验证集（60 题 9 个能力桶）58/60，朴素 RAG 39/45、全文上下文 40/45，每桶不低于两个对照。方法：[docs/research/benchmark-suite/README.md §8](docs/research/benchmark-suite/README.md)。
+
+**内部评测集**（v0.2.2 时的读数）[MemCompass v0.3](docs/research/benchmark-suite/README.md)（8 个子集 / 373 条用例，本仓库自建，全部合成数据）。下表是 test 切分（193 条）上 **v0.2.2 与前一版本的逐题配对比较**，McNemar 精确检验：
 
 | 能力 | 子集 / 模式 | v0.2.2 | 前一版本 | p | 机制证据 |
 |---|---|---|---|---|---|
@@ -212,8 +222,9 @@ agent-memory/
 ├── examples/                # LangGraph 最小接入示例
 ├── evals/                   # 可信根（agent 不得修改）：layer1–3 / prefix 回归集 + MemCompass 冻结副本
 ├── docs/                    # 使用手册、接入指南、设计文档、研究与评测（见下）
-├── tests/                   # 789 个测试（慢测试默认跳过：uv run pytest -m slow）
+├── tests/                   # 842 个测试（慢测试默认跳过：uv run pytest -m slow）
 └── data/                    # 运行时数据（gitignored）：raw / memory / working / review_queue / snapshots / logs
+                             #   + dev/（自建验证集）、external/<来源>/（外部测试集）
 ```
 
 ## 文档导航
@@ -223,6 +234,8 @@ agent-memory/
 | 把记忆接进我的 agent，宿主要负责什么 | [docs/agent-integration.md](docs/agent-integration.md) |
 | 日常用法：CLI、评估命令、离线整理、人工复核、hook、会话收尾 | [docs/usage.md](docs/usage.md) |
 | 理解三层记忆的设计与取舍 | [docs/design/memory-architecture.md](docs/design/memory-architecture.md) |
+| 记忆现在怎么读、怎么写、为什么（memory-v1） | [docs/design/memory-v1-mechanism.md](docs/design/memory-v1-mechanism.md) |
+| 机制是怎么从能力框架推导出来的、每一轮实测 | [docs/research/memory-v1-design.md](docs/research/memory-v1-design.md) |
 | 好的 agent 记忆应该具备哪些能力、怎么度量 | [docs/research/agent-memory-capability-framework.md](docs/research/agent-memory-capability-framework.md) |
 | 评测集 MemCompass 的设计、构造脚本、校验与运行 | [docs/research/benchmark-suite/README.md](docs/research/benchmark-suite/README.md) |
 | 最新评测报告 | [docs/research/benchmark-suite/results/](docs/research/benchmark-suite/results/) |
@@ -241,12 +254,12 @@ agent-memory/
 
 ## 已知局限与路线图
 
-- **长历史档位未建**：现有用例 2–8 个会话，需要每题约 35 万 token 的 S/M 档才能判断真实长历史下的收益（[评测集 README §7](docs/research/benchmark-suite/README.md)）。
-- **自动附带原文偏多**：不需要回溯的用例上仍有约 50% 附了原文证据，护栏待收紧。
-- **关联与图式归纳（K6）未实现**：离线整理的验证逻辑属于可信根，需要新的提案类型。
+- **LongMemEval-S 的 memory-v1 验收尚未完成**（需全量重蒸馏，约 10 小时机器时间）；MemCompass 内部套件在 memory-v1 上的回归也待重跑。
+- **PersonaMem 的 suggest_new_ideas 类仍略低于朴素 RAG**（5 对 8 / 14）；该类对全文上下文也只有 6/14，属答题者层面的"选泛泛选项"。
+- **关联与图式归纳（K6 离线归纳）未实现**：离线整理的验证逻辑属于可信根，需要新的提案类型。
+- **写入成本**：同一人物会话密集时，对账对每条候选各调一次 LLM，几十场会话的重写可达小时级；按批判定是待办。
 - **LangGraph 适配只覆盖 15 个基础工具**，v0.2 新增的 10 个目前仅 MCP 侧提供。
-- **只有中文评测集**；英文平行版尚未构建。
-- 评测数据为合成数据，评委—人工一致性研究尚未开展。
+- 内部评测集为合成数据，评委—人工一致性研究尚未开展。
 
 ## 许可
 

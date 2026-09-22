@@ -38,7 +38,7 @@ Full comparison: [report §1.3c](docs/research/benchmark-suite/results/2026-09-1
 4. **Verifiable forgetting.** `memory_forget_request` deletes memories and blanks the matching archive spans; the audit log holds metadata only. Retrieval-layer and answer-layer leakage: 0%.
 5. **Proactive recall, precision first.** LLM cue expansion + one-hop spreading + a per-item "would omitting this cause an error / is the principle transferable" judgement. System-level F0.5 77%, false interjections 2/13.
 6. **Bitemporal memories with history.** `valid_from / valid_to` on every entry; on UPDATE the old version folds into `history`; distillation resolves relative dates against the session date and detects retroactive corrections. As-of questions: 97%.
-7. **Searchable archive, self-aware gists.** Redacted, append-only archive with a derived index; each memory carries a completeness flag (complete / gist / mismatch); hitting a gist automatically attaches raw evidence. Back-fill success rose from 19% to 88%.
+7. **The words arrive with the memory.** Redacted, append-only archive with a derived index (vectors + word-level and trigram full text); retrieval returns *evidence bundles* — the original lines plus their annotations (supersession history, validity, provenance, event date), words first. A memory that merely restates lines already shown is not rendered. The answerer can always go back to the evidence.
 8. **Offline evolution loop with rollback.** `agent-memory evolve` merges duplicates, re-verifies old entries and downgrades stale ones, producing a *proposal* rather than editing the store; three independent checks (boundary / retention / safety) each hold a veto; snapshot before promotion, audit after, rollback at any time.
 9. **Host-neutral, works without an API key.** MCP over HTTP, MCP stdio, LangGraph library, Skill. Subscription-only hosts distill in their own context using the protocol from `memory_distill_prompt`; the server still validates, redacts, gates and reconciles.
 10. **A benchmark and an honest report.** MemCompass: 8 subsets, 373 synthetic cases covering what public benchmarks do not (forgetting, poisoning, proactive recall, task state, cross-agent, bitemporal…), with programmatic gold labels, independent judges, paired statistics, ablations and control groups. The report says where naive RAG beats us.
@@ -194,7 +194,7 @@ agent-memory/
 ├── examples/                # minimal LangGraph example
 ├── evals/                   # trusted root (agents must not edit): layer1–3 / prefix sets + MemCompass frozen copy
 ├── docs/                    # usage, integration, design, research and benchmark (see below)
-├── tests/                   # 789 tests (slow ones skipped by default: uv run pytest -m slow)
+├── tests/                   # 842 tests (slow ones skipped by default: uv run pytest -m slow)
 └── data/                    # runtime data (gitignored): raw / memory / working / review_queue / snapshots / logs
 ```
 
@@ -205,6 +205,8 @@ agent-memory/
 | Plug memory into my agent and know what the host is responsible for | [docs/agent-integration.md](docs/agent-integration.md) |
 | Everyday usage: CLI, evaluation commands, evolve, review, hooks, session end | [docs/usage.md](docs/usage.md) |
 | Understand the three-layer design and its trade-offs | [docs/design/memory-architecture.md](docs/design/memory-architecture.md) |
+| How memory is read and written today, and why (memory-v1) | [docs/design/memory-v1-mechanism.md](docs/design/memory-v1-mechanism.md) (Chinese) |
+| How the mechanism was derived from the capability framework, round by round | [docs/research/memory-v1-design.md](docs/research/memory-v1-design.md) (Chinese) |
 | See which capabilities a good agent memory needs and how to measure them | [docs/research/agent-memory-capability-framework.md](docs/research/agent-memory-capability-framework.md) |
 | Build, validate and run the MemCompass benchmark | [docs/research/benchmark-suite/README.md](docs/research/benchmark-suite/README.md) |
 | Read the latest evaluation report | [docs/research/benchmark-suite/results/](docs/research/benchmark-suite/results/) |

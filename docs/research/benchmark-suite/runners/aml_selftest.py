@@ -6,8 +6,9 @@
 契约映射（public-benchmarks-survey.md §2.3）：
 - Add：每个 haystack 会话调用一次 `MemoryService.add(conversation_json=...)`（归档 → 蒸馏 → 评价门 → 对账），
   user_id 对应一个隔离的数据目录 + scope（每题一个临时目录，题与题之间不共享任何状态）；
-- Search：query 用题面原文，top_k=100；我们返回 记忆条目（混合检索，最多 40 条）+ 原文归档命中（补足到 100），
-  每条 content 前缀会话日期。Search 不生成答案；
+- Search：query 用题面原文，top_k=100；载荷由被测系统自己组装（`MemoryService.recall_items`，memory-v1
+  的单一读路径：证据片段 + 注解，首条为读法/时间跨度/行为协议），runner 不参与，评测与线上不会各自漂移。
+  Search 不生成答案；选择题数据集（PersonaMem）走 MCQ_TEMPLATE 并按选项字母确定性判分；
 - 答题：AML `data/longmemeval-s/pipeline.py` 的 OPEN_ENDED_ANSWER_TEMPLATE 原文；评分：ACCURACY_PROMPT 原文，二值。
 
 与正式评测的已知偏差（报告里必须写明）：
@@ -58,7 +59,6 @@ from systems import AgentMemorySystem, NaiveRAGSystem, load_agent_memory, native
 
 OUT_ROOT = REPO / "data" / "logs" / "aml_selftest"
 TOP_K = 100
-MEM_K = 40  # 混合检索两路各取 20 候选，RRF 后最多 40 条
 SCOPE_TAG = "lme"
 
 # ---------------------------------------------------------------- AML 提示词（逐字复制自官方 pipeline.py）
