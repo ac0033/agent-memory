@@ -46,6 +46,8 @@ def _query_rows(args, questions, am, rag, embedder, scope):
             cut_from, cut_to = head.find("When a question asks"), head.find("Recorded conversations")
             if cut_from >= 0:
                 items[0] = {**items[0], "content": head[:cut_from] + (head[cut_to:] if cut_to >= 0 else "")}
+        if args.strip_profile:
+            items = [x for x in items if x["id"] != "profile"]
         if args.strip_notes:
             items = [{**x, "content": x["content"].split("\nnotes:")[0]} for x in items if x["id"] != "profile"]
         if args.flat:
@@ -83,6 +85,7 @@ def main() -> None:
     ap.add_argument("--env-file", default=None)
     ap.add_argument("--strip-notes", action="store_true",
                     help="对照实验：去掉画像条目与各条里的 notes，只留原话（看注解是帮忙还是添乱）")
+    ap.add_argument("--strip-profile", action="store_true", help="对照实验：去掉常驻画像块")
     ap.add_argument("--flat", action="store_true",
                     help="对照实验：不按片段打包，原文路命中逐条按名次给（与朴素 RAG 同形）")
     ap.add_argument("--with-rag", action="store_true", help="同场让朴素 RAG 的载荷也答一遍")

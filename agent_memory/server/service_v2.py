@@ -82,6 +82,15 @@ def render_raw_hits(hits, budget: int = RAW_BLOCK_BUDGET, title: str = "raw_hist
     return "\n".join(lines)
 
 
+def _words_displayed(e: MemoryEntry, displayed: set[tuple[str, str, int]]) -> bool:
+    """这条画像所依据的原话行是否已经出现在载荷里。"""
+    for ev in e.evidence:
+        lo, hi = ev.line_range or (0, -1)
+        if any((ev.source, ev.session_id, line) in displayed for line in range(lo, hi + 1)):
+            return True
+    return False
+
+
 class V2ServiceMixin:
     # ------------------------------------------------------------ P02 / P03 原文归档与检索
 
@@ -242,15 +251,17 @@ class V2ServiceMixin:
         out: list[dict[str, Any]] = []
         head = header_text(*self.raw_index.date_span([scope, "global"]))
         out.append({"id": "header", "kind": "meta", "session_id": None, "content": head})
-        profile = profile_text(_profile_entries(self.store, scope), [r.entry.id for r in deep])
+        packed = pack(bundles, raw_hits, k)
+        # 画像也是派生概括，同一条原则：它的原话已经在载荷里时就是复述，不再渲染
+        # （PersonaMem dev：画像整块渲染 24/34，去掉 26/34；验证集偏好桶又需要它兜底）
+        displayed = {(h.source, h.session_id, h.line) for it in packed for h in it.lines}
+        profile = profile_text(
+            [e for e in _profile_entries(self.store, scope) if not _words_displayed(e, displayed)],
+            [r.entry.id for r in deep],
+        )
         if profile:
             out.append({"id": "profile", "kind": "memory", "session_id": None, "content": profile})
-        shown = {line[2:] for line in (profile or "").splitlines()[1:]}
-        for b in bundles:
-            # 已经在常驻画像里出现的论断不在会话条目里重复
-            if b.entry is not None and b.entry.content in shown and not b.hit_lines:
-                b.lines = []
-        for it in pack(bundles, raw_hits, k):
+        for it in packed:
             out.append(
                 {
                     "id": f"{it.source}/{it.session_id}",
