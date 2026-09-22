@@ -23,7 +23,7 @@
 题目与会话全部手写，不用 LLM 生成：金标逐字可控。
 
     uv run python docs/research/benchmark-suite/build/build_dev_qa.py
-    → data/external/dev_qa_v1.json
+    → data/dev/dev_qa_v1.json
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ import json
 from pathlib import Path
 
 REPO = next(p for p in Path(__file__).resolve().parents if (p / "pyproject.toml").exists())
-OUT = REPO / "data" / "external" / "dev_qa_v1.json"
+OUT = REPO / "data" / "dev" / "dev_qa_v1.json"
 QUESTION_DATE = "2024/03/30 (Sat) 10:00"
 
 U, A = "user", "assistant"

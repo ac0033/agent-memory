@@ -11,7 +11,7 @@ user / assistant 两种 role，而且把人设原文喂进去等于泄题。原�
 数据不入库（data/ 已 gitignore）。外部集原则上只测一次。
 
     uv run python docs/research/benchmark-suite/build/convert_personamem.py --contexts 4
-    → data/external/personamem_sample.json
+    → data/external/personamem/sample.json（已存：test_a / test_b 验收样本，dev_a / dev_b 诊断用）
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from pathlib import Path
 
 REPO = next(p for p in Path(__file__).resolve().parents if (p / "pyproject.toml").exists())
 SRC = REPO / "data" / "external" / "personamem"
-OUT = REPO / "data" / "external" / "personamem_sample.json"
+OUT = REPO / "data" / "external" / "personamem" / "sample.json"
 
 
 def main() -> None:

@@ -10,7 +10,7 @@ LoCoMo 是两个人之间的多会话对话，不是"用户-助手"——正好�
 数据不入库（data/ 已 gitignore）。外部集原则上只测一次：这个脚本只负责转换，不负责调参。
 
     uv run python docs/research/benchmark-suite/build/convert_locomo.py --conversations 0,1 --per-category 6
-    → data/external/locomo_sample.json
+    → data/external/locomo/sample.json（验收用的两份样本已存为 sample_a.json / sample_b.json）
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ import re
 from pathlib import Path
 
 REPO = next(p for p in Path(__file__).resolve().parents if (p / "pyproject.toml").exists())
-SRC = REPO / "data" / "external" / "locomo10.json"
-OUT = REPO / "data" / "external" / "locomo_sample.json"
+SRC = REPO / "data" / "external" / "locomo" / "locomo10.json"
+OUT = REPO / "data" / "external" / "locomo" / "sample.json"
 CATEGORY = {1: "multi-hop", 2: "temporal", 3: "open-domain", 4: "single-hop", 5: "adversarial"}
 
 

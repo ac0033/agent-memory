@@ -110,3 +110,17 @@ v1.0 目标规模仍以各数据卡为准（合计约 1,300 条）；v0.2 的规
 6. **最要紧的缺口：S/M 档长历史（35 万 token）没有构建**。现在每条用例只有 2–8 个会话，原文整体可检索，朴素 RAG 因此在多数能力上追平甚至超过被测记忆系统（见 `results/2026-09-16-v03-report.md` §1.3c）；不补上长历史档位，K1、K3、K5、K7、K9 就无法按框架 §6.2 判到 L2。
    **2026-09-16 评估（未动工，等用户拍板）**：这是下一轮最该做的事，但不是一个下午能做完的——(a) 填充池要用与答题器、评委都不同源的模型生成（按 §9.2 的修订模型规则），S 档每题约 50 个会话，即使按子集共用填充池、只加每题的近似干扰，也要新生成数百到上千个会话；(b) 被测系统对每个会话都要蒸馏一次，S 档的写入调用量约为现在的 10 倍，粗估 base + v2 + 对照组一轮 ¥60–100（现在一轮约 ¥25，DeepSeek 余额约 ¥34），M 档再乘 6；(c) 本机 16 GB 内存只能单进程跑、后台任务约 10 分钟就被内存守护杀掉，S 档全套预计要连续跑 2–4 天。建议顺序：先只建 S 档、只跑 at / ca / pf 三个 Q 轨子集（K4/K5/K3 正是朴素 RAG 追平的地方），有区分度再扩到全套与 M 档。
    **2026-09-18 补充**：用 AML 的 LongMemEval-S（每题约 12 万 token 的真实长历史）做了一次契约自测（`results/2026-09-18-aml-selftest-report.md`），18 题上记忆系统与朴素 RAG 分不出高下、证据召回都是 18/18——长历史本身并没有拉开差距，K4 档位的价值需要重新评估：与其自建 35 万 token 填充池，不如直接用 LongMemEval-S / AML 作为长历史外部对照。
+
+## 8. 外部评测与自建验证集（memory-v1，2026-09-21 起）
+
+MemCompass 是内部套件；泛化的证明来自**多个外部来源**。两类数据、两类 runner，定位不同：
+
+| | 自建验证集（集成测试） | 外部测试集（验收） |
+|---|---|---|
+| 数据 | `data/dev/dev_qa_v1.json`：一份共享历史（55 场会话），60 题 9 桶（det/upd/tmp/agg/why/pref/abs/use），按能力维度出题，能规则判分的不调评委 | `data/external/longmemeval/`（LongMemEval-S cleaned + 分层抽样）、`data/external/locomo/`（LoCoMo，sample_a / sample_b）、`data/external/personamem/`（PersonaMem-32k，test_a / test_b 验收，dev_a / dev_b 只用于诊断） |
+| 构造 | `build/build_dev_qa.py`（`--merge N` 出长会话变体） | `build/convert_locomo.py`、`build/convert_personamem.py`（`--skip/--contexts` 切分 dev 与验收样本） |
+| runner | `runners/dev_check.py`：第 0 层不调 LLM（证据到场率、载荷体量比、与朴素 RAG 的检索对等率、写入质量），`--answer` 第 1 层并发答题；消融开关 `--strip-notes / --strip-profile / --flat / --segment-gap / --strip-protocol / --with-rag` | `runners/aml_selftest.py`（AML Add/Search 契约、官方答题与评分提示词；选择题走 `MCQ_TEMPLATE` 确定性判分）；`runners/run_acceptance.ps1` 串起三段并自动续跑 |
+| 报告 | 终端 | `runners/paired_report.py <run:system> ...`：按题型分桶 + 两两精确 McNemar，可跨 run 取列 |
+| 频次 | 反复用，几分钟一轮 | 原则上每个来源只测一次；某板块明确不佳且足以定位问题时，修复 → 验证集 → 同一份已缓存样本复测该板块 |
+
+结果存 `data/logs/aml_selftest/<run-id>/`（gitignored；`_archive/` 放已被取代的诊断轮次）。写入 LLM 调用有磁盘缓存，蒸馏提示词不变时复测只花答题费。三个来源的读数与逐轮记录见 `../memory-v1-design.md` §8–§10。

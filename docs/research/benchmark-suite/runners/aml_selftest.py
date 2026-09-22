@@ -500,7 +500,7 @@ def git_head() -> str:
 def main() -> None:
     global TOP_K  # --top-k 覆盖模块常量；声明必须在首次使用之前
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data", type=Path, default=REPO / "data" / "external" / "longmemeval_s_cleaned.json")
+    ap.add_argument("--data", type=Path, default=REPO / "data" / "external" / "longmemeval" / "longmemeval_s_cleaned.json")
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--systems", default="am,naive_rag")
     ap.add_argument("--n-per-type", type=int, default=1, help="每个题型抽几题（6 个题型）")

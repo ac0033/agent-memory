@@ -73,7 +73,7 @@ def _query_rows(args, questions, am, rag, embedder, scope):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", type=Path, default=A.REPO / "data" / "external" / "dev_qa_v1.json")
+    ap.add_argument("--data", type=Path, default=A.REPO / "data" / "dev" / "dev_qa_v1.json")
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--top-k", type=int, default=20)
     ap.add_argument("--buckets", default=None, help="只跑这些桶（逗号分隔）")
