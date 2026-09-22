@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TEXT_SUFFIXES = {
     ".py", ".md", ".toml", ".yaml", ".yml", ".json", ".txt", ".sh", ".ps1", ".cmd", ".cfg", ".ini",
 }
-SKIP_FILES = {"uv.lock"}
+SKIP_FILES = {"uv.lock", "tests/test_public_hygiene.py"}  # 后者是放行清单本身
 
 # 通用示例路径（文档与测试夹具里故意写的占位）
 ALLOWED_PATHS = (
