@@ -10,6 +10,7 @@
 """
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from agent_memory.config import Settings, get_settings
 
@@ -17,8 +18,12 @@ from agent_memory.config import Settings, get_settings
 class Embedder:
     """bge-m3 文本嵌入。lazy 初始化：第一次 embed_texts 时才加载模型。
 
-    线程安全：评估 runner 用线程池并发跑用例时共享本单例，encode 加锁串行化
-    （推理是 CPU 密集，加锁几乎不损失吞吐，只防并发进 native 代码的未知风险）。
+    线程模型：模型加载与 encode 全部在本实例专属的一个常驻线程里执行，调用方线程只提交
+    任务、等结果。原因：torch 在每个**首次调用它的线程**上分配一套线程本地资源（OpenMP
+    工作线程与缓冲），线程退出后不归还——Windows 上实测每个短命线程约 10 MB 提交内存。
+    对账阶段每次写入都新开线程池并在其中查近邻（reconcile.py），逐题评测一题就泄漏约 4 GB，
+    常驻服务也随写入次数缓慢泄漏。单一常驻线程让 torch 只见到一个线程；串行化本来就有
+    （推理是 CPU 密集，串行几乎不损失吞吐）。
     """
 
     def __init__(self, model_name: str | None = None, max_seq_length: int | None = None):
@@ -28,26 +33,27 @@ class Embedder:
         # None = 模型默认（bge-m3 8192）；见 Settings.embedding_max_seq_length
         self.max_seq_length = max_seq_length
         self._model = None
-        self._encode_lock = threading.Lock()
+        self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="embedder")
 
     def _ensure_model(self):
+        # 只在工作线程里调用，天然串行，无需加锁
         if self._model is None:
-            with self._encode_lock:
-                if self._model is None:
-                    from sentence_transformers import SentenceTransformer
+            from sentence_transformers import SentenceTransformer
 
-                    self._model = SentenceTransformer(self.model_name)
-                    if self.max_seq_length:
-                        self._model.max_seq_length = self.max_seq_length
+            self._model = SentenceTransformer(self.model_name)
+            if self.max_seq_length:
+                self._model.max_seq_length = self.max_seq_length
         return self._model
+
+    def _encode(self, texts: list[str]) -> list[list[float]]:
+        model = self._ensure_model()
+        return [v.tolist() for v in model.encode(texts, normalize_embeddings=True)]
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """批量嵌入，返回与输入等长的 1024 维向量列表（L2 归一化，适配 cosine）。"""
         if not texts:
             return []
-        model = self._ensure_model()
-        with self._encode_lock:
-            return [v.tolist() for v in model.encode(texts, normalize_embeddings=True)]
+        return self._worker.submit(self._encode, list(texts)).result()
 
 
 _lock = threading.Lock()
