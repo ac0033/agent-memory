@@ -134,11 +134,16 @@ Just return the label CORRECT or WRONG in a json format with the key as "label":
 ```"""
 
 
-def render_answer_prompt(question: str, memories: str) -> str:
+def render_answer_prompt(question: str, memories: str, question_date: str | None = None) -> str:
     values = {"speaker_1_name": "user", "speaker_1_memories": memories, "speaker_2_name": "assistant",
               "speaker_2_memories": "", "question": question}
-    return re.sub(r"\{\{(speaker_1_name|speaker_1_memories|speaker_2_name|speaker_2_memories|question)\}\}",
-                  lambda m: values[m.group(1)], OPEN_ENDED_ANSWER_TEMPLATE)
+    prompt = re.sub(r"\{\{(speaker_1_name|speaker_1_memories|speaker_2_name|speaker_2_memories|question)\}\}",
+                    lambda m: values[m.group(1)], OPEN_ENDED_ANSWER_TEMPLATE)
+    if question_date:
+        # AML 模板不带提问日期，答题器只能拿最后一场对话的日期当"今天"，"几天前"类题两边都错
+        # （2026-09-24 LongMemEval 时间推理板块）。LongMemEval 官方答题提示词有 "Current Date"，这里照其写法补上。
+        prompt = prompt.replace("\nQuestion: ", f"\nCurrent Date: {question_date}\nQuestion: ", 1)
+    return prompt
 
 
 MCQ_TEMPLATE = """You are a personal assistant with memories of your past conversations with this user.
@@ -396,7 +401,8 @@ def run_one(q: dict, sys_name: str, ctx: dict, log) -> dict:
             json.dumps(items, ensure_ascii=False), encoding="utf-8")
     memories = "\n".join(x["content"] for x in items) if items else "(no memories)"
     prompt = (render_mcq_prompt(q["question"], q["options"], memories) if q.get("options")
-              else render_answer_prompt(q["question"], memories))
+              else render_answer_prompt(q["question"], memories,
+                                        q["question_date"] if ctx.get("with_date") else None))
     row["prompt_chars"] = len(prompt)
     answer = ctx["answerer"].complete(prompt)
     row["answer"] = answer
@@ -526,6 +532,8 @@ def main() -> None:
                     help="Search 返回条数。外部契约固定 100；自建 dev 集历史短，调小才有检索压力")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--no-cache", action="store_true")
+    ap.add_argument("--with-date", action="store_true",
+                    help="答题提示词补上提问日期（LongMemEval 官方写法 Current Date），缺省沿用 AML 原模板")
     args = ap.parse_args()
     TOP_K = args.top_k
 
@@ -591,7 +599,8 @@ def main() -> None:
         return
     ctx = {"am_root": args.am_root.resolve(), "am_label": args.am_label, "embedder": embedder, "settings": settings,
            "system_llm": system_llm, "answerer": answerer, "judge": judge, "judge_name": judge_name,
-           "payload_dir": results.parent / "payloads", "reuse_systems": args.jobs == 1}
+           "payload_dir": results.parent / "payloads", "reuse_systems": args.jobs == 1,
+           "with_date": args.with_date}
 
     bal0 = deepseek_balance(env)
     meta = {"run_id": args.run_id, "head": git_head(), "started": dt.datetime.now().isoformat(timespec="seconds"),

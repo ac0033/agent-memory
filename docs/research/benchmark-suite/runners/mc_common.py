@@ -75,12 +75,21 @@ class CachedEmbedder:
         self.path = path
         self.cache: dict[str, bytes] = {}
         self._lock = threading.RLock()
-        self._dirty = 0
+        self._new: dict[str, bytes] = {}  # 上次保存后新增的向量，增量落盘
         if path and path.exists():
             try:
                 self.cache = pickle.loads(path.read_bytes())
             except Exception:  # noqa: BLE001
                 self.cache = {}
+        if path:
+            for part in sorted(self._parts_dir().glob("*.pkl")):
+                try:
+                    self.cache.update(pickle.loads(part.read_bytes()))
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def _parts_dir(self) -> Path:
+        return self.path.with_name(self.path.stem + ".parts")
 
     @staticmethod
     def _k(text: str) -> str:
@@ -100,8 +109,9 @@ class CachedEmbedder:
                 vecs = self.inner.embed_texts(uniq)
             with self._lock:
                 for t, v in zip(uniq, vecs):
-                    self.cache[self._k(t)] = array.array("f", v).tobytes()
-                self._dirty += len(uniq)
+                    b = array.array("f", v).tobytes()
+                    self.cache[self._k(t)] = b
+                    self._new[self._k(t)] = b
         out = []
         with self._lock:
             for k in keys:
@@ -111,14 +121,24 @@ class CachedEmbedder:
         return out
 
     def save(self) -> None:
+        """只把新增向量写成一个分片文件。整库重写要在内存里拼出整个 pickle（缓存到
+        数百 MB 时会 MemoryError，并连带当前题失败）；缓存只是加速，保存失败不影响结果。"""
         import pickle
+        import time
 
-        if self.path and self._dirty:
-            with self._lock:
-                tmp = self.path.with_suffix(".tmp")
-                tmp.write_bytes(pickle.dumps(self.cache))
-                os.replace(tmp, self.path)
-                self._dirty = 0
+        if not (self.path and self._new):
+            return
+        with self._lock:
+            new, self._new = self._new, {}
+        try:
+            d = self._parts_dir()
+            d.mkdir(parents=True, exist_ok=True)
+            name = f"{time.time_ns()}-{threading.get_ident()}"
+            tmp = d / f"{name}.tmp"
+            tmp.write_bytes(pickle.dumps(new))
+            os.replace(tmp, d / f"{name}.pkl")
+        except Exception as e:  # noqa: BLE001
+            print(f"[embedding cache] save skipped: {type(e).__name__}", file=sys.stderr)
 
 
 def utf8_stdout() -> None:
@@ -484,6 +504,16 @@ class CodeBuddyCLIClient:
         self.last_usage: dict | None = None
         self._sem = threading.Semaphore(int(os.environ.get("MC_CODEBUDDY_CONCURRENCY", "2")))
         self.fail_dir = CACHE_DIR.parent / "aml_selftest" / "codebuddy_failures"  # 失败时的 stdout/stderr 片段，便于事后排查
+        # CLI 每次启动都在 TEMP 下解一份插件市场包（codebuddy-marketplace-install-*，5–17 MB）且不清理，
+        # 2026-09-23 攒到 6000+ 个把 D 盘写满。每次调用给独立 TEMP，调用完整目录删掉；启动时清上次崩溃的残余。
+        self.tmp_root = Path(tempfile.gettempdir()) / "memcompass-codebuddy-tmp"
+        self.tmp_root.mkdir(parents=True, exist_ok=True)
+        for old in self.tmp_root.iterdir():
+            try:
+                if time.time() - old.stat().st_mtime > 3600:
+                    shutil.rmtree(old, ignore_errors=True)
+            except OSError:
+                pass
 
     @classmethod
     def _resolve_cli(cls) -> list[str]:
@@ -538,8 +568,13 @@ class CodeBuddyCLIClient:
                 with self._sem:
                     with _count_lock:
                         llm_calls[self.role] = llm_calls.get(self.role, 0) + 1
-                    proc = subprocess.run(cmd, cwd=self.workdir, input=prompt, capture_output=True, text=True,
-                                          encoding="utf-8", errors="replace", timeout=self.timeout)
+                    call_tmp = tempfile.mkdtemp(prefix="cb-", dir=self.tmp_root)
+                    env = {**os.environ, "TEMP": call_tmp, "TMP": call_tmp, "TMPDIR": call_tmp}
+                    try:
+                        proc = subprocess.run(cmd, cwd=self.workdir, input=prompt, capture_output=True, text=True,
+                                              encoding="utf-8", errors="replace", timeout=self.timeout, env=env)
+                    finally:
+                        shutil.rmtree(call_tmp, ignore_errors=True)
                 if proc.returncode != 0:
                     self._dump_failure(proc, f"exit {proc.returncode}")
                     raise RuntimeError(f"codebuddy 退出码 {proc.returncode}：{(proc.stderr or proc.stdout)[-300:]}")

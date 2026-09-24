@@ -18,13 +18,26 @@ $common = @("--system-via", "codebuddy", "--system-model", "deepseek-v4.1-flash"
             "--answer-via", "codebuddy", "--answer-model", "deepseek-v4.1-flash",
             "--judge-role", "judge_codebuddy", "--judge-model", "glm-5.3-flash",
             "--env-file", $EnvFile, "--resume")
+# Exit code 0 does not mean every question succeeded: failed questions are written as error rows.
+# Keep resuming while error rows remain; give up after 4 clean exits that still leave errors.
+function Count-ErrorRows($runId) {
+    $f = "data/logs/aml_selftest/$runId/results.jsonl"
+    if (-not (Test-Path $f)) { return 0 }
+    $py = "import json,sys;d={};[d.__setitem__((r['question_id'],r['system']),r) for r in map(json.loads,open(sys.argv[1],encoding='utf-8'))];print(sum(1 for r in d.values() if r.get('error')))"
+    return [int](uv run python -c $py $f)
+}
 function Run-Stage($runId, $extra) {
     $log = "data\logs\aml_selftest\$runId.log"
+    $clean = 0
     for ($i = 0; $i -lt 80; $i++) {
         uv run python docs/research/benchmark-suite/runners/aml_selftest.py --run-id $runId @extra @common *>> $log
-        if ($LASTEXITCODE -eq 0) { "SUPERVISOR: finished" >> $log; return }
-        "SUPERVISOR: exit $LASTEXITCODE, resuming" >> $log
-        Start-Sleep -Seconds 5
+        $code = $LASTEXITCODE
+        $errs = Count-ErrorRows $runId
+        if ($code -eq 0 -and $errs -eq 0) { "SUPERVISOR: finished" >> $log; return }
+        if ($code -eq 0) { $clean++ } else { $clean = 0 }
+        if ($clean -ge 4) { "SUPERVISOR: giving up, $errs error rows after 4 clean passes" >> $log; return }
+        "SUPERVISOR: exit $code, $errs error rows, resuming" >> $log
+        Start-Sleep -Seconds 30
     }
 }
 foreach ($s in $Stages.Split(",")) {
