@@ -206,7 +206,10 @@ def read_env_file(path: str | None) -> dict[str, str]:
     for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
         m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$", line)
         if m:
-            env[m.group(1)] = m.group(2).strip().strip('"').strip("'")
+            value = m.group(2).strip()
+            if not value.startswith(("'", '"')):
+                value = re.sub(r"\s+#.*$", "", value)  # 行内注释（KEY=value  # 说明）不算值
+            env[m.group(1)] = value.strip('"').strip("'")
     return env
 
 

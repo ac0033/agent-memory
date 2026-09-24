@@ -622,6 +622,8 @@ def main() -> int:
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--env-file", default=None, help="含 API key 的 .env 文件（KEY=VALUE）；不给则直接读进程环境变量")
     ap.add_argument("--judge-model", default=None)
+    ap.add_argument("--judge-role", default="judge",
+                    help="评委配置（mc_common.DEFAULTS 的键）；judge = Kimi K3 CLI，judge_codebuddy = CodeBuddy CLI 上的 glm-5.3-flash")
     ap.add_argument("--actor-model", default=None)
     ap.add_argument("--rag-threshold", type=float, default=0.6)
     ap.add_argument("--run-id", default=None)
@@ -646,7 +648,7 @@ def main() -> int:
     system_llm = None
     if not args.dry_run:
         actor = build_client("actor", env, args.actor_model, cache=not args.no_cache)
-        judge = build_client("judge", env, args.judge_model, cache=not args.no_cache)
+        judge = build_client(args.judge_role, env, args.judge_model, cache=not args.no_cache)
         compactor = actor
         from mc_common import DEFAULTS
 
