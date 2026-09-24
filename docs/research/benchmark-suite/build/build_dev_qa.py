@@ -17,6 +17,8 @@
 | agg | K6 | 散在多场会话的实例：计数、求和、列举；陷阱按"记录数≠实例数"的成因埋 |
 | pref | K11 | 开放式求助，答案应体现用户说过的偏好与约束 |
 | abs | K12 | 前提不成立的近似题，应当说没有依据 |
+| absn | K12 | 近形前提：题面点名的东西与记忆里某物字面相近、实为两物（full vs half marathon），应当说没有依据 |
+| absg | K12 | 错误弃答护栏：换了说法、但确属同一事物的可答题（sit-stand desk = standing desk），必须作答 |
 | why | K5 | 变更的原因：用户改了安排/取值/偏好并说了原因，问"当初为什么改" |
 | use | K11 | 选择题：用户随口说一句话，四个候选回复里一个用对了记得的事实、一个是不提任何记忆的客套话、两个记错了。考的是回复时敢不敢、会不会用记忆——过度保守的系统会选客套话 |
 
@@ -426,7 +428,7 @@ QUESTIONS: list[tuple[str, str, str, str, dict | None]] = [
     ("why-1", "why", "Why did my daughter switch piano teachers?", "Mrs. Alvarez retired", {"all_of": ["retir"]}),
     ("why-2", "why", "Why did my rent go up in February?", "The landlord renewed the lease (with a rise to $1,525)", {"any_of": ["renew", "lease"]}),
     ("why-3", "why", "Why did I buy a new bike saddle?", "The old one was killing me on longer rides", {"any_of": ["old (one|saddle)", "hurt", "killing", "uncomfortable", "pain", "longer rides"]}),
-    ("why-4", "why", "Why did you tell me to raise my sourdough hydration to 72%?", "The loaves were coming out dense (at 65%)", {"any_of": ["dense", r"65"]}),
+    ("why-4", "why", "Why did you tell me to raise my sourdough hydration to 72%?", "The loaves were coming out dense (at 65%)", {"any_of": ["dense", r"\b65"]}),
     ("why-5", "why", "Why did I increase my weekly running mileage to 22 miles?", "To build a base for the half marathon", {"any_of": ["half marathon", "half-marathon", "race"]}),
     ("why-6", "why", "What made me start learning Portuguese?", "A spring trip to Portugal last year", {"any_of": ["portugal", "trip"]}),
     # ---- pref（评委）
@@ -455,11 +457,71 @@ QUESTIONS: list[tuple[str, str, str, str, dict | None]] = [
      "The information provided is not enough. The sourdough advice covered hydration and fermentation; no oven temperature was ever given for it.", None),
     ("abs-6", "abs", "Who is my daughter's violin teacher?",
      "The information provided is not enough. Your daughter takes piano lessons (now with Mr. Chen); no violin teacher was mentioned.", None),
+    # ---- absn（K12 近形前提：题面点名的东西与记忆里某物字面相近、实为两物；2026-09-23 由 LongMemEval KU _abs 失分反推）
+    ("absn-1", "absn", "On what date did I run the full marathon?",
+     "The information provided is not enough. You ran a half marathon (March 2), not a full marathon.", None),
+    ("absn-2", "absn", "How many miles a week am I cycling these days?",
+     "The information provided is not enough. You run 22 miles a week; you never said how far you cycle.", None),
+    ("absn-3", "absn", "What model is my wifi extender?",
+     "The information provided is not enough. Your router is an Asus RT-AX58U; you never mentioned owning an extender.", None),
+    ("absn-4", "absn", "On what date is my return flight from Lisbon?",
+     "The information provided is not enough. Only the outbound flight to Lisbon (April 10) was mentioned.", None),
+    ("absn-5", "absn", "Which city does my sister-in-law live in?",
+     "The information provided is not enough. Your sister Priya lives in Leeds; no sister-in-law was mentioned.", None),
+    ("absn-6", "absn", "On which day of the week does my daughter's book club meet?",
+     "The information provided is not enough. Your own book club meets on Thursdays; your daughter's book club was never mentioned.", None),
+    # absn-7 起是难形态：题面近乎复述原话，被点名的东西在字面上包含记忆里的名称、多了一个改变所指的限定词
+    ("absn-7", "absn", "What is my bike locker code?",
+     "The information provided is not enough. You mentioned your gym locker code (4182), not a bike locker.", None),
+    ("absn-8", "absn", "Who is my daughter's jazz piano teacher now?",
+     "The information provided is not enough. Your daughter's piano teacher is Mr. Chen; no jazz piano teacher was mentioned.", None),
+    ("absn-9", "absn", "How much is my parking rent per month currently?",
+     "The information provided is not enough. Your apartment rent is $1,525; parking rent was never mentioned.", None),
+    ("absn-10", "absn", "What model is my travel wifi router?",
+     "The information provided is not enough. Your home router is an Asus RT-AX58U; no travel router was mentioned.", None),
+    ("absn-11", "absn", "What hydration percentage did you recommend for my sourdough starter?",
+     "The information provided is not enough. The 72% hydration was for the dough; no hydration was given for the starter.", None),
+    # ---- absg（K12 错误弃答护栏：换了说法、但确属同一事物的可答题，必须作答）
+    ("absg-1", "absg", "How much did my sit-stand desk cost?", "$389", {"all_of": ["389"]}),
+    ("absg-2", "absg", "How far do I jog each week lately?", "22 miles", {"all_of": [r"\b22\b"]}),
+    ("absg-3", "absg", "When do I fly out to Lisbon?", "April 10, 2024", {"any_of": [r"apr\w*\.?\s+10", r"10(th)?\s+(of\s+)?apr", r"04-10", r"\b4/10"]}),
+    ("absg-4", "absg", "Who teaches my kid piano these days?", "Mr. Chen", {"all_of": ["chen"]}),
+    ("absg-5", "absg", "Which tree nut do I need to avoid?", "Cashews", {"all_of": ["cashew"]}),
+    ("absg-6", "absg", "What's the combination for my locker at the gym?", "4182", {"all_of": ["4182"]}),
+    # absg-7 起：名称简写或多了一个不改变所指的限定词——近形前提规则最容易误伤的形态
+    ("absg-7", "absg", "What model year is my Subaru?", "2017", {"all_of": ["2017"]}),
+    ("absg-8", "absg", "How much did my Fernwood standing desk cost?", "$389", {"all_of": ["389"]}),
+    ("absg-9", "absg", "Who is my daughter's new piano teacher?", "Mr. Chen", {"all_of": ["chen"]}),
+    ("absg-10", "absg", "How much is our apartment rent per month now?", "$1,525", {"all_of": [r"1,?525"]}),
+    ("absg-11", "absg", "What model is my Asus wifi router?", "RT-AX58U", {"all_of": ["ax58u"]}),
+    # absg-12 起：题面用泛称/上位词，记忆里是具体事物（2026-09-24 由 LongMemEval 误拒答反推：
+    # 问 "artist"，证据是一支蓝草乐队）——泛称不是另一个东西，必须作答
+    ("absg-12", "absg", "Which musicians did I see at the Blue Door?", "A local jazz trio", {"all_of": ["jazz"]}),
+    ("absg-13", "absg", "What pet did I adopt in February?", "A cat, Miso", {"any_of": ["miso", r"\bcat\b"]}),
+    ("absg-14", "absg", "What piece of office furniture did I order?", "A standing desk (Fernwood Office, $389)", {"all_of": ["desk"]}),
+    ("absg-15", "absg", "Which plant did I pick up to go next to the monstera?", "A snake plant", {"all_of": ["snake"]}),
+    ("absg-16", "absg", "What bike part did I replace because the old one hurt on longer rides?", "The saddle", {"all_of": ["saddle"]}),
+    ("absg-17", "absg", "What networking device do I have in the living room?", "An Asus RT-AX58U router", {"any_of": ["router", "ax58u"]}),
+    # absg-18 起：东西确实存在、只是从没说过名字——应当给出描述，而不是只答"没提过"
+    # （LongMemEval 失分形态：问 "the artist I started listening to"，原话只有"一支有班卓琴手的蓝草乐队"）
+    ("absg-18", "absg", "What is the name of the band I saw at the Blue Door?",
+     "Its name was not given; it was a local jazz trio", {"all_of": ["jazz"]}),
+    ("absg-19", "absg", "What was the name of the kitten we fostered?",
+     "Not given; you fostered a kitten for a week through the shelter and she went back to be adopted",
+     {"any_of": ["shelter", "a week", "went back", "adopted"]}),
+    ("absg-20", "absg", "Which car am I looking at to replace my Subaru?",
+     "A used car (make and model not given; the loan worked out to about $411/month)",
+     {"any_of": ["used", r"\b411", r"\b868"]}),
+    ("absg-21", "absg", "Whose kid is starting violin?", "Your brother-in-law's kid", {"all_of": ["brother-in-law"]}),
 ]
 
 # 第 0 层（不调 LLM）用的证据标记：载荷里必须出现这些小写子串，题目才"答得出"。
 # 证据没到场是检索/打包的问题，到场了还答错才是呈现或答题器的问题——两类问题分开查。
 EVIDENCE: dict[str, list[str]] = {
+    "absg-18": ["jazz trio"], "absg-19": ["fostered a kitten"], "absg-20": ["used car"], "absg-21": ["brother-in-law"],
+    "absg-12": ["jazz trio"], "absg-13": ["adopted a cat"], "absg-14": ["standing desk"], "absg-15": ["snake plant"], "absg-16": ["saddle"], "absg-17": ["rt-ax58u"],
+    "absg-7": ["2017 subaru"], "absg-8": ["$389"], "absg-9": ["mr. chen"], "absg-10": ["1,525"], "absg-11": ["rt-ax58u"],
+    "absg-1": ["$389"], "absg-2": ["22 miles"], "absg-3": ["lisbon"], "absg-4": ["mr. chen"], "absg-5": ["cashews"], "absg-6": ["4182"],
     "det-u-1": ["okafor"], "det-u-2": ["2017 subaru"], "det-u-3": ["4182"], "det-u-4": ["leeds"],
     "det-u-5": ["$389"], "det-u-6": ["rt-ax58u"], "det-u-7": ["cashews"],
     "det-a-1": ["72% hydration"], "det-a-2": ["beaulieu"], "det-a-3": ["rsync -avz --delete"],
@@ -555,10 +617,10 @@ def main() -> None:
     evidence_ids = [s[0] for s in SESSIONS]
     out = []
     for qid, bucket, question, gold, rubric in QUESTIONS:
-        if bucket == "abs":
+        if bucket in ("abs", "absn"):
             rubric = {"any_of": [r"\b(no|not|never|none|nothing|unknown)\b", r"n't\b", "insufficient", "unclear"]}
         out.append({
-            "question_id": f"{qid}_abs" if bucket == "abs" else qid,
+            "question_id": f"{qid}_abs" if bucket in ("abs", "absn") else qid,
             "question_type": bucket,
             "question": question,
             "answer": gold,

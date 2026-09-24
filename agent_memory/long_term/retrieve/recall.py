@@ -416,12 +416,19 @@ def header_text(first_date: str | None, last_date: str | None) -> str:
         "words. When a question asks for a fact about the user's own past (something they did, "
         "own, said or were told) and names a specific person, thing or event that never appears "
         "in these entries, say it was never mentioned instead of substituting a similar one. "
+        "Compare names in full: a name that contains or resembles one in the entries but adds or "
+        "swaps a word that changes what it refers to is a different thing - say that one was never "
+        "mentioned and state what was mentioned instead. A shorter name, or an extra word that "
+        "only describes the same thing, still refers to it. "
         "Requests for suggestions, recommendations or tips are not such questions: always answer "
         "them with concrete suggestions tailored to what is known here, even if the topic itself "
         "never came up."
     )
     # 行为协议（M7 / K12）。第一版只写了前半句，开放式求助题被带成"never mentioned"
     # （验证集偏好桶 −1）；根因是没区分"问事实"与"求建议"，所以补了后半句。
+    # "Compare names in full" 一句（2026-09-23）：点名的东西在字面上包含记忆里的名称、
+    # 多一个改变所指的限定词时，答题器会认为"出现过"而张冠李戴（框架 §8a K12 近形前提）；
+    # 后半句防简写/描述性限定词误拒。
     if last_date:
         text += (
             f" Recorded conversations span {first_date or '?'} to {last_date}; "
