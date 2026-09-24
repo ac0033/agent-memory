@@ -2,9 +2,9 @@
 
 **Local, agent-neutral long-term memory infrastructure for LLM agents.** A small service on your own machine that lets any agent (Claude Code, Kimi Code, a LangGraph app, …) remember user preferences, project conventions and past mistakes across sessions. Every write goes through a gate, memories can be forgotten on request, and the system knows *when* to speak up.
 
-The mechanism was not picked from other systems' feature lists. It is derived from a [capability framework](docs/research/agent-memory-capability-framework.md) of 13 capabilities and 3 quality attributes, with one bar for every item: significantly better than naive RAG. Three principles follow: **the original words are the evidence and a memory is only a key to them plus an annotation; reading organizes and never adjudicates; intelligence moves to write time and only adds.** Acceptance runs on several public benchmarks, each once: LoCoMo on unseen conversations **42 vs 33** (p=0.049), PersonaMem-32k and LongMemEval-S tied with naive RAG; the in-repo validation set (60 questions, 9 capability buckets) 58/60 vs naive RAG 39/45. Governance capabilities (forgetting, poisoning, task state, proactive recall) are measured by MemCompass, a 373-case benchmark that ships with the repo.
+The mechanism was not picked from other systems' feature lists. It is derived from a [capability framework](docs/research/agent-memory-capability-framework.md) of 13 capabilities and 3 quality attributes, with one bar for every item: significantly better than naive RAG. Three principles follow: **the original words are the evidence and a memory is only a key to them plus an annotation; reading organizes and never adjudicates; intelligence moves to write time and only adds.** Acceptance runs on several public benchmarks, each once: LoCoMo on unseen conversations **42 vs 33** (p=0.049), PersonaMem-32k and LongMemEval-S tied with naive RAG; the in-repo validation set (92 questions, 11 capability buckets) 88/92; naive RAG 39/45 on the original 45. Governance capabilities (forgetting, poisoning, task state, proactive recall) are measured by MemCompass, a 373-case benchmark that ships with the repo.
 
-> 中文文档见 [README.md](README.md) · License: [MIT](LICENSE) · Python ≥ 3.12 · 846 tests, no network or API key needed · current version v0.3.0 ([CHANGELOG](docs/CHANGELOG.md))
+> 中文文档见 [README.md](README.md) · License: [MIT](LICENSE) · Python ≥ 3.12 · 847 tests, no network or API key needed · current version v0.3.1 ([CHANGELOG](docs/CHANGELOG.md))
 
 ---
 
@@ -30,11 +30,11 @@ Naive RAG (keep every line, retrieve every turn) is a strong baseline: in our ea
 - **Writing adds what the words do not carry**: absolute event dates, supersession history, validity, provenance, cue words, a resident user profile. Naive RAG cannot produce these structurally, and they are where the lead comes from.
 - **Governance stays out of naive RAG's reach**: forgetting on request (0% leakage), poisoning resistance (0% false blocks), task state, proactive recall, no cross-agent bleed.
 
-Readings on conversations never seen during development (same default configuration, fixed answerer and judge): LoCoMo, two new conversations, 60 questions, **42 vs 33** (p=0.049); PersonaMem-32k, 60 multiple-choice questions, 51 vs 53 (tie); LongMemEval-S, 60 questions, 46 vs 46 (tie, read-path version). Derivation and round-by-round records: [docs/research/memory-v1-design.md](docs/research/memory-v1-design.md); mechanism note: [docs/design/memory-v1-mechanism.md](docs/design/memory-v1-mechanism.md) (both Chinese).
+Readings on conversations never seen during development (same default configuration, fixed answerer and judge): LoCoMo, two new conversations, 60 questions, **42 vs 33** (p=0.049); PersonaMem-32k, 60 multiple-choice questions, 51 vs 53 (tie); LongMemEval-S, 60 questions, 51 vs 49 (tie, p=0.77; knowledge-update 9 vs 6). Derivation and round-by-round records: [docs/research/memory-v1-design.md](docs/research/memory-v1-design.md); mechanism note: [docs/design/memory-v1-mechanism.md](docs/design/memory-v1-mechanism.md) (both Chinese).
 
 ## Highlights
 
-1. **Derived from a capability framework, accepted on several external benchmarks.** First define which 13 capabilities (K1–K13) an agent memory needs, how each is measured and how maturity is graded (L2 = significantly better than naive RAG); then work back from "what decides the score" to the mechanism, each principle answering a measured loss. The admission rule was written before the mechanism: at least two independent evaluations in the same direction and none worse, at least one significantly better, and any question type getting significantly worse is a veto. External sets are for acceptance only and are run once each; iteration uses the in-repo validation set (one shared history of 55 sessions, 60 questions in 9 capability buckets, a tier-0 check with no LLM call that finishes in a minute). The derivation, including predictions that were falsified, is in [docs/research/memory-v1-design.md](docs/research/memory-v1-design.md) (Chinese).
+1. **Derived from a capability framework, accepted on several external benchmarks.** First define which 13 capabilities (K1–K13) an agent memory needs, how each is measured and how maturity is graded (L2 = significantly better than naive RAG); then work back from "what decides the score" to the mechanism, each principle answering a measured loss. The admission rule was written before the mechanism: at least two independent evaluations in the same direction and none worse, at least one significantly better, and any question type getting significantly worse is a veto. External sets are for acceptance only and are run once each; iteration uses the in-repo validation set (one shared history of 55 sessions, 92 questions in 11 capability buckets, a tier-0 check with no LLM call that finishes in a minute). The derivation, including predictions that were falsified, is in [docs/research/memory-v1-design.md](docs/research/memory-v1-design.md) (Chinese).
 2. **Three layers, one call.** Long-term (facts / preferences / procedures across sessions), working (the current task's goal, constraints, todos, open questions) and short-term (the host's own transcript, read in place, never duplicated). `memory_context` returns all three as separate blocks in one call.
 3. **Gated writes that never lose data.** Every candidate passes redaction → distillation → gate → reconciliation (ADD / UPDATE / DELETE / NOOP). Conflicts the pipeline cannot settle go to a human review queue instead of a guess. The raw transcript is archived *before* distillation, and gate rejections can be forced into review.
 4. **Memory is reference, not instruction.** The distiller refuses to extract instructions, the gate blocks prompt-injection patterns, and every injected block carries a guard preamble. The current request always wins over a recalled memory.
@@ -57,11 +57,11 @@ Three kinds of data, three purposes: **external benchmarks** (LoCoMo, PersonaMem
 | LoCoMo (unseen conv-41/42) | 60 | 33 (55%) | **42 (70%)** | 13 wins / 4 losses, McNemar p=0.049 |
 | LoCoMo first run (conv-26/30) | 54 | 31 (57%) | **37 (69%)** | 10 wins / 4 losses, p=0.18, same direction |
 | PersonaMem-32k (4 histories, multiple choice) | 60 | 53 | 51 | 2 wins / 4 losses, p=0.69 (tie); full context 47 |
-| LongMemEval-S (read-path version) | 60 | 46 | 46 | answerable 45 vs 45, false abstentions 1 vs 1 (tie) |
+| LongMemEval-S | 60 | 49 | **51** | 7 wins / 5 losses, p=0.77 (tie); knowledge-update 9 vs 6, abstention 4/5 vs 1/5 |
 
 On LoCoMo the lead comes mainly from adversarial questions with a false premise (9 vs 0, the static reading protocol in the payload header), plus one each on multi-hop and temporal; single-hop and open-domain lose one each; payload size is 1.15× naive RAG. On PersonaMem, fact recall 21/21, change reasons 6/6 and recommendations 7/7 equal naive RAG; the only trailing category, suggest_new_ideas (5 vs 8 of 14), is also 6/14 for full context.
 
-The in-repo validation set (one shared history of 55 sessions, 60 questions in 9 capability buckets) scores 58/60 against naive RAG 39/45 and full context 40/45, with no bucket below either control and no false abstention on the 34 answerable fact questions. Method: [benchmark README §8](docs/research/benchmark-suite/README.md) (Chinese).
+The in-repo validation set (one shared history of 55 sessions, 92 questions in 11 capability buckets) scores 88/92; on the original 45 questions naive RAG scores 39 and full context 40, with no bucket below either control, and none of the 21 answerable questions phrased with a synonym, a general term or a described-but-unnamed thing is wrongly refused. Method: [benchmark README §8](docs/research/benchmark-suite/README.md) (Chinese).
 
 **Internal benchmark** (readings from v0.2.2): [MemCompass v0.3](docs/research/benchmark-suite/README.md) (8 subsets / 373 cases, built in this repo, all synthetic). The table is the **paired comparison of v0.2.2 against the previous version** on the test split (193 cases), McNemar exact test:
 
@@ -121,7 +121,7 @@ Scopes: `global`, `repo:<name>`, `agent:<name>`; a search sees the current scope
 git clone https://github.com/ac0033/agent-memory.git
 cd agent-memory
 uv sync                      # Python ≥ 3.12; bge-m3 embeddings downloaded on first use (~2 GB)
-uv run pytest -q             # 846 tests, no network or API key needed
+uv run pytest -q             # 847 tests, no network or API key needed
 
 export AGENT_MEMORY_LLM_API_KEY=sk-...          # any OpenAI-compatible endpoint; default is DeepSeek deepseek-flash
 # optional: AGENT_MEMORY_LLM_BASE_URL / AGENT_MEMORY_LLM_MODEL / AGENT_MEMORY_DATA_DIR
@@ -212,7 +212,7 @@ agent-memory/
 ├── examples/                # minimal LangGraph example
 ├── evals/                   # trusted root (agents must not edit): layer1–3 / prefix sets + MemCompass frozen copy
 ├── docs/                    # usage, integration, design, research and benchmark (see below)
-├── tests/                   # 846 tests (slow ones skipped by default: uv run pytest -m slow)
+├── tests/                   # 847 tests (slow ones skipped by default: uv run pytest -m slow)
 └── data/                    # runtime data (gitignored): raw / memory / working / review_queue / snapshots / logs
 ```
 
@@ -246,7 +246,7 @@ All documents except this file are currently in Chinese.
 
 ## Known limitations and roadmap
 
-- **The lead is not significant on every external set**: LoCoMo is a significant win, PersonaMem and LongMemEval-S are ties with naive RAG. The LongMemEval-S reading is from the read-path version (before the write-time event dates, cue words and per-instance entries); the MemCompass table is from v0.2.2.
+- **The lead is not significant on every external set**: LoCoMo is a significant win, PersonaMem and LongMemEval-S are ties with naive RAG. On LongMemEval-S, temporal reasoning was re-answered by both systems with the question date added (the AML answer template carries no current date, so "how many days ago" is unanswerable for any system); the MemCompass table is from v0.2.2.
 - **PersonaMem's suggest_new_ideas category trails naive RAG** (5 vs 8 of 14); full context also gets only 6/14 there, a "pick the generic option" failure on the answerer's side.
 - **Schema induction (K6, offline) not implemented**: the evolve verifier is part of the trusted root and needs a new proposal type.
 - **Write cost**: with dense sessions about one person, reconciliation makes one LLM call per candidate, so rewriting a few dozen sessions can take hours; batched judgement is the next lever.
