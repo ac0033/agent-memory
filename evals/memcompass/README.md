@@ -29,4 +29,4 @@ held-out 切分只用于里程碑评测，平时的开发与调参不要跑它�
 |---|---|---|---|
 | 2026-09-16 | 用户当日明确要求同步 | `runners/mc_common.py`、`runners/mc_report.py`：成本口径改用 API 的 usage 字段（token 数与覆盖率，字符数列保留）。只改成本统计，不改用例、评委与判定规则；与编写源头逐字节一致 | `843a541` |
 | 2026-09-16 | 用户当日再次要求同步 | `runners/mc_run.py`、`runners/judge_agreement.py`：`--env-file` 不再默认作者本机路径（不给则读进程环境变量）；本 README 示例命令同样改为占位符。不改评测行为 | `a7643f1` |
-| 2026-09-24 | 用户当日明确授权"改冻结副本，调用其他模型" | `runners/mc_common.py` 与编写源头同步（新增 CodeBuddy CLI 客户端与 `judge_codebuddy` 评委配置、嵌入缓存增量落盘、CodeBuddy 临时目录清理、积分计量）；`runners/mc_run.py` 新增 `--judge-role`（缺省 `judge` = Kimi K3，行为不变）。起因：Kimi Code 订阅已不含 CLI 权限（403），评委改用 `--judge-role judge_codebuddy`（glm-5.3-flash）。**换评委后的读数不与 Kimi K3 评的旧读数直接比较**：被比较的版本与对照组都用同一评委重跑（答题与被测系统调用走缓存）。不改用例、判定规则与评委提示词 | 本次提交 |
+| 2026-09-24 | 维护者当日授权（换用其他评委模型） | `runners/mc_common.py` 与编写源头同步（新增 CodeBuddy CLI 客户端与 `judge_codebuddy` 评委配置、嵌入缓存增量落盘、CodeBuddy 临时目录清理、积分计量）；`runners/mc_run.py` 新增 `--judge-role`（缺省 `judge` = Kimi K3，行为不变）。起因：Kimi Code 订阅已不含 CLI 权限（403），评委改用 `--judge-role judge_codebuddy`（glm-5.3-flash）。**换评委后的读数不与 Kimi K3 评的旧读数直接比较**：被比较的版本与对照组都用同一评委重跑（答题与被测系统调用走缓存）。不改用例、判定规则与评委提示词 | 本次提交 |

@@ -1,4 +1,4 @@
-"""MemCompass runner 公共模块（v0.2 草稿；属于评测执行器，用户审核后迁入 evals/runners/）。
+"""MemCompass runner 公共模块（评测执行器；冻结副本在 evals/memcompass/runners/，与本文件逐字一致）。
 
 - 数据加载：examples.yaml + migrated.yaml + generated.yaml；按子集 / 切分 / id 过滤；
 - LLM 客户端：答题器（固定，默认 DeepSeek）与评委（异源，默认 qwen3.8-max，经阿里云 token-plan 端点），
@@ -41,21 +41,18 @@ SUBSET_ALIAS = {
 
 # 默认模型：答题器与被测系统内部 LLM 用 DeepSeek 官方 deepseek-flash（生产默认）；评委与答题器异源
 DEFAULTS = {
-    # 2026-09-14 下午两个端点先后耗尽（DeepSeek 官方 402、token-plan 周额度），充值 / 重置后恢复原协议：
-    # 答题器与被测系统走 DeepSeek 官方，评委走 token-plan——两边分摊额度，评委（qwen）与答题器异源
+    # 答题器与被测系统内部 LLM 走 DeepSeek 官方 API；评委必须与答题器异源。
     "actor": {"base_url": "https://api.deepseek.com", "model": "deepseek-flash", "key_env": "DEEPSEEK_API_KEY"},
     "system": {"base_url": "https://api.deepseek.com", "model": "deepseek-flash", "key_env": "DEEPSEEK_API_KEY"},
-    # 2026-09-15：token-plan 周额度再次耗尽，评委改为 Kimi K3（用户的会员，经 Kimi Code CLI 调用，不走 API）。
-    # 三方互不相同：答题器 DeepSeek、评委 Kimi、用例修订 Claude。t2-* 运行的评委是 qwen3.8-max（judge_qwen）。
+    # judge：Kimi K3，经 Kimi Code CLI 调用（需要带 CLI 权限的 Kimi Code 订阅）。答题器、评委、用例修订三方互不相同。
+    # judge_qwen / judge_glm：OpenAI 兼容端点（OPENAI_BASE_URL + DASHSCOPE_API_KEY）。
     "judge": {"cli": "kimi", "model": "kimi-code/k3"},
     "judge2": {"cli": "kimi", "model": "kimi-code/k3"},
     "judge_qwen": {"base_url_env": "OPENAI_BASE_URL", "model": "qwen3.8-max", "key_env": "DASHSCOPE_API_KEY"},
     "judge_glm": {"base_url_env": "OPENAI_BASE_URL", "model": "glm-5.2", "key_env": "DASHSCOPE_API_KEY"},
-    # 2026-09-17：Kimi 会员月额度与 token-plan 周额度同时耗尽，评委改走 WorkBuddy 内置的 CodeBuddy Code CLI
-    # （用户的 WorkBuddy 登录态，按积分计费）。--help 里的模型列表只是静态子集：实测 --model 可直接用
-    # glm-5.3 / kimi-k3 / kimi-k3-1 / deepseek-v4-flash / glm-5.2 等最新模型。缺省 kimi-k3：与 MemCompass v0.3
-    # 的评委同一模型（当时经 Kimi CLI 调用）但单次约 3 积分；用户 2026-09-17 定：评委用 glm-5.3-flash（约 0.07 积分/次），
-    # 答题器与被测系统内部 LLM 用 deepseek-v4-flash（约 0.04 积分/次），不再调 DeepSeek 官方 API。
+    # judge_codebuddy：WorkBuddy 内置的 CodeBuddy Code CLI（复用其登录态，按积分计费，不走 API key）。
+    # --help 里的模型列表只是静态子集，--model 可直接用 glm-5.3 / kimi-k3 / deepseek-v4-flash 等；
+    # 评委取 glm-5.3-flash（单次约 0.07 积分）。换评委后的读数只与同一评委下重跑的版本和对照组比较。
     "judge_codebuddy": {"cli": "codebuddy", "model": "glm-5.3-flash"},
 }
 
@@ -371,7 +368,7 @@ class MeteredLLM:
 
 
 class KimiCLIClient:
-    """Kimi Code CLI 客户端（用户会员登录，不走 API）：`kimi -p` 非交互调用，取 stream-json 里最后一条助手回复。
+    """Kimi Code CLI 客户端（需已登录且带 CLI 权限的 Kimi Code 订阅，不走 API）：`kimi -p` 非交互调用，取 stream-json 里最后一条助手回复。
 
     - 与 ChatClient 同接口（complete_json）、同一磁盘缓存，缓存键含模型名；
     - 子进程关掉用户的 agent-memory hook（环境变量）与技能（空的 --skills-dir），在临时空目录里运行，
@@ -508,7 +505,7 @@ class CodeBuddyCLIClient:
         self._sem = threading.Semaphore(int(os.environ.get("MC_CODEBUDDY_CONCURRENCY", "2")))
         self.fail_dir = CACHE_DIR.parent / "aml_selftest" / "codebuddy_failures"  # 失败时的 stdout/stderr 片段，便于事后排查
         # CLI 每次启动都在 TEMP 下解一份插件市场包（codebuddy-marketplace-install-*，5–17 MB）且不清理，
-        # 2026-09-23 攒到 6000+ 个把 D 盘写满。每次调用给独立 TEMP，调用完整目录删掉；启动时清上次崩溃的残余。
+        # 长时评测会累积到数十 GB。每次调用给独立 TEMP，调用完整目录删掉；启动时清上次崩溃的残余。
         self.tmp_root = Path(tempfile.gettempdir()) / "memcompass-codebuddy-tmp"
         self.tmp_root.mkdir(parents=True, exist_ok=True)
         for old in self.tmp_root.iterdir():
