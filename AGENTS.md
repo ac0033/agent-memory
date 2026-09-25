@@ -21,6 +21,7 @@
 - **fail-closed**：配置非法、校验失败、证据缺失时直接报错，不做静默降级；宁可拒绝服务也不产出不可信结果。
 - **fail-closed ≠ fail-lost**：写入路径的内容永不因故障丢失——对话原文先归档 `data/raw` 再蒸馏；评价门拒绝可 `force_review=true` 转人工复核。报错必须区分确定性失败（原样重试无效，给出命中原因）与临时性失败（可重试）。
 - **subagent 写入纪律**：记忆库对 subagent 只读——它的结论随结果回传主 agent，由主 agent 策展沉淀；subagent 直接落库只会带进任务局部噪音并加剧对账冲突。三层落地：13 个写类 tool（8 个基础 + v0.2 的 archive_sync / wm_refresh / episode_pack / confirm_resolve / forget_request）的 description 带"仅限主 agent 调用"约束（agent 中立，随工具走）；`SKILL.md` 第七节给主 agent 派活时附进 subagent prompt 的标准约束语；宿主工具面硬闸（kimi-code 是 `agents/coder.md` 覆盖文件，`override: true` + `disallowedTools` 摘掉写类工具，由 `scripts/install_kimi_code.sh` 安装）。例外：常驻命名 agent 用 `agent:<名字>` scope。不做服务端按调用方降级——主/subagent 共用同一 MCP 连接，服务端无从区分。
+- **代码更新后默认重启 HTTP 常驻服务**：改了 `agent_memory/` 下任何代码，默认动作就是重启 `AgentMemoryHttpServer` 计划任务，否则 8765 端口跑的还是旧代码。步骤：`netstat -ano | findstr 8765` 查 LISTENING 的 PID → 管理员终端 `taskkill /PID <pid> /F`（注意：`schtasks /end` 只杀 cmd 包装进程，python 孙进程会成孤儿残留继续占端口；S4U 会话的进程普通 shell 无权 kill，必须提权）→ `schtasks /run /tn AgentMemoryHttpServer` → 确认 8765 重新 LISTENING。
 - **评测纪律**：见下一节「评测驱动改进的工作流程」，改机制之前必须按它走。
 
 ## 评测驱动改进的工作流程（必须遵守）
@@ -53,7 +54,6 @@
 **准入与设计纪律：** ≥2 个独立来源同向不劣、至少一个显著领先（框架 §6.2 L2），任何一桶显著变差即否决；读路径出现 LLM 调用或默认关闭的机制 = 设计违规。每一轮的失分分析、补的指标与题、改动和读数，记进 `docs/research/memory-v1-design.md`。
 
 **跑评测时：** 一次只跑一件；每个评测进程都带内存看门狗（空闲内存低于 1.5 GB 或系统提交余量低于 3 GB 就结束整棵进程树）；不用 `timeout` 包 `uv run`（杀不到孙进程），中止后按进程树清理并确认无残留；出问题先汇报、再处理，看门狗因内存停下的不自动重跑。
-- **代码更新后默认重启 HTTP 常驻服务**：改了 `agent_memory/` 下任何代码，默认动作就是重启 `AgentMemoryHttpServer` 计划任务，否则 8765 端口跑的还是旧代码。步骤：`netstat -ano | findstr 8765` 查 LISTENING 的 PID → 管理员终端 `taskkill /PID <pid> /F`（注意：`schtasks /end` 只杀 cmd 包装进程，python 孙进程会成孤儿残留继续占端口；S4U 会话的进程普通 shell 无权 kill，必须提权）→ `schtasks /run /tn AgentMemoryHttpServer` → 确认 8765 重新 LISTENING。
 
 ## 架构地图与当前状态（M9 完成）
 
