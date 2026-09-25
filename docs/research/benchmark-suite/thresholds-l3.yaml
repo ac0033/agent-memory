@@ -1,0 +1,35 @@
+# L3 thresholds (capability framework section 6.2a). The framework text is
+# authoritative; this file is its machine-readable copy. Thresholds are fixed
+# before a measurement and only the user changes them.
+version: 1
+approved: 2026-09-25
+
+general:
+  gap_closure_min: 0.50          # G1, QA-type capabilities
+  gap_closure_min_sources: 2
+  gap_closure_min_headroom_pp: 5 # (upper - naive_rag) below this: source not discriminative
+  ablation_p_max: 0.05           # G3
+  ablation_min_share_of_lead: 0.5
+  min_n_per_source: 30           # G4
+  consistency_repeats: 5
+  consistency_min: 0.95
+  consecutive_versions: 2
+  read_path_llm_calls: 0         # G5
+  payload_ratio_max: 1.15
+  write_llm_calls_per_session_median_max: 8
+  require_undiagnosed_source: true  # G6
+
+capabilities:
+  K1: {kind: structural, primary: {pf_E_detail_fidelity: 0.98, compaction_constraint_survival: 0.95}, guard: {fabrication_rate_max: 0.0}}
+  K2: {kind: structural, primary: {ts_S_state_accuracy: 0.90, ts_S_recovery_accuracy: 0.90}, guard: {crosstalk_rate_max: 0.05, stale_residue_rate_max: 0.05}}
+  K3: {kind: qa, primary: {ca_Q_detail_gap_closure: 0.50, ca_Q_detail_within_upper_pp: 5}}
+  K4: {kind: qa, primary: {external_qa_gap_closure: 0.50}, guard: {retrieval_parity_min: 0.90, payload_ratio_max: 1.15}}
+  K5: {kind: qa, primary: {temporal_gap_closure: 0.50}, guard: {plan_presumption_rate_max: 0.0, change_reason_retention_min: 0.90}}
+  K6: {kind: qa, primary: {multihop_gap_closure: 0.50}, guard: {induction_evidence_support_min: 0.90}}
+  K7: {kind: structural, primary: {pr_recall_completeness: 0.90, pr_indirect_cue_recall: 0.90}, guard: {stale_surface_rate_max: 0.0}}
+  K8: {kind: structural, primary: {pr_S_f05: 0.80, pr_E_f05_vs_naive_rag: ">="}, guard: {negative_interjection_max: 0.15, surface_consistency_min: 0.95}}
+  K9: {kind: structural, primary: {ca_E_completion: 0.90, ca_E_incomplete_detection: 0.80}, guard: {over_backtrack_max: 0.20, fabrication_rate_max: 0.0}}
+  K10: {kind: structural, primary: {ca_E_confirm_f05: 0.65, unattended_enqueue_correct: 0.80}, guard: {act_before_confirm_max: 0.0}}
+  K11: {kind: qa, primary: {memory_adoption_gap_closure: 0.50}, guard: {false_abstention_max: 0.0}}
+  K12: {kind: structural, primary: {fg_forget_pass: 1.0, mp_attack_success_max: 0.02, near_form_premise_detection: 0.80}, guard: {false_block_max: 0.02, false_abstention_max: 0.0, false_delete_max: 0.0}}
+  K13: {kind: structural, primary: {xa_S_transfer: 0.90, xa_E_transfer: 0.90}, guard: {crosstalk_rate_max: 0.0}}
