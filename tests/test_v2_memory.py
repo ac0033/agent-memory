@@ -279,6 +279,42 @@ def test_surface_silent_without_llm_or_when_copilot_declines(mk_service):
     assert svc2.surface("Windows 脚本")["decision"] == "silent"
 
 
+def test_scoped_convention_surfaces_even_when_copilot_declines(mk_service):
+    """当前仓库作用域里的约定被这句话直接检索到时确定性浮现，不靠副手采样；
+    别的仓库的不串进来。"""
+    svc = mk_service({"记忆副手": {"surface": []}})
+    b_port = "repo-b 的开发服务器端口固定用 3100。"
+    svc.writer.create(make_entry("b-port", b_port, scope="repo:repo-b"))
+    a_port = "repo-a 的开发服务器端口固定用 8100。"
+    svc.writer.create(make_entry("a-port", a_port, scope="repo:repo-a"))
+    out = svc.surface("把开发服务器起起来，端口别弄错", scope="repo:repo-b")
+    assert out["decision"] == "surface"
+    assert [i["id"] for i in out["items"]] == ["b-port"]
+    assert "3100" in out["block"] and "8100" not in out["block"]
+
+
+def test_scoped_convention_rule_is_conservative(mk_service):
+    """global 记忆、非 high 置信度、语义不近的，都仍交给副手（这里副手拒绝，所以沉默）。"""
+    svc = mk_service({"记忆副手": {"surface": []}})
+    svc.writer.create(make_entry("g-port", "用户习惯把端口设成 3100。", scope="global"))
+    assert svc.surface("端口怎么配", scope="global")["decision"] == "silent"
+    svc.writer.create(
+        make_entry("c-port", "repo-c 的端口可能是 3100。", scope="repo:repo-c", confidence="medium")
+    )
+    assert svc.surface("端口怎么配", scope="repo:repo-c")["decision"] == "silent"
+    svc.writer.create(make_entry("d-tz", "repo-d 跑测试前要设时区 UTC。", scope="repo:repo-d"))
+    assert svc.surface("帮我写个 Windows 脚本", scope="repo:repo-d")["decision"] == "silent"
+
+
+def test_scoped_convention_not_duplicated_when_copilot_also_picks_it(mk_service):
+    pick = {"id": "b-port", "relation": "direct", "why": "起服务要用这个端口"}
+    svc = mk_service({"记忆副手": {"surface": [pick]}})
+    svc.writer.create(make_entry("b-port", "repo-b 的端口固定用 3100。", scope="repo:repo-b"))
+    out = svc.surface("端口用哪个", scope="repo:repo-b")
+    assert [i["id"] for i in out["items"]] == ["b-port"]
+    assert out["block"].count("3100") == 1
+
+
 # ---------------------------------------------------------------- K12 遗忘
 
 

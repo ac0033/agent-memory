@@ -149,6 +149,33 @@ def decide(
     return out
 
 
+# 作用域约定兜底（K8 / K13 系统层）：会话所在的仓库或 agent 作用域里记下的约定，
+# 被当前这句话直接检索到第 1 名且语义足够近时，确定性浮现，不交给副手。
+# 作用域本身就是宿主给出的相关性信号；副手按"精确率优先"逐条判断时，同一输入
+# 5 次里可能只浮现 1 次（MemCompass xa/S），"不提就会用错端口/命令"的约定不该靠采样运气。
+# global 记忆不走这条（个人信息、跨项目知识仍由副手判断），所以不会放大误插话。
+# 距离阈值只在 MemCompass dev 切分上定：正例最远 0.506，留余量取 0.55。
+SCOPED_MAX_DISTANCE = 0.55
+
+
+def scoped_conventions(searcher: HybridSearcher, message: str, scope: str) -> list[Surfaced]:
+    if not message.strip() or scope == "global" or ":" not in scope:
+        return []
+    top = searcher.search(message, scopes=[scope], k=1)
+    if not top:
+        return []
+    r = top[0]
+    e = r.entry
+    if (
+        e.scope != scope
+        or e.confidence != "high"
+        or r.dense_distance is None
+        or r.dense_distance > SCOPED_MAX_DISTANCE
+    ):
+        return []
+    return [Surfaced(r, "direct", f"这是当前作用域（{scope}）记下的约定，与本次请求直接相关")]
+
+
 def render_surfaced(items: list[Surfaced], budget_chars: int) -> str:
     if not items:
         return ""

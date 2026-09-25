@@ -343,6 +343,10 @@ class V2ServiceMixin:
             chosen = surface_mod.decide(message, list(recent_turns or []), date, cands, self.llm)
         except Exception:  # noqa: BLE001  副手失败时保持沉默（精确率优先）
             chosen = []
+        # 作用域约定兜底：确定性，排在副手结果之前，同一条不重复
+        pinned = surface_mod.scoped_conventions(self.searcher, message, scope)
+        pinned_ids = {s.result.entry.id for s in pinned}
+        chosen = pinned + [s for s in chosen if s.result.entry.id not in pinned_ids]
         block = surface_mod.render_surfaced(
             chosen, budget_chars or self.settings.recall_budget_chars
         )
