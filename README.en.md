@@ -4,7 +4,7 @@
 
 The mechanism was not picked from other systems' feature lists. It is derived from a [capability framework](docs/research/agent-memory-capability-framework.md) of 13 capabilities and 3 quality attributes, with one bar for every item: significantly better than naive RAG. Three principles follow: **the original words are the evidence and a memory is only a key to them plus an annotation; reading organizes and never adjudicates; intelligence moves to write time and only adds.** Acceptance runs on several public benchmarks, each once: LoCoMo on unseen conversations **42 vs 33** (p=0.049), PersonaMem-32k and LongMemEval-S tied with naive RAG; the in-repo validation set (92 questions, 11 capability buckets) 88/92; naive RAG 39/45 on the original 45. Governance capabilities (forgetting, poisoning, task state, proactive recall) are measured by MemCompass, a 373-case benchmark that ships with the repo.
 
-> 中文文档见 [README.md](README.md) · License: [MIT](LICENSE) · Python ≥ 3.12 · 847 tests, no network or API key needed · current version v0.3.1 ([CHANGELOG](docs/CHANGELOG.md))
+> 中文文档见 [README.md](README.md) · License: [MIT](LICENSE) · Python ≥ 3.12 · 850 tests, no network or API key needed · current version v0.3.2 ([CHANGELOG](docs/CHANGELOG.md))
 
 ---
 
@@ -75,6 +75,20 @@ The in-repo validation set (one shared history of 55 sessions, 92 questions in 1
 | Present fidelity | pf / end-to-end | 100% | 84% | .016 | Episode cards before context compaction |
 | Poisoning robustness | mp / QA | 100% | 89% | .250 | Attack success 0% for both; false-block 0% vs 21% |
 
+**v0.3.2 regression** (all three re-run under the same judge, glm-5.3-flash; Kimi K3 is no longer available, so these are not compared with the table above): xa is v0.3.2, the other subsets are v0.3.1. v0.3.2 only adds scoped-convention surfacing, which never applies to global memories, and those subsets hold only global memories.
+
+| Capability | Subset / mode | v0.3.2 | v0.2.2 | Naive RAG |
+|---|---|---|---|---|
+| Present-context fidelity | pf / end-to-end | 100% | 95% | 99% |
+| Backfill from the archive | ca / end-to-end | 100% | 94% | 81% |
+| Proactive surfacing (system layer) | pr / system F0.5 | 80% | 77% | 60% |
+| Cross-agent transfer (system layer) | xa / system | 10/12 (must-inject 12/12) | 10/12 | 7/12 |
+| Task state (system layer) | ts / system | 15/23 | 15/23 | 0/23 |
+| Time and change | at / QA | 100% | 97% | 100% |
+| Forget on request | fg / QA | 100% | 100% | 47% |
+| Poisoning robustness | mp / QA | 97% | 96% | 94% |
+| Detail retention | ca / QA | 90% | 80% | 100% |
+
 **Honest footnotes**
 
 - Each case has only 2–8 sessions; naive RAG ties or wins most plain QA subsets (previous section). A long-history tier (~350k tokens per case) is not built yet and is the most important next step.
@@ -121,7 +135,7 @@ Scopes: `global`, `repo:<name>`, `agent:<name>`; a search sees the current scope
 git clone https://github.com/ac0033/agent-memory.git
 cd agent-memory
 uv sync                      # Python ≥ 3.12; bge-m3 embeddings downloaded on first use (~2 GB)
-uv run pytest -q             # 847 tests, no network or API key needed
+uv run pytest -q             # 850 tests, no network or API key needed
 
 export AGENT_MEMORY_LLM_API_KEY=sk-...          # any OpenAI-compatible endpoint; default is DeepSeek deepseek-flash
 # optional: AGENT_MEMORY_LLM_BASE_URL / AGENT_MEMORY_LLM_MODEL / AGENT_MEMORY_DATA_DIR
@@ -212,7 +226,7 @@ agent-memory/
 ├── examples/                # minimal LangGraph example
 ├── evals/                   # trusted root (agents must not edit): layer1–3 / prefix sets + MemCompass frozen copy
 ├── docs/                    # usage, integration, design, research and benchmark (see below)
-├── tests/                   # 847 tests (slow ones skipped by default: uv run pytest -m slow)
+├── tests/                   # 850 tests (slow ones skipped by default: uv run pytest -m slow)
 └── data/                    # runtime data (gitignored): raw / memory / working / review_queue / snapshots / logs
 ```
 

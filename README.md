@@ -4,7 +4,7 @@
 
 记忆机制不是从别家的机制清单里挑出来的，而是从一套 13 项能力、3 项质量属性的[能力框架](docs/research/agent-memory-capability-framework.md)和它的评价标准（每一项都要显著优于朴素 RAG）反推出来的：**原话是证据，记忆只是通向证据的键和贴在证据上的注解；读取时只组织不裁决；智能前移到写入期且只增不减。** 验收用多个公开评测集、每个只测一次：LoCoMo 未见过的对话 **42 对 33**（p=0.049），PersonaMem-32k 与 LongMemEval-S 与朴素 RAG 持平；自建的 92 题 11 桶验证集 88/92，朴素 RAG 在最初 45 题上 39/45；治理能力（遗忘、投毒、任务状态、主动浮现）另有一套 373 条用例的内部评测集 MemCompass 量出来。
 
-> English: [README.en.md](README.en.md) · License: [MIT](LICENSE) · Python ≥ 3.12 · 847 个测试无需网络与 API key · 当前版本 v0.3.1（[CHANGELOG](docs/CHANGELOG.md)）
+> English: [README.en.md](README.en.md) · License: [MIT](LICENSE) · Python ≥ 3.12 · 850 个测试无需网络与 API key · 当前版本 v0.3.2（[CHANGELOG](docs/CHANGELOG.md)）
 
 ---
 
@@ -91,6 +91,20 @@ LoCoMo 上的领先主要来自前提不成立的对抗题（9 对 0，载荷首
 | 当下保真 | pf / 端到端 | 100% | 84% | .016 | 压缩前情节卡片 |
 | 投毒鲁棒 | mp / 问答 | 100% | 89% | .250 | 攻击成功率两版都是 0%，差异在误拦 0% vs 21% |
 
+**v0.3.2 回归**（同一评委 glm-5.3-flash 下重跑三方；Kimi K3 已不可用，所以不与上表直接比较）：xa 为 v0.3.2 的读数，其余子集为 v0.3.1——v0.3.2 只多了作用域约定兜底，它不作用于 global 记忆，而这些子集的记忆全是 global。
+
+| 能力 | 子集 / 模式 | v0.3.2 | v0.2.2 | 朴素 RAG |
+|---|---|---|---|---|
+| 当下保真 | pf / 端到端 | 100% | 95% | 99% |
+| 回溯补全 | ca / 端到端 | 100% | 94% | 81% |
+| 主动浮现（系统层） | pr / 系统层 F0.5 | 80% | 77% | 60% |
+| 跨 agent 迁移（系统层） | xa / 系统层 | 10/12（该注入的 12/12） | 10/12 | 7/12 |
+| 任务状态（系统层） | ts / 系统层 | 15/23 | 15/23 | 0/23 |
+| 时间与变化 | at / 问答 | 100% | 97% | 100% |
+| 按要求遗忘 | fg / 问答 | 100% | 100% | 47% |
+| 投毒鲁棒 | mp / 问答 | 97% | 96% | 94% |
+| 细节保留 | ca / 问答 | 90% | 80% | 100% |
+
 **诚实的注脚**：
 
 - 每条用例只有 2–8 个会话，朴素 RAG 在多数纯问答子集上持平或更好（见上一节）；长历史档位（每题约 35 万 token）尚未构建，是下一步最重要的工作。
@@ -137,7 +151,7 @@ LoCoMo 上的领先主要来自前提不成立的对抗题（9 对 0，载荷首
 git clone https://github.com/ac0033/agent-memory.git
 cd agent-memory
 uv sync                 # Python ≥ 3.12；bge-m3 嵌入模型首次使用时下载（约 2 GB）
-uv run pytest -q        # 847 个测试，不需要网络与 API key
+uv run pytest -q        # 850 个测试，不需要网络与 API key
 
 export AGENT_MEMORY_LLM_API_KEY=sk-...   # 任意 OpenAI 兼容端点；默认 DeepSeek deepseek-flash
 # 可选：AGENT_MEMORY_LLM_BASE_URL / AGENT_MEMORY_LLM_MODEL / AGENT_MEMORY_DATA_DIR
@@ -230,7 +244,7 @@ agent-memory/
 ├── examples/                # LangGraph 最小接入示例
 ├── evals/                   # 可信根（agent 不得修改）：layer1–3 / prefix 回归集 + MemCompass 冻结副本
 ├── docs/                    # 使用手册、接入指南、设计文档、研究与评测（见下）
-├── tests/                   # 847 个测试（慢测试默认跳过：uv run pytest -m slow）
+├── tests/                   # 850 个测试（慢测试默认跳过：uv run pytest -m slow）
 └── data/                    # 运行时数据（gitignored）：raw / memory / working / review_queue / snapshots / logs
                              #   + dev/（自建验证集）、external/<来源>/（外部测试集）
 ```

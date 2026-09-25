@@ -3,7 +3,7 @@
 from agent_memory.config import Settings, get_settings
 from agent_memory.models import EvidenceRef, MemoryEntry, MemoryProposal
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 __all__ = [
     "EvidenceRef",
