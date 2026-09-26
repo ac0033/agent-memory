@@ -1,6 +1,6 @@
 [project]
 name = "agent-memory"
-version = "0.3.2"
+version = "0.3.3"
 description = "本地长期记忆基础设施：agent 中立，支持 LangGraph 库接入 / MCP / Skill 三种接入方式"
 readme = "README.md"
 requires-python = ">=3.12"
