@@ -11,7 +11,7 @@
 ## 可信根清单（D6 的枚举，禁止 agent 自修改）
 
 - `evals/`（评估数据集与 runner；`evals/memcompass/` 除外，见下一条）、rubric、发布门槛（含 `config.py` 中 `evolve_*` 阈值与 `long_term/evolve/verify.py` 的三档判定逻辑）；
-- 不在清单内：`evals/memcompass/`（2026-09-25 用户取消冻结）。它是 `docs/research/benchmark-suite/` 的运行副本：改动先在编写源头做，有需要时 agent 直接用 `docs/research/benchmark-suite/tools/migrate_to_evals.py --apply --force --note "<改了什么>"` 同步（逐字节一致，README 更新记录自动追加一行），不在副本里单独改；改评分口径的同步，改前改后的读数不直接比较；
+- 不在清单内：`evals/memcompass/`（2026-09-25 起不再冻结）。它是 `docs/research/benchmark-suite/` 的运行副本：改动先在编写源头做，有需要时 agent 直接用 `docs/research/benchmark-suite/tools/migrate_to_evals.py --apply --force --note "<改了什么>"` 同步（逐字节一致，README 更新记录自动追加一行），不在副本里单独改；改评分口径的同步，改前改后的读数不直接比较；
 - 审计日志：`data/logs/evolution_audit.jsonl`、`data/logs/propagation.jsonl`——只追加，禁止改写或删除既有记录；
 - `data/snapshots/`（整理晋升前的记忆层快照）——回滚依据，禁止改写。
 
