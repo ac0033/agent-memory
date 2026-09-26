@@ -6,11 +6,12 @@
 
 - **D1 数据三层分离**：`data/raw` 原始证据只追加不改写；`data/memory` 是 Markdown 记忆层（唯一事实来源）；`data/index.db` 是可重建派生索引，绝不手改。
 - **D2 写入过门**：原始对话不直接入库，必须经脱敏→蒸馏→对账；蒸馏绝不提炼指令性内容。
-- **D6 可信根**：`evals/`、rubric、发布门槛、审计日志禁止 agent 自行修改。
+- **D6 可信根**：`evals/`（MemCompass 运行副本除外）、rubric、发布门槛、审计日志禁止 agent 自行修改。
 
 ## 可信根清单（D6 的枚举，禁止 agent 自修改）
 
-- `evals/`（评估数据集与 runner）、rubric、发布门槛（含 `config.py` 中 `evolve_*` 阈值与 `long_term/evolve/verify.py` 的三档判定逻辑）；
+- `evals/`（评估数据集与 runner；`evals/memcompass/` 除外，见下一条）、rubric、发布门槛（含 `config.py` 中 `evolve_*` 阈值与 `long_term/evolve/verify.py` 的三档判定逻辑）；
+- 不在清单内：`evals/memcompass/`（2026-09-25 用户取消冻结）。它是 `docs/research/benchmark-suite/` 的运行副本：改动先在编写源头做，有需要时 agent 直接用 `docs/research/benchmark-suite/tools/migrate_to_evals.py --apply --force --note "<改了什么>"` 同步（逐字节一致，README 更新记录自动追加一行），不在副本里单独改；改评分口径的同步，改前改后的读数不直接比较；
 - 审计日志：`data/logs/evolution_audit.jsonl`、`data/logs/propagation.jsonl`——只追加，禁止改写或删除既有记录；
 - `data/snapshots/`（整理晋升前的记忆层快照）——回滚依据，禁止改写。
 
@@ -37,7 +38,7 @@
   4. **复测最多两次**：只保存最后一次有效复测的数据。第二次复测比第一次**更好或持平**时，保留第二次的数据、丢弃第一次的；**更差**时，放弃第二轮改动，代码回滚到第一次复测时的状态，只保留第一次复测的数据。
   5. **报告分开写**：首测读数与诊断后复测读数分列，注明该来源已参与诊断；计算"≥2 个独立来源"时，至少一个来源从未用于诊断。
 - **自建验证集**（`data/dev/`，`docs/research/benchmark-suite/runners/dev_check.py`）：按能力维度出题的集成测试，可以反复用。
-- **内部评测集 MemCompass**（`evals/memcompass/`，D6）：覆盖公开评测集测不到的治理类能力。
+- **内部评测集 MemCompass**（编写源头 `docs/research/benchmark-suite/`，运行副本 `evals/memcompass/`，按需同步）：覆盖公开评测集测不到的治理类能力。
 
 **一个板块（题型、子集或能力维度）明显低于要求、且原因已经明确时，先解决它，再继续评测**，不要等全部测完再一起改。按顺序：
 
@@ -72,7 +73,7 @@
 - 工作记忆 `working/`：操作层草稿，写入只过脱敏，不过评价门、不做对账、不进索引（TODO 天然是祈使句）；turn_watermark 记"更新到第几轮"，`stale_wm` = current_turn > watermark。
 - 短期记忆 `short_term/`：transcript 适配层，不新建文件，解析宿主原生日志（kimi-code wire.jsonl 等，`detect_adapter` 按文件名自动识别，识别不了 fail-closed）。
 - 服务入口 `server/`：mcp_server.py（stdio，25 个 tool，15 个基础 + v0.2 的 10 个，业务收敛在 MemoryService，测试不走传输直接调）、http_server.py（streamable-http 常驻，默认只绑 127.0.0.1:8765，叠加 /SKILL.md、/bootstrap、/wm_blocks 静态路由；LLM 缺失不阻止启动）。/wm_blocks（M9）是纯读 GET 路由：?scopes=a,b,c 返回各 scope 的非空工作记忆渲染块，供会话开头 hook 免 MCP 握手拉取。
-- 评估 `evals/`：datasets（layer1 基础回忆 20 / layer2 多会话 20 / layer3 隐藏关联 12 / prefix 前缀回归 9）+ runners（recall_eval / e2e_eval / prefix_regression / metrics）。e2e_eval 支持 --baseline 配对模式、--jobs 用例级并发、LLM 磁盘缓存默认开（--no-cache 关）；prefix_regression 无 key 整体跳过，门槛 0.8。另有 `evals/memcompass/`：MemCompass 能力画像评测套件的冻结副本（8 个子集 373 条用例 + runner + 校验/体检工具，自带 build 与 naive_rag 运行时依赖，可独立运行），编写源头在 `docs/research/benchmark-suite/`。
+- 评估 `evals/`：datasets（layer1 基础回忆 20 / layer2 多会话 20 / layer3 隐藏关联 12 / prefix 前缀回归 9）+ runners（recall_eval / e2e_eval / prefix_regression / metrics）。e2e_eval 支持 --baseline 配对模式、--jobs 用例级并发、LLM 磁盘缓存默认开（--no-cache 关）；prefix_regression 无 key 整体跳过，门槛 0.8。另有 `evals/memcompass/`：MemCompass 能力画像评测套件的运行副本（8 个子集 373 条用例 + runner + 校验/体检工具，自带 build 与 naive_rag 运行时依赖，可独立运行），编写源头在 `docs/research/benchmark-suite/`。
 
 ### 关键行为语义（改代码前必须知道）
 
@@ -100,7 +101,7 @@
 - memory-v1（2026-09-21 起，分支 `feat/memory-v1`）：读取期 LLM 合成机制（v0.4 的 P34/P36b/P37、P23 启发式回退、P35 交错）全部移除，代之以单一读路径 `recall`；写入期蒸馏加 `event_date`/`cues`，可计数实例逐条沉淀不写总数。设计推导与逐轮实测：`docs/research/memory-v1-design.md`；机制说明：`docs/design/memory-v1-mechanism.md`。
 - 当前测试基线：`uv run pytest -q` 850 passed（新增 `tests/test_recall.py`、`tests/test_public_hygiene.py`），`uv run ruff check .` 干净（`docs/research/**` 只放宽行长）。
 - 版本与变更记录：版本号在 `pyproject.toml`、`agent_memory/__init__.py` 的 `__version__`、`docs/CHANGELOG.md` 顶部条目三处一致（卫生测试核对）；当前 v0.3.2（memory-v1）。行为有变化的改动在 CHANGELOG 顶部条目加一行。
-- 评测：MemCompass v0.3（8 个子集 373 条用例，用户已整体签核）。编写源头 `docs/research/benchmark-suite/`（构造脚本 `build/`、数据卡、核验台、设计文档），**冻结副本已按用户授权迁入 `evals/memcompass/`（D6 可信根，agent 不得修改；更新由用户在源头改规格、重新生成、重新核验后用 `tools/migrate_to_evals.py` 执行）**。正式报告 `results/2026-09-16-v03-report.md`（含对照组、消融、成本与用例体检；§8 成熟度按框架 §6.2 定级）。
+- 评测：MemCompass v0.3（8 个子集 373 条用例，用户已整体签核）。编写源头 `docs/research/benchmark-suite/`（构造脚本 `build/`、数据卡、核验台、设计文档），**运行副本在 `evals/memcompass/`（2026-09-25 起取消冻结，不属 D6；源头有需要的改动由 agent 用 `tools/migrate_to_evals.py` 同步，逐字节一致）**。正式报告 `results/2026-09-16-v03-report.md`（含对照组、消融、成本与用例体检；§8 成熟度按框架 §6.2 定级）。
 
 ### data/ 目录
 

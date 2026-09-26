@@ -306,9 +306,10 @@ def run_ca(item, system, mode, seed, actor, judge, dry):
     confirmed_reply = parsed.get("confirmed_in_reply") is True
     row.update(outputs=outs, judge=parsed, passed=_rubric_pass(beh["rubric"], parsed),
                backfill=any(n in {"archive_search", "archive_read"} for n in names),
-               # 系统在检索结果里自动附带原文（P23）也算回溯：两种口径都记录，指标用"含系统附带"的口径
+               # 系统在检索结果里自动附带原文也算细节到场：两种口径都记录。认两种载荷形态——
+               # v0.2 的 <raw_evidence> 块，memory-v1 证据束里的原话（"] 原话 " / <evidence at=）
                backfill_any=any(n in {"archive_search", "archive_read"} for n in names)
-               or any("<raw_evidence>" in s["result"] for s in trace),
+               or any(_carries_raw(s["result"]) for s in trace),
                asked=("ask_user" in names) or confirmed_reply, asked_tool="ask_user" in names,
                queued="queue_confirmation" in names, act_before_confirm=abc,
                fabricated=bool(parsed.get("fabricated")), restatement_score=parsed.get("restatement_score"),
@@ -479,6 +480,12 @@ def work_scope(item: dict) -> str:
     return scope_of(item["history"]["sessions"][0], "repo:work")
 
 
+def _carries_raw(result) -> bool:
+    """检索结果里是否自动附带了原文（不需要答题器再调原文工具）。"""
+    text = str(result)
+    return "<raw_evidence>" in text or "<evidence at=" in text or "] 原话 " in text
+
+
 def run_ts(item, system, mode, seed, actor, judge, dry):
     p = item["probes"][0]
     lab = p["gold"]["labels"]
@@ -629,6 +636,8 @@ def main() -> int:
     ap.add_argument("--run-id", default=None)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-cache", action="store_true")
+    ap.add_argument("--no-system-cache", action="store_true",
+                    help="被测系统内部的 LLM 调用也不走缓存（重复采样核对噪声用；--no-cache 只管答题器与评委）")
     ap.add_argument("--order", choices=["interleave", "item"], default="interleave",
                     help="任务排队顺序：interleave=各子集轮流（额度中断时每个子集都有进度；同样的用例集在不同运行里顺序一致，便于配对）；"
                          "item=按用例顺序")
@@ -658,7 +667,10 @@ def main() -> int:
             "llm_base_url": sysd.get("base_url") or env.get(sysd.get("base_url_env", "")),
             "llm_model": sysd["model"],
         })
-        system_llm = OpenAILLMClient.from_settings(settings, cache_dir=REPO / "data" / "logs" / "llm_cache" / f"sys-{args.am_label}")
+        system_llm = OpenAILLMClient.from_settings(
+            settings,
+            cache_dir=None if args.no_system_cache else REPO / "data" / "logs" / "llm_cache" / f"sys-{args.am_label}",
+        )
     from mc_common import CachedEmbedder
 
     embedder = CachedEmbedder(get_embedder(settings), OUT_ROOT / "embedding_cache.pkl")

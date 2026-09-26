@@ -1,6 +1,7 @@
-"""把 MemCompass 的冻结副本迁入 evals/memcompass/（D6 可信根）。
+"""把 MemCompass 编写源头同步到 evals/memcompass/（运行副本）。
 
-授权：用户 2026-09-14——评测集核验通过、并能真实准确地反映能力后迁入。
+授权：用户 2026-09-14 首次迁入；2026-09-25 取消冻结——编写源头有需要的改动时，agent 直接用本工具同步，
+不再等用户执行。副本仍与编写源头逐字节一致，不在副本里单独改。
 默认只打印计划（dry run）；加 --apply 才写入；目标目录已存在时拒绝，除非 --force。
 
 迁入（逐字节复制，便于与编写源头 diff）：
@@ -9,8 +10,8 @@
 - tools/validate.py、tools/item_health.py；
 - 运行时依赖：build/mcb.py、build/pools.py（runner 回放填充会话、validate.py 校验时导入）；
   朴素 RAG 对照组的 naive_rag.py（来自 docs/research/eval-drafts/runner-draft/，放进 runners/）——
-  冻结副本不依赖编写源头与草稿目录，改动那边不会悄悄改变冻结副本的结果；
-- 另写 README.md（冻结说明、来源提交、核验记录、用法）。
+  副本不依赖编写源头与草稿目录，改动那边不会悄悄改变副本的结果（要生效必须再同步一次）；
+- 另写 README.md（同步说明、来源提交、核验记录、用法），保留原 README 里的更新记录并追加本次一行。
 不迁入：其余构造脚本 build/build_*.py、核验台 tools/review/、设计与调研文档——它们留在
 docs/research/benchmark-suite/，是编写源头。
 用例文件不改写：生成文件不手改，核验以 datasets/verification.yaml 为准。
@@ -40,10 +41,11 @@ TOOLS = ("validate.py", "item_health.py")
 BUILD_RUNTIME = ("mcb.py", "pools.py")
 NAIVE_RAG = REPO / "docs" / "research" / "eval-drafts" / "runner-draft" / "naive_rag.py"
 
-README = """# MemCompass（冻结副本）
+README = """# MemCompass（运行副本）
 
-> 本目录是 `docs/research/benchmark-suite/` 在 {date} 的冻结副本（来源提交 `{sha}`，套件版本 {version}），
-> 属于 D6 可信根：**agent 不得修改**；更新由用户执行（在编写源头改规格、重新生成、重新核验后再迁入）。
+> 本目录是 `docs/research/benchmark-suite/` 在 {date} 同步的运行副本（来源提交 `{sha}`，套件版本 {version}）。
+> 2026-09-25 起取消冻结：改动一律先在编写源头做，再用 `docs/research/benchmark-suite/tools/migrate_to_evals.py`
+> 同步过来（逐字节一致），不在本目录单独改。改评分口径的同步要在下方更新记录里写明，改口径前后的读数不直接比较。
 
 - 规模：8 个子集，{n_items} 条用例；切分 dev / test / held-out = 20 / 50 / 30（按 group 整体分配）。
 - 人工核验：见 `datasets/verification.yaml`（用例文件本身不改写，核验以该文件为准）。
@@ -65,6 +67,29 @@ README = """# MemCompass（冻结副本）
 
 held-out 切分只用于里程碑评测，平时的开发与调参不要跑它。
 """
+
+
+_LOG_HEADS = ("## 更新记录", "## 冻结后的更新记录")
+_LOG_TABLE_HEAD = "| 日期 | 授权 | 改动 | 来源提交 |\n|---|---|---|---|\n"
+
+
+def _update_log(old_readme: Path, note: str | None, sha: str) -> str:
+    """原 README 里的更新记录原样保留，再追加本次同步一行（note 为空时写"与编写源头同步"）。"""
+    rows = []
+    if old_readme.exists():
+        text = old_readme.read_text(encoding="utf-8")
+        for head in _LOG_HEADS:
+            if head in text:
+                section = text.split(head, 1)[1]
+                rows = [
+                    line for line in section.splitlines()
+                    if line.startswith("| ") and not line.startswith(("| 日期", "|---"))
+                ]
+                break
+    today = dt.date.today().isoformat()
+    rows.append(f"| {today} | agent 同步（2026-09-25 起无需逐次授权） | "
+                f"{note or '与编写源头同步'} | `{sha}` |")
+    return "## 更新记录\n\n" + _LOG_TABLE_HEAD + "\n".join(rows) + "\n"
 
 
 def plan() -> list[tuple[Path, Path]]:
@@ -91,6 +116,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="真正写入（默认只打印计划）")
     ap.add_argument("--force", action="store_true", help="目标目录已存在时覆盖")
+    ap.add_argument("--note", default=None, help="本次同步改了什么（写进 README 的更新记录）")
     args = ap.parse_args()
 
     pairs = plan()
@@ -124,9 +150,11 @@ def main() -> int:
     # 套件版本以编写源头 README 的版本行为准（用例 meta 里的 suite_version 只在重新生成时更新）
     m = re.search(r"版本\s*([0-9][\w.\-]*)", (SRC / "README.md").read_text(encoding="utf-8"))
     version = m.group(1) if m else "?"
-    (DST / "README.md").write_text(
-        README.format(date=dt.date.today().isoformat(), sha=sha, version=version, n_items=len(items)),
-        encoding="utf-8")
+    readme = README.format(
+        date=dt.date.today().isoformat(), sha=sha, version=version, n_items=len(items)
+    )
+    readme += "\n" + _update_log(DST / "README.md", args.note, sha)
+    (DST / "README.md").write_text(readme, encoding="utf-8")
     print(f"已迁入 {len(pairs)} 个文件（逐字节核对一致）+ README.md → {DST}")
     return 0
 

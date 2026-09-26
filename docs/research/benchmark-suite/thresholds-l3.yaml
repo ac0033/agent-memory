@@ -20,7 +20,7 @@ general:
   require_undiagnosed_source: true  # G6
 
 capabilities:
-  K1: {kind: structural, primary: {pf_E_detail_fidelity: 0.98, compaction_constraint_survival: 0.95}, guard: {fabrication_rate_max: 0.0}}
+  K1: {kind: structural, primary: {pf_E_detail_fidelity: 0.98, pf_E_constraint_survival: 0.95}, guard: {fabrication_rate_max: 0.0}}
   K2: {kind: structural, primary: {ts_S_state_accuracy: 0.90, ts_S_recovery_accuracy: 0.90}, guard: {crosstalk_rate_max: 0.05, stale_residue_rate_max: 0.05}}
   K3: {kind: qa, primary: {ca_Q_detail_gap_closure: 0.50, ca_Q_detail_within_upper_pp: 5}}
   K4: {kind: qa, primary: {external_qa_gap_closure: 0.50}, guard: {retrieval_parity_min: 0.90, payload_ratio_max: 1.15}}

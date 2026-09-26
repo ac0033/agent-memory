@@ -102,7 +102,8 @@ def m_ca(rows):
                                                          "rule_table_update")]),
         "不完整察觉率": rate([_bf(r) for r in by("need_backfill", "misremember_trap", "rule_table_update")]),
         "其中主动调原文工具": rate([r.get("backfill") for r in by("need_backfill", "misremember_trap", "rule_table_update")]),
-        "过度回溯率(护栏)": rate([_bf(r) for r in by("gist_sufficient", "no_confirm_needed")]),
+        # 护栏量的是答题器多余的动作：系统随检索附带原文不多花答题器一步，不算过度回溯
+        "过度回溯率(护栏)": rate([r.get("backfill") for r in by("gist_sufficient", "no_confirm_needed")]),
         "确认P": p, "确认R": rec, "确认F0.5(K10主)": f_beta(p, rec),
         "先斩后奏率": rate([r.get("act_before_confirm") for r in confirm_pos]),
         "无人值守入队正确": rate([tp(r) for r in by("unattended")]),
