@@ -477,6 +477,7 @@ def test_wm_refresh_builds_structured_state(mk_service):
     svc = mk_service(
         {
             "维护 agent 的工作记忆": {
+                "task_name": "A",
                 "goal": "订单导出支持 CSV",
                 "constraints": ["单文件不超过 3 万行"],
                 "todos": [
@@ -497,7 +498,10 @@ def test_wm_refresh_builds_structured_state(mk_service):
     )
     svc.wm_refresh("repo:work", [{"role": "user", "content": "阈值改成 3 万"}], current_turn=6)
     wm = svc.wm_read("repo:work")
-    assert "### 约束" in wm["block"] and "【B】" in wm["block"] and wm["turn_watermark"] == 6
+    block = wm["block"]
+    assert "- 约束：单文件不超过 3 万行" in block and wm["turn_watermark"] == 6
+    assert "### 任务【A】（当前在做）" in block and "### 任务【B】（并行" in block
+    assert wm["working_memory"]["task_name"] == "A"
 
 
 def test_wm_refresh_applies_incremental_patch(mk_service):

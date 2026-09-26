@@ -39,6 +39,9 @@ class Settings(BaseModel):
     # 交互式路径（MCP/HTTP server）可调小收紧最坏耗时；批量评估可调大换成功率
     llm_timeout_seconds: float = Field(default=300.0, gt=0)
     llm_max_retries: int = Field(default=2, ge=0)
+    # 采样温度：None 用服务商默认值。带思考过程的模型可能忽略这个参数——当前默认的系统模型上
+    # 设为 0 对副手决定的一致性没有改善（框架 §8a 浮现一致性），所以默认不设
+    llm_temperature: float | None = Field(default=None, ge=0, le=2)
 
     # OpenAI 兼容端点：评估评委用
     judge_llm_base_url: str | None = None
@@ -85,6 +88,7 @@ _ENV_KEYS: dict[str, str] = {
     "llm_model": "AGENT_MEMORY_LLM_MODEL",
     "llm_timeout_seconds": "AGENT_MEMORY_LLM_TIMEOUT_SECONDS",
     "llm_max_retries": "AGENT_MEMORY_LLM_MAX_RETRIES",
+    "llm_temperature": "AGENT_MEMORY_LLM_TEMPERATURE",
     "judge_llm_base_url": "AGENT_MEMORY_JUDGE_LLM_BASE_URL",
     "judge_llm_api_key": "AGENT_MEMORY_JUDGE_LLM_API_KEY",
     "judge_llm_model": "AGENT_MEMORY_JUDGE_LLM_MODEL",

@@ -52,6 +52,8 @@ class Bundle:
     raw_rank: int | None = None
     # 本次查询在原文路命中的行号（区别于论断顺带引的上下文行）
     hit_lines: set[int] = field(default_factory=set)
+    # 宽证据区间里找得到字面对得上的原话（找不到时区间里的命中都算它的，见 _owner）
+    located: bool = False
 
     @property
     def date(self) -> str | None:
@@ -91,11 +93,42 @@ def _pick_excerpt(
     span_lines = [h for h in span_lines if h.content and not is_injection(h.content)]
     if len(span_lines) <= EXCERPT_LINES:
         return span_lines
-    ranked = sorted(
-        span_lines,
-        key=lambda h: (h.line not in raw_hit_lines, -_overlap(claim, h.content), h.line),
-    )
-    return sorted(ranked[:EXCERPT_LINES], key=lambda h: h.line)
+    # 区间过宽时，区间里的一行不等于这条论断的原话：一场会话记了六件事、每件后面跟一句
+    # "好的，记下了"，整场都是区间。只取和论断字面相关的行，相关度优先于"本次查询命中"——
+    # 否则命中的客套话会把论断自己的原话挤出摘录（MemCompass pr：原话全是"好的，记下了"）。
+    # 论断很抽象、一行都对不上字面时，才退回本次查询命中的行
+    scored = [(h, _overlap(claim, h.content)) for h in span_lines]
+    related = [(h, s) for h, s in scored if s > 0]
+    if not related:
+        related = [(h, 0) for h, _ in scored if h.line in raw_hit_lines]
+    ranked = sorted(related, key=lambda hs: (-hs[1], hs[0].line not in raw_hit_lines, hs[0].line))
+    return sorted((h for h, _ in ranked[:EXCERPT_LINES]), key=lambda h: h.line)
+
+
+def _is_wide(key: tuple[str, str, int, int]) -> bool:
+    return key[3] - key[2] + 1 > EXCERPT_LINES
+
+
+def _owner(spans: list[tuple[tuple[str, str, int, int], Bundle]], h: RawHit) -> Bundle | None:
+    """原文命中行并进哪一束。窄区间（蒸馏标得准）里的行就是那条论断的原话，按区间归属；
+    宽区间（整场会话）里的行只归给字面对得上的论断，几条都对得上时归重合度最高的——
+    区间包含它不等于它在说这件事。一条都对不上就不并，自成一束（原文命中照样一行不丢）。"""
+    best, best_score = None, 0.0
+    for key, b in spans:
+        src, sid, lo, hi = key
+        if src != h.source or sid != h.session_id or not lo <= h.line <= hi:
+            continue
+        if not _is_wide(key):
+            return b
+        if b.located:
+            score = float(_overlap(b.entry.content, h.content)) if b.entry is not None else 0.0
+        else:
+            # 论断很抽象、区间里一行字面都对不上：分不出哪行是它的，区间里的命中都归它，
+            # 但让位于找得到自己原话的论断
+            score = 0.5
+        if score > best_score:
+            best, best_score = b, score
+    return best
 
 
 def build_bundles(
@@ -126,19 +159,15 @@ def build_bundles(
                 session_cache[sess] = span_reader(*sess)
             in_span = [h for h in session_cache[sess] if key[2] <= h.line <= key[3]]
             b.lines = _pick_excerpt(in_span, raw_line_set.get(sess, set()), r.entry.content)
+            b.located = _is_wide(key) and any(
+                _overlap(r.entry.content, h.content) > 0 for h in in_span
+            )
             spans.append((key, b))
         bundles.append(b)
 
     for rank, h in enumerate(raw_hits, start=1):
         contribution = 1.0 / (RRF_K + rank)
-        owner = next(
-            (
-                b
-                for (src, sid, lo, hi), b in spans
-                if src == h.source and sid == h.session_id and lo <= h.line <= hi
-            ),
-            None,
-        )
+        owner = _owner(spans, h)
         if owner is not None:
             # 同一束只计原文路的最好名次：一场长会话命中十行不该把这一束顶上天
             if owner.raw_rank is None:

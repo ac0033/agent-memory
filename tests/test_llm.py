@@ -75,6 +75,7 @@ class _FakeCompletions:
 
     def create(self, **kwargs):
         self.calls += 1
+        self.last_kwargs = kwargs
         item = self._contents.pop(0)
         if isinstance(item, tuple):  # (content, usage)
             return _FakeResponse(item[0], usage=item[1])
@@ -230,3 +231,22 @@ def test_usage_captured_for_complete_json(monkeypatch):
     client, _ = _make_client(monkeypatch, [(json.dumps({"a": 1}), _FakeUsage(10, 5))])
     assert client.complete_json("s", "u", "{a:int}") == {"a": 1}
     assert client.last_usage["prompt_tokens"] == 10
+
+
+def test_temperature_is_sent_only_when_set(monkeypatch):
+    client, completions = _make_client(monkeypatch, ['{"a": 1}', '{"a": 2}'])
+    client.complete_json("s", "u", "schema")
+    assert "temperature" not in completions.last_kwargs  # 默认：用服务商的默认温度
+    client.temperature = 0.0
+    client.complete_json("s", "u", "schema")
+    assert completions.last_kwargs["temperature"] == 0.0
+
+
+def test_explicit_temperature_does_not_reuse_default_temperature_cache(monkeypatch, tmp_path):
+    """默认温度下缓存的答案不能冒充低温采样的结果（否则一致性实验测的是缓存）。"""
+    client, completions = _make_client(monkeypatch, ['{"a": 1}', '{"a": 2}'])
+    client.cache_dir = tmp_path
+    assert client.complete_json("s", "u", "schema") == {"a": 1}
+    client.temperature = 0.0
+    assert client.complete_json("s", "u", "schema") == {"a": 2}
+    assert completions.calls == 2

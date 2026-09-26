@@ -56,6 +56,7 @@ class WorkingMemory(BaseModel):
     """一个 scope 的当前任务状态。全量替换语义：没有部分更新。"""
 
     scope: str  # "global" / "repo:<slug>" / "agent:<name>"，与长期记忆同一取值空间
+    task_name: str = ""  # 当前任务的简称；有并行任务时用来和 subtasks 区分
     goal: str = ""  # 当前任务目标
     decisions: list[str] = Field(default_factory=list)  # 已确认决策
     variables: dict[str, str] = Field(default_factory=dict)  # 任务变量（键值均为文本）

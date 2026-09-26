@@ -21,6 +21,8 @@ def _section_lines(wm: WorkingMemory) -> list[tuple[str, list[str]]]:
 
     待办里 pending 排在 done 前（未完成项更值得关注），同级保持写入顺序。
     """
+    if wm.subtasks:
+        return _multi_task_sections(wm)
     sections: list[tuple[str, list[str]]] = []
     if wm.goal:
         sections.append(("### 目标", [wm.goal]))
@@ -40,24 +42,44 @@ def _section_lines(wm: WorkingMemory) -> list[tuple[str, list[str]]]:
         sections.append(("### 未决问题", [f"- {q}" for q in wm.open_questions]))
     if wm.notes:
         sections.append(("### 备注", [f"- {n}" for n in wm.notes]))
-    if wm.subtasks:
-        lines = []
-        for st in wm.subtasks:
-            done = [t.content for t in st.todos if t.status == "done"]
-            nxt = [t.content for t in st.todos if t.status == "pending"]
-            parts = [st.goal] if st.goal else []
-            if st.constraints:
-                parts.append("约束：" + "；".join(st.constraints))
-            if done:
-                parts.append("已完成：" + "；".join(done))
-            if nxt:
-                parts.append("下一步：" + "；".join(nxt))
-            if st.open_questions:
-                parts.append("未决：" + "；".join(st.open_questions))
-            if st.variables:
-                parts.append("变量：" + "，".join(f"{k}={v}" for k, v in st.variables.items()))
-            lines.append(f"- 【{st.name}】" + "｜".join(parts))
-        sections.append(("### 其他并行任务", lines))
+    return sections
+
+
+def _task_lines(goal, constraints, todos, open_questions, variables) -> list[str]:
+    """一个任务的完整状态行：各并行任务用同一套字段，谁也不被压成摘要。"""
+    lines = [f"- 目标：{goal}"] if goal else []
+    lines += [f"- 约束：{c}" for c in constraints]
+    lines += [f"- 已完成：{t.content}" for t in todos if t.status == "done"]
+    lines += [f"- 下一步：{t.content}" for t in todos if t.status == "pending"]
+    lines += [f"- 未决问题：{q}" for q in open_questions]
+    lines += [f"- 变量：{k} = {v}" for k, v in variables.items()]
+    return lines
+
+
+def _multi_task_sections(wm: WorkingMemory) -> list[tuple[str, list[str]]]:
+    """并行任务时按任务分节：当前任务在前，其余任务各占一节，字段对等、标明归属。
+
+    只有一个任务时顶层字段不带任务名也不会被误读；有并行任务时，不写明归属的顶层字段会被
+    读成"问到的那个任务"的状态（串线），被压成一行摘要的任务则丢细节。
+    """
+    current = wm.task_name or "当前任务"
+    sections = [
+        (
+            f"### 任务【{current}】（当前在做）",
+            _task_lines(wm.goal, wm.constraints, wm.todos, wm.open_questions, wm.variables),
+        )
+    ]
+    for st in wm.subtasks:
+        sections.append(
+            (
+                f"### 任务【{st.name}】（并行，暂未在做）",
+                _task_lines(st.goal, st.constraints, st.todos, st.open_questions, st.variables),
+            )
+        )
+    if wm.decisions:
+        sections.append(("### 已确认决策", [f"- {d}" for d in wm.decisions]))
+    if wm.notes:
+        sections.append(("### 备注", [f"- {n}" for n in wm.notes]))
     return sections
 
 

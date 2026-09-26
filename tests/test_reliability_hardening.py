@@ -857,12 +857,9 @@ def test_same_batch_stale_update_is_queued_instead_of_crashing(
     index = IndexDB(tmp_path / "index.db")
     writer = MemoryWriter(store, index, fake_embedder)
     _seed(writer, entry_factory(entry_id="old", content="本项目端口当前固定为 8765。"))
-    llm = ScriptedLLM(
-        [
-            {"action": "UPDATE", "target_id": "old", "add_new": False, "reason": "change"},
-            {"action": "UPDATE", "target_id": "old", "add_new": False, "reason": "change"},
-        ]
-    )
+    # 两条候选同批判定（一次调用），都判 UPDATE 同一个旧条目
+    update = {"action": "UPDATE", "target_id": "old", "add_new": False, "reason": "change"}
+    llm = ScriptedLLM([{"decisions": [{"n": 1, **update}, {"n": 2, **update}]}])
     candidates = [
         entry_factory(entry_id="new-a", content="本项目端口当前固定为 8766。"),
         entry_factory(entry_id="new-b", content="本项目端口当前固定为 8767。"),

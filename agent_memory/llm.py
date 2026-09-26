@@ -106,6 +106,7 @@ class OpenAILLMClient:
         cache_dir: Path | None = None,
         timeout: float = 300.0,
         max_retries: int = 2,
+        temperature: float | None = None,
     ):
         if not api_key:
             raise LLMError(
@@ -118,6 +119,7 @@ class OpenAILLMClient:
         self.base_url = base_url or DEFAULT_BASE_URL
         self.model = model or DEFAULT_MODEL
         self.cache_dir = Path(cache_dir) if cache_dir is not None else None
+        self.temperature = temperature
         # 显式超时 + 重试上限（默认 300s × 内部重试 2 次）：openai 默认 600s
         # 超时且重试 2 次，单次挂起最坏 30 分钟，会拖死交互式调用与评估并发池。
         # 交互式路径（MCP/HTTP server）可用 AGENT_MEMORY_LLM_TIMEOUT_SECONDS /
@@ -142,16 +144,21 @@ class OpenAILLMClient:
             cache_dir=cache_dir,
             timeout=settings.llm_timeout_seconds,
             max_retries=settings.llm_max_retries,
+            temperature=settings.llm_temperature,
         )
+
+    def _sampling(self) -> dict[str, float]:
+        return {} if self.temperature is None else {"temperature": self.temperature}
 
     # ------------------------------------------------------------ 磁盘缓存
 
     def _cache_key(self, kind: str, system: str, user: str) -> str:
         """key = sha256(model + kind + system + user)：换模型 / 换提示词自动不命中。"""
-        payload = json.dumps(
-            {"model": self.model, "kind": kind, "system": system, "user": user},
-            ensure_ascii=False,
-        )
+        fields = {"model": self.model, "kind": kind, "system": system, "user": user}
+        if self.temperature is not None:
+            # 只在显式设了温度时进 key：默认温度下的老缓存照常命中
+            fields["temperature"] = self.temperature
+        payload = json.dumps(fields, ensure_ascii=False)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _cache_read(self, key: str) -> Any | None:
@@ -216,6 +223,7 @@ class OpenAILLMClient:
         try:
             resp = self._client.chat.completions.create(
                 model=self.model,
+                **self._sampling(),
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
@@ -245,6 +253,7 @@ class OpenAILLMClient:
             try:
                 resp = self._client.chat.completions.create(
                     model=self.model,
+                    **self._sampling(),
                     messages=[
                         {"role": "system", "content": json_system},
                         {"role": "user", "content": user},

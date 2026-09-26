@@ -286,19 +286,74 @@ def test_update_triggers_propagation_to_dependents(entry_factory, components):
     assert store.get("port-new") is not None  # 变更本身正常落库
 
 
-def test_decide_calls_run_concurrently(entry_factory, components):
-    """两阶段结构：第一阶段的 LLM 决策并发执行（写路径耗时大头，不能串行等）。
-
-    用记录线程 id 的 fake LLM 验证确实跑了多个线程；落库结果与串行版一致。
-    """
-    import threading
-
+def _seed_port(components, entry_factory):
     store, index, embedder, _ = components
     _seed(
         store, index, embedder,
         entry_factory(entry_id="port-old", content="本项目 dev server 端口固定 8765。"),
     )
 
+
+def _add(n):
+    return {"n": n, "action": "ADD", "target_id": None}
+
+
+def _port_notes(entry_factory, n):
+    return [
+        entry_factory(entry_id=f"port-note-{i}", content=f"端口相关的第 {i} 条补充说明。")
+        for i in range(n)
+    ]
+
+
+def test_decisions_are_batched_into_one_call(entry_factory, components):
+    """写入侧成本（Q1）：同一批有近邻的候选合并成一次判定调用，而不是一条一次。"""
+    _seed_port(components, entry_factory)
+    calls: list[str] = []
+
+    class BatchLLM:
+        def complete(self, system: str, user: str) -> str:
+            raise NotImplementedError
+
+        def complete_json(self, system: str, user: str, schema_description: str) -> dict:
+            calls.append(user)
+            n = user.count("### 候选 ")
+            return {"decisions": [_add(i) for i in range(1, n + 1)]}
+
+    report = _reconcile(_port_notes(entry_factory, 4), components, BatchLLM())
+    assert report.counts()["add"] == 4
+    assert len(calls) == 1 and calls[0].count("### 候选 ") == 4
+
+
+def test_an_unusable_batch_answer_falls_back_to_one_call_per_candidate(
+    entry_factory, components
+):
+    """批判定漏判或整批解析不出：逐条补判，不丢候选、不猜关系。"""
+    _seed_port(components, entry_factory)
+    calls: list[str] = []
+
+    class PartialLLM:
+        def complete(self, system: str, user: str) -> str:
+            raise NotImplementedError
+
+        def complete_json(self, system: str, user: str, schema_description: str) -> dict:
+            calls.append(user)
+            if "### 候选 " in user:
+                return {"decisions": [_add(1)]}  # 只判了第 1 条
+            return {"action": "ADD", "target_id": None, "reason": "逐条补判"}
+
+    report = _reconcile(_port_notes(entry_factory, 3), components, PartialLLM())
+    assert report.counts()["add"] == 3
+    assert len(calls) == 1 + 2  # 一次批判定 + 两条漏判的逐条补判
+
+
+def test_batches_run_concurrently(entry_factory, components):
+    """候选超过一批时，各批并发判定（写路径耗时大头，不能串行等）。"""
+    import threading
+    import time
+
+    from agent_memory.long_term.ingest import reconcile as rec
+
+    _seed_port(components, entry_factory)
     thread_ids: set[int] = set()
 
     class ThreadRecordingLLM:
@@ -307,15 +362,14 @@ def test_decide_calls_run_concurrently(entry_factory, components):
 
         def complete_json(self, system: str, user: str, schema_description: str) -> dict:
             thread_ids.add(threading.get_ident())
-            return {"action": "ADD", "target_id": None, "reason": "并发验证"}
+            time.sleep(0.05)  # 让两批的调用在时间上重叠
+            n = user.count("### 候选 ")
+            return {"decisions": [_add(i) for i in range(1, n + 1)]}
 
-    candidates = [
-        entry_factory(entry_id=f"port-note-{i}", content=f"端口相关的第 {i} 条补充说明。")
-        for i in range(4)
-    ]
-    report = _reconcile(candidates, components, ThreadRecordingLLM())
-    assert report.counts()["add"] == 4
-    assert len(thread_ids) > 1  # 串行执行时全部调用都在同一线程
+    notes = _port_notes(entry_factory, rec.DECIDE_BATCH * 2)
+    report = _reconcile(notes, components, ThreadRecordingLLM())
+    assert report.counts()["add"] == rec.DECIDE_BATCH * 2
+    assert len(thread_ids) > 1
 
 
 # ---- M9：无 LLM 规则降级（llm=None）----

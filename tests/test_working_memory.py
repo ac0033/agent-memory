@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent_memory.working.models import TodoItem, WorkingMemory
+from agent_memory.working.models import SubTask, TodoItem, WorkingMemory
 from agent_memory.working.render import is_stale, render_working_memory_block
 from agent_memory.working.store import (
     WorkingMemoryConflictError,
@@ -37,7 +37,7 @@ class TestModels:
 
     def test_defaults(self):
         wm = make_wm()
-        assert wm.goal == ""
+        assert wm.goal == "" and wm.task_name == "" and wm.subtasks == []
         assert wm.decisions == [] and wm.variables == {} and wm.notes == []
         assert wm.todos == []
         assert wm.turn_watermark == 0
@@ -181,6 +181,39 @@ class TestRender:
         )
         block = render_working_memory_block(wm, budget_chars=skeleton_len + 1)
         assert block == ""
+
+    def test_parallel_tasks_render_as_labelled_peer_sections(self):
+        # 并行任务时每个任务一节、字段对等：顶层任务不再是无名字段，其他任务也不被压成一行摘要
+        wm = make_wm(
+            task_name="B",
+            goal="退货原因分类模型",
+            constraints=["分 15 类"],
+            todos=[TodoItem(content="整理标注数据", status="done"), TodoItem(content="训练基线")],
+            subtasks=[
+                SubTask(
+                    name="A",
+                    goal="价格监控告警脚本",
+                    constraints=["环比超过 15% 告警"],
+                    todos=[
+                        TodoItem(content="计算环比", status="done"),
+                        TodoItem(content="阈值告警"),
+                    ],
+                )
+            ],
+        )
+        block = render_working_memory_block(wm, budget_chars=2000)
+        cur, other = block.index("### 任务【B】（当前在做）"), block.index("### 任务【A】（并行")
+        assert cur < other
+        a_part = block[other:]
+        assert "- 目标：价格监控告警脚本" in a_part and "- 约束：环比超过 15% 告警" in a_part
+        assert "- 已完成：计算环比" in a_part and "- 下一步：阈值告警" in a_part
+        assert "退货" not in a_part and "价格" not in block[cur:other]
+        assert "### 目标" not in block  # 不再出现不带任务归属的顶层字段
+
+    def test_single_task_rendering_unchanged(self):
+        # 没有并行任务时维持原来的分节（不强加任务名）
+        block = render_working_memory_block(make_wm(task_name="X", goal="g"), budget_chars=2000)
+        assert "### 目标" in block and "任务【" not in block
 
 
 # ---------------------------------------------------------------- 新鲜度

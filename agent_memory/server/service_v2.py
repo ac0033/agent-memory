@@ -440,6 +440,7 @@ class V2ServiceMixin:
                 )
         wm = WorkingMemory(
             scope=scope,
+            task_name=r(out.get("task_name") or ""),
             goal=r(out.get("goal") or ""),
             constraints=[r(x) for x in out.get("constraints") or []],
             decisions=[r(x) for x in out.get("decisions") or []],

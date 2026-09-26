@@ -8,9 +8,9 @@
    不合法 → 不强行收敛，写入 data/review_queue 人工复核（fail-safe：
    宁可排队等人，也不让坏决策落库）。
 
-执行结构是两阶段：第一阶段把每条候选的"找近邻 + LLM 判决策"并发执行
-（LLM 调用是写路径的耗时大头，串行时 N 条候选是 N 倍模型往返，并发后
-总耗时≈最慢的一条——MCP 客户端超时不可配，写路径必须自己够快）；
+执行结构是两阶段：第一阶段并发找近邻，再把有近邻的候选按批（DECIDE_BATCH 条）
+合并成一次 LLM 判决策、各批并发（LLM 调用是写路径的耗时与成本大头：逐条判定时
+N 条候选是 N 次模型往返；MCP 客户端超时不可配，写路径必须自己够快）；
 第二阶段按原顺序串行落库与变更传播。并发阶段只读（embedder 加锁、
 index 连接访问经 RLock 串行化——sqlite3 连接本身不支持并发调用）。语义变化：同批候选彼此不可见——
 同批两条语义重复的候选可能都判 ADD，由后续对账/进化循环收敛
@@ -78,6 +78,28 @@ _SYSTEM_PROMPT = (
     "判断依据只看事实关系，不要被措辞差异迷惑；时间/状态类事实以较新的日期为准判 UPDATE。"
 )
 
+# 按批判定：同一场会话蒸馏出的候选合并成一次调用，每批最多这么多条（写入侧成本 Q1：
+# 逐条判定时一场会话十几条候选就是十几次模型往返）。批调用失败或漏判的候选退回逐条判定
+DECIDE_BATCH = 8
+
+_BATCH_SYSTEM_SUFFIX = (
+    "\n\n这次一次给你多条互相独立的新记忆候选，每条各带自己的近邻既有记忆。"
+    "逐条独立判定：一条候选的 target_id 只能取它自己那组近邻里的 id；"
+    "候选之间彼此不可见，不要拿一条候选去判另一条。每条都要给出决策，用候选的序号对应。"
+)
+
+_BATCH_SCHEMA_DESCRIPTION = """{
+  "decisions": [
+    {
+      "n": 候选序号（整数）,
+      "action": "ADD | UPDATE | DELETE | NOOP | CONFLICT",
+      "target_id": "UPDATE/DELETE/NOOP 时填该候选近邻中的 id；ADD 时填 null",
+      "add_new": true/false,
+      "reason": "一句话说明判断依据"
+    }
+  ]
+}"""
+
 _USER_TEMPLATE = """新记忆候选：
 - id: {candidate_id}
 - 内容: {candidate_content}
@@ -136,6 +158,30 @@ def _carry_history(candidate: MemoryEntry, old: MemoryEntry) -> list[VersionReco
     return [*old.history, *candidate.history, rec][-HISTORY_MAX:]
 
 
+def _candidate_text(candidate: MemoryEntry, neighbors: list[MemoryEntry]) -> str:
+    return _USER_TEMPLATE.format(
+        candidate_id=candidate.id,
+        candidate_content=candidate.content,
+        candidate_date=candidate.created_at.isoformat(),
+        candidate_valid=(
+            f"\n- 有效起点: {candidate.valid_from.isoformat()}" if candidate.valid_from else ""
+        ),
+        neighbors_text=_neighbors_text(neighbors),
+    )
+
+
+def _normalize_decision(parsed: dict) -> dict:
+    action = str(parsed.get("action", "")).upper()
+    if action not in ACTIONS:
+        action = "CONFLICT"
+    return {
+        "action": action,
+        "target_id": parsed.get("target_id") or None,
+        "add_new": bool(parsed.get("add_new", False)),
+        "reason": str(parsed.get("reason", "")),
+    }
+
+
 def _neighbors_text(neighbors: list[MemoryEntry]) -> str:
     return "\n".join(
         f"- id: {n.id}\n  内容: {n.content}\n  最后核实: {n.last_verified}"
@@ -179,28 +225,36 @@ class _Reconciler:
         """调 LLM 判决策，返回规范化后的 decision dict。LLMError 向上抛。"""
         parsed = self.llm.complete_json(
             system=_SYSTEM_PROMPT,
-            user=_USER_TEMPLATE.format(
-                candidate_id=candidate.id,
-                candidate_content=candidate.content,
-                candidate_date=candidate.created_at.isoformat(),
-                candidate_valid=(
-                    f"\n- 有效起点: {candidate.valid_from.isoformat()}"
-                    if candidate.valid_from
-                    else ""
-                ),
-                neighbors_text=_neighbors_text(neighbors),
-            ),
+            user=_candidate_text(candidate, neighbors),
             schema_description=_SCHEMA_DESCRIPTION,
         )
-        action = str(parsed.get("action", "")).upper()
-        if action not in ACTIONS:
-            action = "CONFLICT"
-        return {
-            "action": action,
-            "target_id": parsed.get("target_id") or None,
-            "add_new": bool(parsed.get("add_new", False)),
-            "reason": str(parsed.get("reason", "")),
-        }
+        return _normalize_decision(parsed)
+
+    def decide_batch(
+        self, items: list[tuple[MemoryEntry, list[MemoryEntry]]]
+    ) -> dict[int, dict]:
+        """一次调用判多条候选，返回 {批内下标: decision}。解析不出的条目不在返回里，
+        由调用方退回逐条判定；LLMError 向上抛（整批退回逐条）。"""
+        blocks = [
+            f"### 候选 {i}\n{_candidate_text(c, nb)}" for i, (c, nb) in enumerate(items, start=1)
+        ]
+        parsed = self.llm.complete_json(
+            system=_SYSTEM_PROMPT + _BATCH_SYSTEM_SUFFIX,
+            user="\n\n".join(blocks),
+            schema_description=_BATCH_SCHEMA_DESCRIPTION,
+        )
+        raw = parsed.get("decisions") if isinstance(parsed, dict) else None
+        out: dict[int, dict] = {}
+        for d in raw if isinstance(raw, list) else []:
+            if not isinstance(d, dict):
+                continue
+            try:
+                n = int(d.get("n"))
+            except (TypeError, ValueError):
+                continue
+            if 1 <= n <= len(items) and n - 1 not in out:
+                out[n - 1] = _normalize_decision(d)
+        return out
 
     # ---- 四种处置 ----
 
@@ -277,25 +331,49 @@ def reconcile(
     if not candidates:
         return report
 
-    # 第一阶段（并发）：每条候选独立找近邻 + LLM 判决策。
-    # pool.map 保持输入顺序，第二阶段按原顺序落库，报告顺序与串行版一致。
-    def judge(
-        candidate: MemoryEntry,
-    ) -> tuple[MemoryEntry, list[MemoryEntry], dict | None, str | None]:
-        neighbors = r.find_neighbors(candidate)
-        if not neighbors:
-            return candidate, neighbors, None, None  # decision=None 表示直接 ADD
-        if r.llm is None:
-            # 无 LLM 降级：有近邻时不猜关系，交人工复核（fail-safe）
-            return candidate, neighbors, None, "未配置 LLM，无法判定与既有记忆的关系"
+    # 第一阶段（并发、只读）：找近邻，再给有近邻的候选判决策。判决策按批合并成一次调用
+    # （DECIDE_BATCH 条一批，各批并发）；批调用失败或漏判的候选退回逐条判定，逐条也失败的
+    # 交人工复核——不强行收敛，也不丢候选。第二阶段按原顺序落库，报告顺序与串行版一致。
+    with ThreadPoolExecutor(max_workers=min(len(candidates), 8)) as pool:
+        neighbor_sets = list(pool.map(r.find_neighbors, candidates))
+
+    decisions: list[dict | None] = [None] * len(candidates)
+    errors: list[str | None] = [None] * len(candidates)
+    pending = [i for i, nb in enumerate(neighbor_sets) if nb]
+    if r.llm is None:
+        # 无 LLM 降级：有近邻时不猜关系，交人工复核（fail-safe）
+        for i in pending:
+            errors[i] = "未配置 LLM，无法判定与既有记忆的关系"
+        pending = []
+
+    def decide_one(i: int) -> None:
         try:
-            return candidate, neighbors, r.decide(candidate, neighbors), None
+            decisions[i] = r.decide(candidates[i], neighbor_sets[i])
         except Exception as e:
             # LLM 输出连续无法解析：不强行收敛，交人工复核（fail-safe）
-            return candidate, neighbors, None, str(e)
+            errors[i] = str(e)
 
-    with ThreadPoolExecutor(max_workers=min(len(candidates), 8)) as pool:
-        judged = list(pool.map(judge, candidates))
+    def decide_chunk(chunk: list[int]) -> None:
+        if len(chunk) == 1:
+            decide_one(chunk[0])
+            return
+        try:
+            got = r.decide_batch([(candidates[i], neighbor_sets[i]) for i in chunk])
+        except Exception:  # noqa: BLE001  整批不可用：退回逐条
+            got = {}
+        for pos, i in enumerate(chunk):
+            if pos in got:
+                decisions[i] = got[pos]
+            else:
+                decide_one(i)
+
+    chunks = [pending[j : j + DECIDE_BATCH] for j in range(0, len(pending), DECIDE_BATCH)]
+    if chunks:
+        with ThreadPoolExecutor(max_workers=min(len(chunks), 8)) as pool:
+            list(pool.map(decide_chunk, chunks))
+    judged = [
+        (candidates[i], neighbor_sets[i], decisions[i], errors[i]) for i in range(len(candidates))
+    ]
 
     # 第二阶段（串行）：落库 + 变更传播（传播要读落库后的状态，不能并发）
     for candidate, neighbors, decision, llm_error in judged:

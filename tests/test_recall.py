@@ -312,3 +312,27 @@ def test_a_claim_without_its_words_is_rendered_as_the_only_carrier():
     e = claim("orphan", "用户住在杭州", "s1", 1, 1)
     items = recall.group_into_segments(build_bundles([hit(e)], [], reader({}), k=None))
     assert "用户住在杭州" in recall.evidence_first_text(items[0])
+
+
+def test_a_wide_span_quotes_the_claims_own_words_not_acknowledgements():
+    """一场会话记了几件事、每件后面跟一句"好的，记下了"，整场都是证据区间：
+    命中的客套话不得把论断自己的原话挤出摘录，也不得挂到不相干的论断名下。"""
+    facts = ["我的相机是富士 X-T30", "我不吃香菜", "最近在看纪录片《河西走廊》", "学过两年书法"]
+    lines = []
+    for f in facts:
+        lines.append(raw("s0", len(lines) + 1, f))
+        lines.append(raw("s0", len(lines) + 1, "好的，记下了。", role="assistant"))
+    sessions = {"s0": lines}
+    n = len(lines)
+    mem = [
+        hit(claim("doc", "用户最近在看纪录片《河西走廊》", "s0", 1, n)),
+        hit(claim("cam", "用户的相机是富士 X-T30", "s0", 1, n)),
+    ]
+    acks = [h for h in lines if h.role == "assistant"]
+    bundles = build_bundles(mem, [*acks, lines[0]], reader(sessions), k=None)
+    by_id = {b.entry.id: b for b in bundles if b.entry is not None}
+    assert [h.content for h in by_id["doc"].lines] == ["最近在看纪录片《河西走廊》"]
+    assert [h.content for h in by_id["cam"].lines] == ["我的相机是富士 X-T30"]
+    # 客套话照样在载荷里（原文命中一行不丢），只是自成一束
+    payload = "\n".join(bundle_text(b) for b in bundles)
+    assert payload.count("好的，记下了。") == len(acks)

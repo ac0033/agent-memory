@@ -26,6 +26,7 @@ class TestDefaults:
         # M8 LLM 调用韧性
         assert s.llm_timeout_seconds == 300.0
         assert s.llm_max_retries == 2
+        assert s.llm_temperature is None
         # M4a 整理循环阈值
         assert s.evolve_interval_days == 7
         assert s.evolve_new_entries_threshold == 50
@@ -137,6 +138,11 @@ class TestEnvOverrides:
         )
         assert s.llm_timeout_seconds == 120.0
         assert s.llm_max_retries == 1
+
+    def test_llm_temperature_override_and_bounds(self):
+        assert get_settings(env={"AGENT_MEMORY_LLM_TEMPERATURE": "0"}).llm_temperature == 0.0
+        with pytest.raises(ValueError):
+            get_settings(env={"AGENT_MEMORY_LLM_TEMPERATURE": "3"})
 
     def test_unrelated_env_vars_ignored(self):
         s = get_settings(env={"AGENT_MEMORY_UNKNOWN_THING": "x", "PATH": "/usr/bin"})
