@@ -137,9 +137,9 @@ _SCOPE_REMINDER = (
 
 # 写类 tool 描述统一追加的 subagent 约束。工具描述是 agent 中立的提示词通道：
 # 任何宿主派生的 subagent，只要工具面里有这个 tool 就会看到这句。它是提示层
-# 兜底，真正的硬闸在宿主的 subagent 工具配置（覆盖文件见 agents/）；服务端
-# 无法区分主 agent 与 subagent（共用同一 MCP 连接），所以不在服务端做按调用方
-# 降级
+# 兜底，真正的硬闸在宿主的 subagent 工具配置（宿主支持按 subagent 裁剪工具时）；
+# 服务端无法区分主 agent 与 subagent（共用同一 MCP 连接），所以不在服务端做按
+# 调用方降级
 _SUBAGENT_WRITE_GUARD = (
     "仅限主 agent 调用：subagent 禁止使用本工具——记忆库对 subagent 只读，"
     "值得跨会话沉淀的结论请写进你的最终回复，由主 agent 决定是否入库。"
