@@ -2,6 +2,17 @@
 
 版本号遵循 SemVer；1.0 之前接口随时可能调整。每个条目只写实质变化。
 
+## v0.4.0 · 2026-09-27 · 插件接入与按需启动的后台进程
+
+接入方式重做，记忆机制不变。
+
+- **Claude Code 插件**：`plugins/agent-memory/`（仓库根目录带 `.claude-plugin/marketplace.json`），一次装齐 MCP 工具、使用规范 Skill 和三个 hook（会话开头注入工作记忆、用户提交消息时主动提醒、每 N 轮提示沉淀）。插件只调用 `agent-memory` 命令，本体用 `uv tool install` 装一次。
+- **MCP 入口改为 `agent-memory mcp`**：stdio 薄转发层，工具清单取本地定义、握手不等模型；工具调用转给本机后台进程。多个会话共用一个后台进程、一份嵌入模型。`--direct` 保留旧的进程内模式。
+- **后台进程按需启动、空闲退出**：不再需要开机常驻的计划任务和管理员权限。转发层或 hook 需要时拉起它，空闲 `daemon_idle_minutes`（默认 30）分钟后自己退出；代码改了（按包内代码指纹判断）会在下次调用时自动重启。新增 `/health` 路由与 `agent-memory daemon start|stop|status|serve`。
+- **hook 并入 CLI**：`agent-memory hook wm-inject|surface|turn` 取代 `scripts/` 下的三个脚本。工作记忆注入直接读文件、不依赖后台进程；不传 `--agent` 也没设 `AGENT_MEMORY_AGENT_NAME` 时不再默认注入 `agent:kimi-code`。
+- **用户级配置文件**：`~/.agent-memory/config.env`（`AGENT_MEMORY_CONFIG` 改路径），`KEY=VALUE` 格式，环境变量优先；后台进程与 hook 不继承交互 shell 的环境，靠它读到同一份配置（含 LLM key、数据目录）。
+- Skill 的唯一源头移到 `plugins/agent-memory/skills/agent-memory/SKILL.md`，打包时复制进包内。旧的 kimi-code 安装脚本、subagent 覆盖文件与 hook 脚本移到 `archive/`。
+
 ## v0.3.4 · 2026-09-26 · 带条件的约束等参数定下来再浮现
 
 - 主动浮现：时间窗口、维护期、账号、端口、环境、日期范围这类带条件的约束，只在它约束的那个参数已经定下来（请求里写明了，或照原样执行必然会用到）时才浮现；参数还没定时先不提。MemCompass dev 上副手在不该浮现的轮次插话 24/45 → 8/45，该浮现的 30/30 不变；test 上系统层过早浮现 16% → 11%，跨 agent 串线 17% → 8%。同一输入重复采样的决定一致率仍是 80%。

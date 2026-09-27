@@ -1,10 +1,10 @@
 # agent-memory
 
-**给 LLM agent 的本地长期记忆基础设施。** 一个跑在你自己机器上的小服务，让任何 agent（Claude Code、Kimi Code、LangGraph 应用……）跨会话记住用户偏好、项目约定和踩过的坑；写入必须过门、可按要求遗忘、能在合适的时候主动想起来。
+**给 LLM agent 的本地长期记忆基础设施。** 一个跑在你自己机器上的小服务，让任何 agent（Claude Code 等编程 agent、LangGraph 应用……）跨会话记住用户偏好、项目约定和踩过的坑；写入必须过门、可按要求遗忘、能在合适的时候主动想起来。
 
 记忆机制不是从别家的机制清单里挑出来的，而是从一套 13 项能力、3 项质量属性的[能力框架](docs/research/agent-memory-capability-framework.md)和它的评价标准（每一项都要显著优于朴素 RAG）反推出来的：**原话是证据，记忆只是通向证据的键和贴在证据上的注解；读取时只组织不裁决；智能前移到写入期且只增不减。** 验收用多个公开评测集、每个只测一次：LoCoMo 未见过的对话 **42 对 33**（p=0.049），PersonaMem-32k 与 LongMemEval-S 与朴素 RAG 持平；自建的 92 题 11 桶验证集 88/92，朴素 RAG 在最初 45 题上 39/45；治理能力（遗忘、投毒、任务状态、主动浮现）另有一套 373 条用例的内部评测集 MemCompass 量出来。
 
-> English: [README.en.md](README.en.md) · License: [MIT](LICENSE) · Python ≥ 3.12 · 850 个测试无需网络与 API key · 当前版本 v0.3.2（[CHANGELOG](docs/CHANGELOG.md)）
+> English: [README.en.md](README.en.md) · License: [MIT](LICENSE) · Python ≥ 3.12 · 876 个测试无需网络与 API key · 当前版本 v0.4.0（[CHANGELOG](docs/CHANGELOG.md)）
 
 ---
 
@@ -105,6 +105,8 @@ LoCoMo 上的领先主要来自前提不成立的对抗题（9 对 0，载荷首
 | 投毒鲁棒 | mp / 问答 | 97% | 96% | 94% |
 | 细节保留 | ca / 问答 | 90% | 80% | 100% |
 
+此后两版只改动了对应子集：v0.3.3 任务状态（ts / 系统层）串线率 60% → 0%、主动浮现端到端（pr / 端到端）F0.5 70% → 80%（朴素 RAG 75%）；v0.3.4 主动浮现过早插话 16% → 11%、跨 agent 串线 17% → 8%。逐项读数见 [CHANGELOG](docs/CHANGELOG.md) 与设计稿 §11–12。
+
 **诚实的注脚**：
 
 - 每条用例只有 2–8 个会话，朴素 RAG 在多数纯问答子集上持平或更好（见上一节）；长历史档位（每题约 35 万 token）尚未构建，是下一步最重要的工作。
@@ -145,44 +147,34 @@ LoCoMo 上的领先主要来自前提不成立的对抗题（9 对 0，载荷首
 
 ## 快速开始
 
-### 1. 安装并启动
+### 1. 安装本体
 
 ```bash
-git clone https://github.com/ac0033/agent-memory.git
-cd agent-memory
-uv sync                 # Python ≥ 3.12；bge-m3 嵌入模型首次使用时下载（约 2 GB）
-uv run pytest -q        # 850 个测试，不需要网络与 API key
+uv tool install git+https://github.com/ac0033/agent-memory   # 得到 agent-memory 命令；Python ≥ 3.12
+# 开发本仓库时改用可编辑安装，改了代码无需重装：uv tool install --editable .
+```
 
-export AGENT_MEMORY_LLM_API_KEY=sk-...   # 任意 OpenAI 兼容端点；默认 DeepSeek deepseek-flash
-# 可选：AGENT_MEMORY_LLM_BASE_URL / AGENT_MEMORY_LLM_MODEL / AGENT_MEMORY_DATA_DIR
-uv run python -m agent_memory.server.http_server
-# 监听 http://127.0.0.1:8765/mcp（只绑回环地址）
+bge-m3 嵌入模型在第一次检索时下载（约 2 GB）。配置写进 `~/.agent-memory/config.env`（`KEY=VALUE`，环境变量优先；`AGENT_MEMORY_CONFIG` 可改路径），宿主拉起的进程都能读到：
+
+```ini
+AGENT_MEMORY_LLM_API_KEY=sk-...        # 任意 OpenAI 兼容端点；默认 DeepSeek deepseek-flash
+# AGENT_MEMORY_LLM_BASE_URL= / AGENT_MEMORY_LLM_MODEL=
+# AGENT_MEMORY_DATA_DIR=               # 缺省 ~/.agent-memory/data
+# AGENT_MEMORY_DAEMON_IDLE_MINUTES=30  # 后台进程空闲多久退出
 ```
 
 没有 LLM key 时，检索、手动写入、反馈、工作记忆、归档等不依赖 LLM 的功能照常可用；对话蒸馏可交给宿主自己做（见下文）。
 
-### 2. 接入 agent
+### 2. 接入方式
 
-**方式一：MCP over HTTP（推荐，任何 MCP 客户端）**。把 `http://127.0.0.1:8765/mcp` 注册为 streamable-http 类型的 MCP server，然后让 agent 读一次 `http://127.0.0.1:8765/SKILL.md`。`/bootstrap` 路由给出一段可直接粘贴的接入指令。
+| 方式 | 适合谁 | 怎么接 |
+|---|---|---|
+| **Claude Code 插件**（推荐） | Claude Code 用户 | `/plugin marketplace add ac0033/agent-memory`，再 `/plugin install agent-memory@agent-memory`。一次装齐 25 个 MCP 工具、使用规范 Skill 和三个 hook |
+| **MCP stdio** | 任何 MCP 宿主 | 注册命令 `agent-memory mcp`，例如 `claude mcp add agent-memory -- agent-memory mcp`；其他宿主写 `{"command": "agent-memory", "args": ["mcp"]}`。再把 [SKILL.md](plugins/agent-memory/skills/agent-memory/SKILL.md) 装进宿主的 skills 目录 |
+| **宿主 hook** | 支持命令 hook 的宿主 | `agent-memory hook wm-inject --agent <宿主名>`（会话开始）、`agent-memory hook surface`（用户提交消息）、`agent-memory hook turn`（一轮回复结束）；插件已包含 |
+| **Python 库** | LangGraph / LangChain 应用 | 见下方示例，进程内直接调用，不经后台进程 |
 
-**方式二：MCP stdio（宿主按会话拉起子进程）**。Claude Code / Kimi Code 的配置片段：
-
-```json
-{
-  "mcpServers": {
-    "agent-memory": {
-      "command": "uv",
-      "args": ["run", "python", "-m", "agent_memory.server.mcp_server"],
-      "env": {
-        "AGENT_MEMORY_DATA_DIR": "C:/Users/<you>/.agent-memory/data",
-        "AGENT_MEMORY_LLM_API_KEY": "sk-..."
-      }
-    }
-  }
-}
-```
-
-**方式三：Python 库（LangGraph / LangChain 应用）**：
+**后台进程**：工具调用由本机一个后台进程执行，模型在本机只加载一份、所有会话共用。它不是开机常驻的服务：第一次调用时自动拉起（普通用户权限，只绑 127.0.0.1），空闲 30 分钟自己退出，代码更新后下次调用自动重启。一般不用管它；需要时用 `agent-memory daemon status | start | stop` 查看或控制。
 
 ```python
 from langgraph.prebuilt import create_react_agent
@@ -198,17 +190,15 @@ agent = create_react_agent(model, tools, prompt=prompt, store=store)
 
 可运行示例：`uv run python examples/langgraph_demo.py`。
 
-**方式四：Skill**。把 `skills/agent-memory/` 复制到宿主的 skills 目录（Claude Code `~/.claude/skills/`，Kimi Code `~/.kimi-code/skills/`），配合上面任一 MCP 方式使用。Kimi Code 有一键安装脚本 `scripts/install_kimi_code.sh`（合并 mcp.json、装 Skill、装 subagent 只读覆盖、注册会话开头注入 hook）。
-
 ### 3. 没有 API key 的订阅制 agent
 
 宿主本身就是大模型，蒸馏可以自己做：`memory_distill_prompt()` 拿协议 → 宿主在自己的上下文里产出 `{"memories": [...]}` → `memory_add(distilled_json=...)` 提交。服务端照常校验、脱敏、过门、对账。
 
-更多用法（CLI 蒸馏、评估命令、离线整理、人工复核、hook、工作记忆、会话收尾）见 [使用手册](docs/usage.md)；宿主 runtime 必须自己承担的职责清单见 [接入指南 §四](docs/agent-integration.md)。
+更多用法（CLI、评估命令、离线整理、人工复核、hook、工作记忆、会话收尾）见 [使用手册](docs/usage.md)；宿主 runtime 必须自己承担的职责清单见 [接入指南 §四](docs/agent-integration.md)。开发本仓库：`uv sync` 装环境，`uv run pytest -q` 跑测试（不需要网络与 API key）。
 
 ## MCP 工具一览
 
-25 个 MCP tool（stdio 与 HTTP 共用同一业务实现）：
+25 个 MCP tool（stdio 转发层与后台进程用同一份定义与业务实现）：
 
 | 分组 | 工具 | 用途 |
 |---|---|---|
@@ -223,7 +213,7 @@ agent = create_react_agent(model, tools, prompt=prompt, store=store)
 | 情节卡片 | `memory_episode_pack` | 上下文压缩前把标识符、端口、路径、报错原文等原样细节存成卡片 |
 | 遗忘请求 | `memory_forget_request` | 执行用户明确的遗忘要求：删记忆 + 擦原文片段，审计只记元数据 |
 
-写类工具的描述都注明"仅限主 agent 调用"；subagent 只读，结论回传主 agent 后由它策展沉淀。Kimi Code 的 subagent 覆盖文件在 `agents/coder.md`。
+写类工具的描述都注明"仅限主 agent 调用"；subagent 只读，结论回传主 agent 后由它策展沉淀。
 
 ## 仓库结构
 
@@ -237,14 +227,14 @@ agent-memory/
 │   │                            evolve（离线整理闭环）/ adapters/langgraph
 │   ├── working/                 工作记忆（任务状态 + 服务端增量整理）
 │   ├── short_term/              短期记忆：宿主会话日志适配层
-│   └── server/                  MCP stdio server、HTTP 常驻服务、MemoryService 业务层
-├── skills/agent-memory/     # Skill（SKILL.md，HTTP 服务的 /SKILL.md 路由分发同一文件）
-├── agents/coder.md          # Kimi Code subagent 覆盖：摘掉记忆写类工具
-├── scripts/                 # 宿主 hook（每 N 轮强制蒸馏、会话开头注入工作记忆、主动浮现）与一键安装
+│   ├── hooks.py                 宿主 hook（会话开头注入、主动提醒、每 N 轮沉淀），经 agent-memory hook 调用
+│   └── server/                  MemoryService 业务层、stdio 转发层、按需启动的后台进程及其生命周期管理
+├── plugins/agent-memory/    # Claude Code 插件：.mcp.json、hooks、skills/agent-memory/SKILL.md（Skill 唯一源头）
+├── .claude-plugin/          # 插件市场清单
 ├── examples/                # LangGraph 最小接入示例
-├── evals/                   # 可信根（agent 不得修改）：layer1–3 / prefix 回归集 + MemCompass 冻结副本
+├── evals/                   # 可信根（agent 不得修改）：layer1–3 / prefix 回归集；另含 MemCompass 运行副本（不属可信根，从源头同步）
 ├── docs/                    # 使用手册、接入指南、设计文档、研究与评测（见下）
-├── tests/                   # 850 个测试（慢测试默认跳过：uv run pytest -m slow）
+├── tests/                   # 876 个测试（慢测试默认跳过：uv run pytest -m slow）
 └── data/                    # 运行时数据（gitignored）：raw / memory / working / review_queue / snapshots / logs
                              #   + dev/（自建验证集）、external/<来源>/（外部测试集）
 ```
@@ -271,16 +261,16 @@ agent-memory/
 
 - **D1 数据三层分离**：`data/raw` 只追加；`data/memory` 的 Markdown 是唯一事实来源；`data/index.db` 是可重建的派生索引，绝不手改。
 - **D2 写入过门**：原始对话不直接入库，必须经脱敏 → 蒸馏 → 评价门 → 对账；蒸馏绝不提炼指令性内容。
-- **D6 可信根**：`evals/`、rubric、发布门槛、审计日志禁止 agent 自行修改。评测集在 `docs/research/benchmark-suite/` 编写与核验，由维护者迁入冻结副本。
+- **D6 可信根**：`evals/`、rubric、发布门槛、审计日志禁止 agent 自行修改。MemCompass 在 `docs/research/benchmark-suite/` 编写与核验，用 `tools/migrate_to_evals.py` 逐字节同步到运行副本 `evals/memcompass/`，不在副本里单独改。
 - **fail-closed 但不 fail-lost**：配置非法、校验失败、证据缺失直接报错，不静默降级；写入路径的内容永不因故障丢失。
-- **本地优先**：所有数据是你磁盘上的 Markdown 与 SQLite 文件，服务默认只绑 127.0.0.1，没有任何数据出站。
+- **本地优先**：所有数据是你磁盘上的 Markdown 与 SQLite 文件，后台进程只绑 127.0.0.1，除你配置的 LLM 端点外没有任何数据出站。
 
 ## 已知局限与路线图
 
 - **领先不是在每个外部集上都显著**：LoCoMo 显著领先，PersonaMem 与 LongMemEval-S 与朴素 RAG 持平。LongMemEval-S 的时间推理板块是两边都补上提问日期后的读数（AML 答题模板不带提问日期，"几天前"类题对任何系统都无解）；MemCompass 内部表格的读数来自 v0.2.2。
 - **PersonaMem 的 suggest_new_ideas 类略低于朴素 RAG**（5 对 8 / 14）；该类对全文上下文也只有 6/14，属答题者层面的"选泛泛选项"。
 - **关联与图式归纳（K6 离线归纳）未实现**：离线整理的验证逻辑属于可信根，需要新的提案类型。
-- **写入成本**：同一人物会话密集时，对账对每条候选各调一次 LLM，几十场会话的重写可达小时级；按批判定是待办。
+- **写入成本**：对账已按批（每批 8 条）判定，但整段对话蒸馏仍可能要几十秒到几分钟，而 MCP 客户端的超时不可配；改成"先归档、返回任务号、再查状态"的异步写入是待办。
 - **LangGraph 适配只覆盖 15 个基础工具**，v0.2 新增的 10 个目前仅 MCP 侧提供。
 - 内部评测集为合成数据，评委—人工一致性研究尚未开展。
 

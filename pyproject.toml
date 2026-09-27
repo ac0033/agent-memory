@@ -1,7 +1,7 @@
 [project]
 name = "agent-memory"
-version = "0.3.4"
-description = "本地长期记忆基础设施：agent 中立，支持 LangGraph 库接入 / MCP / Skill 三种接入方式"
+version = "0.4.0"
+description = "本地长期记忆基础设施：agent 中立，支持插件 / MCP / Skill / LangGraph 库接入"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -35,6 +35,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agent_memory"]
+
+# Skill 的唯一源头在插件目录，打包时复制进包内，供后台进程的 /SKILL.md 路由读取
+[tool.hatch.build.targets.wheel.force-include]
+"plugins/agent-memory/skills/agent-memory/SKILL.md" = "agent_memory/SKILL.md"
 
 [tool.ruff]
 line-length = 100

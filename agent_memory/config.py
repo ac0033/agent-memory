@@ -1,6 +1,8 @@
 """单一配置模块。
 
-所有配置项都有默认值，可用 AGENT_MEMORY_* 环境变量覆盖。
+所有配置项都有默认值，可用 AGENT_MEMORY_* 环境变量覆盖；也可写进用户级配置文件
+（缺省 ~/.agent-memory/config.env，AGENT_MEMORY_CONFIG 改路径），环境变量优先于文件。
+按需启动的后台进程与宿主 hook 都不继承交互 shell 的环境，配置文件让它们读到同一份设置。
 配置非法时直接抛出 pydantic ValidationError（fail-closed），不做静默降级。
 """
 
@@ -75,6 +77,9 @@ class Settings(BaseModel):
     # 默认只绑回环地址——本机部署天然免鉴权；要开放给局域网再显式改 host 并加认证
     http_host: str = "127.0.0.1"
     http_port: int = Field(default=8765, gt=0, le=65535)
+    # 按需启动的后台进程：空闲这么多分钟（期间没有任何请求）后自动退出、释放模型内存；
+    # 0 = 不自动退出
+    daemon_idle_minutes: int = Field(default=30, ge=0)
 
 
 _ENV_KEYS: dict[str, str] = {
@@ -105,16 +110,61 @@ _ENV_KEYS: dict[str, str] = {
     "working_memory_budget_chars": "AGENT_MEMORY_WORKING_MEMORY_BUDGET_CHARS",
     "http_host": "AGENT_MEMORY_HTTP_HOST",
     "http_port": "AGENT_MEMORY_HTTP_PORT",
+    "daemon_idle_minutes": "AGENT_MEMORY_DAEMON_IDLE_MINUTES",
 }
+
+_DEFAULT_CONFIG_FILE = Path("~/.agent-memory/config.env")
+
+
+class ConfigFileError(ValueError):
+    """配置文件格式非法（fail-closed：报出文件与行号，不跳过坏行）。"""
+
+
+def config_file_path(environ: dict[str, str] | None = None) -> Path:
+    source = os.environ if environ is None else environ
+    raw = source.get("AGENT_MEMORY_CONFIG")
+    return Path(raw).expanduser() if raw else _DEFAULT_CONFIG_FILE.expanduser()
+
+
+def read_config_file(path: Path) -> dict[str, str]:
+    """读 KEY=VALUE 格式的配置文件；# 开头为注释，值两侧的成对引号会去掉。
+
+    文件不存在返回空字典；格式非法的行直接报错（fail-closed）。
+    """
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return {}
+    values: dict[str, str] = {}
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, sep, value = stripped.partition("=")
+        key = key.strip()
+        if not sep or not key or not key.replace("_", "").isalnum():
+            raise ConfigFileError(f"{path}:{lineno}: 需要 KEY=VALUE 格式，实际是 {line!r}")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def load_env() -> dict[str, str]:
+    """配置文件的值叠加当前进程环境变量（环境变量优先）。hook 与后台进程共用这一口径。"""
+    merged = read_config_file(config_file_path())
+    merged.update(os.environ)
+    return merged
 
 
 def get_settings(env: dict[str, str] | None = None) -> Settings:
     """从环境变量构建 Settings。
 
-    env 参数仅供测试注入；默认读 os.environ。
+    env 参数仅供测试注入（给了就只用它，不读配置文件）；默认读配置文件叠加 os.environ。
     任何字段非法（如 recall_budget_chars 不是正整数）都会抛 ValidationError。
     """
-    source = os.environ if env is None else env
+    source = load_env() if env is None else env
     overrides: dict[str, str] = {}
     for field_name, env_key in _ENV_KEYS.items():
         value = source.get(env_key)

@@ -4,7 +4,7 @@
 
 ## 一、系统是什么
 
-一个本地常驻的记忆服务，给 agent 提供三层记忆能力：
+一个本地记忆服务，给 agent 提供三层记忆能力：
 
 - **长期记忆**：跨会话、跨项目的沉淀（事实/偏好/流程），写入要经过"脱敏→蒸馏→评价门→对账"管线，对候选内容执行规则校验与冲突处理；通过这些步骤不等于事实已经获得独立核实；
 - **工作记忆**：当前任务的状态草稿（目标/待办/决策/变量），随任务存灭；
@@ -14,16 +14,27 @@
 
 ## 二、怎么接入
 
-### 方式一：MCP over HTTP（推荐，agent 中立）
+先用 `uv tool install` 装好本体（得到 `agent-memory` 命令），长期配置写进 `~/.agent-memory/config.env`（见 [usage.md](usage.md)）。
 
-服务常驻本机回环地址（默认 `127.0.0.1:8765`）。两步：
+### 方式一：Claude Code 插件（推荐）
 
-1. 把 `http://127.0.0.1:8765/mcp` 注册为 MCP server（传输类型 streamable-http）。各宿主的注册位置：Kimi Code 改 mcp 配置、Claude Code 改 mcpServers、其他宿主同理；
-2. 读 `http://127.0.0.1:8765/SKILL.md` 获取完整使用规范并遵循（scope 选择、复核门交互、写入时机都在里面）。`http://127.0.0.1:8765/bootstrap` 是一段可直接粘贴的引导指令。
+`/plugin marketplace add ac0033/agent-memory`，再 `/plugin install agent-memory@agent-memory`。插件在 `plugins/agent-memory/`，一次装齐：
 
-### 方式二：MCP stdio
+| 组件 | 内容 |
+|---|---|
+| MCP | stdio 命令 `agent-memory mcp`，25 个工具 |
+| Skill | `skills/agent-memory/SKILL.md`：何时检索、写入、反馈，复核交互，subagent 纪律 |
+| hooks | SessionStart → `agent-memory hook wm-inject --agent claude-code`；UserPromptSubmit → `agent-memory hook surface`；Stop → `agent-memory hook turn` |
 
-`uv run python -m agent_memory.server.mcp_server`，适合不想跑常驻服务的场景。
+开发时可以不安装，直接 `claude --plugin-dir plugins/agent-memory` 加载。
+
+### 方式二：MCP stdio（任何 MCP 宿主）
+
+1. 把 stdio 命令 `agent-memory mcp` 注册为 MCP server（Claude Code：`claude mcp add agent-memory -- agent-memory mcp`；其他宿主在 `mcpServers` 里写 `{"command": "agent-memory", "args": ["mcp"]}`）；
+2. 把 `plugins/agent-memory/skills/agent-memory/` 复制到宿主的 skills 目录，或让 agent 读一次后台进程的 `/SKILL.md`，并遵循其中的规范（scope 选择、复核门交互、写入时机）；
+3. 宿主支持命令 hook 的，按第四节挂上三个 hook。
+
+`agent-memory mcp` 是薄转发层：工具调用转给按需启动的本机后台进程，多个会话共用一份模型；后台进程空闲 30 分钟自己退出，代码更新后下次调用自动重启（详见 [usage.md 后台进程](usage.md#后台进程)）。能发 HTTP 请求的宿主也可以直接注册 `http://127.0.0.1:8765/mcp`（streamable-http），但要自己保证后台进程在跑（`agent-memory daemon start`），一般不推荐。
 
 ### 方式三：Python 库（LangGraph 应用）
 
@@ -81,15 +92,20 @@ from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
 4. **轮次计数**：给 `memory_context` / `memory_wm_read` 传 `current_turn` 才启用工作记忆滞后检测（`stale_wm`）；检测到滞后时用 `memory_transcript_read(since_turn=水位)` 拉增量确认。
 5. **与人的交互**：`memory_search` 返回 `status="blocked"`（复核队列积压）时要先向用户确认再继续；`memory_add` 返回的 `pending_review` 要逐条报告并请用户裁决。
 
-另外强烈建议配一条**每 N 轮的强制记忆更新 hook**（参考实现 `scripts/memory_turn_hook.py`，挂在宿主的后轮事件上）：到点提醒自己做两件事——`memory_wm_write` 逐项检查并同步工作记忆、`memory_add` 滚动蒸馏最近几轮对话。这是防止会话崩溃丢记忆的保底轨。
+另外强烈建议配一条**每 N 轮的强制记忆更新 hook**（`agent-memory hook turn`，挂在宿主的"一轮回复结束"事件上）：到点提醒自己做两件事——`memory_wm_write` 逐项检查并同步工作记忆、`memory_add` 滚动蒸馏最近几轮对话。这是防止会话崩溃丢记忆的保底轨。
 
 ### 无 API key 的宿主：宿主蒸馏
 
 订阅制 agent（登录即用、没有 API key）配不了服务端 LLM，对话蒸馏改由宿主自己做：`memory_distill_prompt` 拿协议 → 宿主在自己的上下文里蒸馏 → `memory_add(distilled_json=...)` 提交。服务端对候选照常过校验/脱敏/评价门；传入已有 raw 归档的 `source` / `session_id` 且 `evidence_turns` 指向有效对话行时进入自动对账，缺少可核查证据时进入人工复核。
 
-### 会话开头注入工作记忆（可选但推荐）
+### 会话开头注入工作记忆与主动提醒（可选但推荐）
 
-`memory_add` 的写入时机有 hook 保底，读取也该有：`scripts/memory_session_context_hook.py` 是宿主中立的"首条用户消息"hook，每个 session 第一次触发时向 HTTP 服务拉 `global` + `repo:<当前目录名>` + `agent:<宿主名>` 三个 scope 的工作记忆渲染块（`/wm_blocks` 路由，免 MCP 握手），非空则写 stdout。接入条件是宿主支持"会话开始/首条用户消息时运行脚本并把 stdout 注入上下文"（kimi-code 用 `UserPromptSubmit` 事件，其他宿主用等价事件，如 Claude Code 的 SessionStart/UserPromptSubmit hook）。注册要点：同一脚本、超时 5 秒左右、按需设 `AGENT_MEMORY_AGENT_NAME=<宿主名>` 环境变量区分 agent scope。不支持 hook 的宿主退回 SKILL.md 软指令：会话开始时主动 `memory_wm_read` 这三个 scope。
+`memory_add` 的写入时机有 hook 保底，读取也该有：
+
+- `agent-memory hook wm-inject --agent <宿主名>` 挂在"会话开始"事件上，把 `global` + `repo:<当前目录名>` + `agent:<宿主名>` 三个 scope 的非空工作记忆写到 stdout 注入上下文。直接读文件、不依赖后台进程。只有"用户提交消息"事件可用的宿主加 `--once`，每个会话只注入一次。
+- `agent-memory hook surface` 挂在"用户提交消息"事件上，请后台进程的记忆副手判断要不要主动提醒；每条消息都会调用 LLM，`AGENT_MEMORY_SURFACE_HOOK=off` 关闭。
+
+三个 hook 都从 stdin 读宿主的事件 JSON（UTF-8），fail-open：任何异常都静默放行。不支持 hook 的宿主退回 SKILL.md 软指令：会话开始时主动 `memory_wm_read` 这三个 scope。
 
 ## 五、会话日志的两种供料方式
 
@@ -121,7 +137,7 @@ from agent_memory.long_term.adapters.langgraph.tools import build_memory_tools
 
 1. **tool 描述守卫（agent 中立）**：13 个写类 tool（`memory_add` / `memory_update` / `memory_forget` / `memory_feedback` / `memory_session_end` / `memory_review_resolve` / `memory_wm_write` / `memory_wm_clear` / `memory_archive_sync` / `memory_wm_refresh` / `memory_episode_pack` / `memory_confirm_resolve` / `memory_forget_request`）的 description 末尾统一带"仅限主 agent 调用，subagent 禁止使用"的约束。工具描述跟着工具走，subagent 只要能看到这个 tool 就会看到这句——这是唯一不依赖宿主的提示词通道。
 2. **SKILL.md 标准约束语（agent 中立）**：`/SKILL.md` 第七节"subagent 记忆纪律"给出一段可直接复制的约束原文，遵循规范的主 agent 派活时会把它附进每个 subagent 的任务 prompt；subagent 需要的历史背景由主 agent 检索后喂进 prompt，subagent 返回的"建议沉淀的记忆"由主 agent 审阅入库。
-3. **宿主工具面硬闸（宿主相关）**：在宿主的 subagent 配置里摘掉这 13 个写类工具。kimi-code 的落地是 `agents/coder.md` 覆盖文件（`override: true` + `disallowedTools`，由 `scripts/install_kimi_code.sh` 装到 `~/.kimi-code/agents/`；内置 `coder` 是唯一带 MCP 工具的 subagent，explore/plan 无需处理）；其他宿主按各自的 subagent 工具配置同理裁剪。提示词约束是软约束，这层把写工具从执行层摘掉才是真闸。
+3. **宿主工具面硬闸（宿主相关）**：宿主支持按 subagent 裁剪工具时，在它的 subagent 配置里摘掉这 13 个写类工具（只需处理能用 MCP 工具的 subagent）。提示词约束是软约束，这层把写工具从执行层摘掉才是真闸。本仓库目前不附带任何宿主的硬闸文件，插件也无法改写宿主内置 subagent 的工具面；这时前两层照常生效。
 
 两点说明：
 

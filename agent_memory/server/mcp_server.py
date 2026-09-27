@@ -29,14 +29,14 @@
   按框架顺序拼接；复核门语义与 memory_search 一致（blocked 原样透出）。
 
 短期记忆 tool（M7b，两个）：
-- memory_transcript_read：把 agent 会话日志（如 kimi-code 的 wire.jsonl）
+- memory_transcript_read：把 agent 会话日志（各宿主原生格式）
   解析成干净轮次序列（user/assistant/tool），纯读不写；since_turn 配合
   工作记忆水位做新鲜度补偿的增量读取（只返回水位之后的轮次）；
 - memory_session_end：会话结束收尾编排——归档原文（data/raw，只追加不改写）
   + 联合蒸馏（对话 + 工作记忆快照作参考上下文）+ 已完成 TODO 清理；
   工作记忆有未完成任务时 veto 不视为结束（确认结束传 force=true）。
 
-启动：uv run python -m agent_memory.server.mcp_server
+启动：agent-memory mcp（转发给后台进程）或 agent-memory mcp --direct（本进程内服务）
 组件构建在 main() 里完成；MemoryService 是纯 Python 类，测试直接注入
 fake embedder / fake LLM / fake working store 调用，不走 MCP 传输。
 """
@@ -137,9 +137,9 @@ _SCOPE_REMINDER = (
 
 # 写类 tool 描述统一追加的 subagent 约束。工具描述是 agent 中立的提示词通道：
 # 任何宿主派生的 subagent，只要工具面里有这个 tool 就会看到这句。它是提示层
-# 兜底，真正的硬闸在宿主的 subagent 工具配置（如 kimi-code 的 disallowedTools，
-# 见 agents/coder.md）；服务端无法区分主 agent 与 subagent（共用同一 MCP
-# 连接），所以不在服务端做按调用方降级
+# 兜底，真正的硬闸在宿主的 subagent 工具配置（覆盖文件见 agents/）；服务端
+# 无法区分主 agent 与 subagent（共用同一 MCP 连接），所以不在服务端做按调用方
+# 降级
 _SUBAGENT_WRITE_GUARD = (
     "仅限主 agent 调用：subagent 禁止使用本工具——记忆库对 subagent 只读，"
     "值得跨会话沉淀的结论请写进你的最终回复，由主 agent 决定是否入库。"
@@ -1516,7 +1516,7 @@ def build_server(service: MemoryService):
     @server.tool(
         name="memory_transcript_read",
         description=(
-            "读取 agent 会话日志（如 kimi-code 的 wire.jsonl），解析成干净的"
+            "读取 agent 会话日志（宿主原生格式，自动识别），解析成干净的"
             "轮次序列（user/assistant/tool，含轮次编号与时间戳）。纯读不写。"
             "配合工作记忆水位做新鲜度补偿：传 since_turn=<memory_wm_read 返回的"
             " turn_watermark> 只返回水位之后的新轮次，据此判断要不要 wm_write"
@@ -1690,7 +1690,7 @@ def build_server(service: MemoryService):
 
 
 def main() -> None:
-    """stdio server 入口：uv run python -m agent_memory.server.mcp_server"""
+    """进程内 stdio 模式入口（agent-memory mcp --direct）：本进程加载模型直接服务。"""
     settings = get_settings()
     store = MarkdownStore(settings.data_dir)
     index = IndexDB(settings.data_dir / "index.db")

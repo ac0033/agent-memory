@@ -9,6 +9,14 @@ from agent_memory.long_term.store.markdown_store import MarkdownStore
 from agent_memory.models import MemoryEntry
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_config(tmp_path_factory, monkeypatch):
+    """测试一律不读用户级配置文件（~/.agent-memory/config.env）：里面的 LLM key、
+    数据目录会让测试调用真实 API 或碰到真实数据。需要配置文件的测试自己再 setenv 覆盖。"""
+    missing = tmp_path_factory.getbasetemp() / "no-user-config.env"
+    monkeypatch.setenv("AGENT_MEMORY_CONFIG", str(missing))
+
+
 def make_entry(
     entry_id: str = "test-entry",
     content: str = "测试记忆内容：用户的开发机是 Windows。",

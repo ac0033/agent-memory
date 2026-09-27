@@ -1,6 +1,6 @@
 # 使用手册
 
-> 本文按主题整理 agent-memory 的日常用法：配置、命令行、评估、LangGraph / Skill 接入、离线整理、人工复核、HTTP 常驻服务、工作记忆与会话收尾、宿主蒸馏与 hook。接入方式与宿主职责的总览见 [`agent-integration.md`](agent-integration.md)；设计与红线见 [`../AGENTS.md`](../AGENTS.md)。
+> 本文按主题整理 agent-memory 的日常用法：配置、命令行、评估、LangGraph / Skill 接入、离线整理、人工复核、后台进程、工作记忆与会话收尾、宿主蒸馏与 hook。接入方式与宿主职责的总览见 [`agent-integration.md`](agent-integration.md)；设计与红线见 [`../AGENTS.md`](../AGENTS.md)。
 
 ## 目录
 
@@ -8,7 +8,7 @@
 - [LangGraph 与 Skill 接入](#langgraph-与-skill-接入)
 - [离线整理：睡眠学习循环（evolve）](#离线整理睡眠学习循环evolve)
 - [人工复核与强制更新 hook](#人工复核与强制更新-hook)
-- [HTTP 常驻服务](#http-常驻服务)
+- [后台进程](#后台进程)
 - [工作记忆、会话日志与会话收尾](#工作记忆会话日志与会话收尾)
 - [宿主蒸馏与会话开头注入](#宿主蒸馏与会话开头注入)
 
@@ -18,11 +18,16 @@
 
 蒸馏写路径需要一个 OpenAI 兼容端点，默认 DeepSeek（`https://api.deepseek.com`，模型 `deepseek-flash`）：
 
-```bash
-export AGENT_MEMORY_LLM_API_KEY=sk-...
+```ini
+# ~/.agent-memory/config.env（KEY=VALUE；AGENT_MEMORY_CONFIG 改路径）
+AGENT_MEMORY_LLM_API_KEY=sk-...
 # 可选覆盖：AGENT_MEMORY_LLM_BASE_URL / AGENT_MEMORY_LLM_MODEL
 # 评估评委可单独配置（异源互审）：AGENT_MEMORY_JUDGE_LLM_API_KEY 等
 ```
+
+所有配置项都可以写在这个文件里，也可以用同名环境变量覆盖（环境变量优先）。宿主拉起的
+后台进程和 hook 不继承你交互 shell 里 export 的变量，所以长期使用的配置应当写进文件；
+文件格式非法时报出文件与行号，不跳过坏行。
 
 未配置 key 时，检索、手动写入、反馈、删除等不依赖 LLM 的功能照常可用；
 只有对话蒸馏路径在调用时报错（fail-closed）。
@@ -33,37 +38,31 @@ export AGENT_MEMORY_LLM_API_KEY=sk-...
 
 ```bash
 uv run agent-memory distill --file conversation.json --scope repo:my-project \
-    --source kimi-code --session-id 2026-08-19-session
+    --source claude-code --session-id 2026-08-19-session
 # 管线：蒸馏 → 评价门 → 对账；无法自动收敛的冲突会写入 data/review_queue/
 ```
 
 ### MCP server
 
-启动：`uv run python -m agent_memory.server.mcp_server`（stdio）。
-
-Claude Code / Kimi Code 的 MCP 配置片段：
+宿主注册的入口是 stdio 命令 `agent-memory mcp`（Claude Code：`claude mcp add agent-memory -- agent-memory mcp`；
+装了插件则已自动注册）。通用配置片段：
 
 ```json
 {
   "mcpServers": {
     "agent-memory": {
-      "command": "uv",
-      "args": ["run", "python", "-m", "agent_memory.server.mcp_server"],
-      "env": {
-        "AGENT_MEMORY_DATA_DIR": "C:/Users/<you>/.agent-memory/data",
-        "AGENT_MEMORY_LLM_API_KEY": "sk-...",
-        "AGENT_MEMORY_LLM_BASE_URL": "https://api.deepseek.com",
-        "AGENT_MEMORY_LLM_MODEL": "deepseek-flash"
-      }
+      "command": "agent-memory",
+      "args": ["mcp"]
     }
   }
 }
 ```
 
-MCP 当前提供二十五个 tool（v0.2 新增原文归档、主动联想、待确认队列、工作记忆整理、情节卡片与遗忘请求十个，见 `docs/agent-integration.md` §三）。核心写读入口包括：`memory_search`（混合检索 + XML 注入块，scope 过滤在服务端强制）、
-`memory_add`（对话 JSON 走蒸馏管线 / 单条 content 走脱敏+对账 / distilled_json 走宿主蒸馏）、
-`memory_feedback`（升降置信度，降到 low 以下进复核队列）、
-`memory_update`（过脱敏+评价门后更新）、`memory_forget`（删除）。
+这个进程只是薄转发层：工具清单取本地定义（握手不用等模型），工具调用转给本机后台进程
+（见[后台进程](#后台进程)）。`agent-memory mcp --direct` 改为在本进程内加载模型直接服务，
+只适合单会话调试——每个会话各占一份模型内存。
+
+无 LLM 时对账只在无近邻时直接 ADD，存在近邻会转人工复核，避免误吞事实变更。
 
 ### 端到端评估
 
@@ -125,12 +124,9 @@ agent = create_react_agent(model, tools, prompt=prompt, store=store)
 
 ### Skill 接入
 
-`skills/agent-memory/SKILL.md` 是提示层，教封装好的 agent（Kimi Code / Claude Code）
-何时检索、写入、反馈。安装方式（配合 MCP server 一起用）：
-
-- Kimi Code：把 `skills/agent-memory/` 复制或软链到 `~/.kimi-code/skills/agent-memory/`；
-- Claude Code：复制到 `~/.claude/skills/agent-memory/`；
-- 同时按上文 MCP 配置挂上 `agent-memory` server，Skill 里的 tool 名（memory_search 等）才有实现。
+`plugins/agent-memory/skills/agent-memory/SKILL.md` 是提示层（Skill 的唯一源头），教 agent
+何时检索、写入、反馈。装了 Claude Code 插件即已加载；其他宿主把 `skills/agent-memory/`
+这个目录复制到宿主的 skills 目录，并按上文注册 MCP server，Skill 里的 tool 名才有实现。
 
 ### 轨迹前缀回归评估
 
@@ -183,34 +179,33 @@ agent 应逐条向用户报告并请其裁决（SKILL.md 有对应流程）。
 
 ### 强制记忆更新 hook
 
-`scripts/memory_turn_hook.py` 是 kimi-code 的 Stop hook：按 session 计轮，每
-`AGENT_MEMORY_REVIEW_TURN_INTERVAL`（默认 3）轮拦截一次会话结束，注入蒸馏指令
-（材料 = 每轮用户消息 + 紧邻的 assistant 回复）。可自行注册进用户级
-`~/.kimi-code/config.toml`（对所有项目会话生效）；其他宿主可参照脚本自行挂接。克隆仓库本身不会安装任何 hook。
+`agent-memory hook turn` 挂在宿主的"一轮回复结束"事件（如 Stop）上：按 session 计轮，每
+`AGENT_MEMORY_REVIEW_TURN_INTERVAL`（默认 3）轮以退出码 2 拦截一次本轮结束，注入蒸馏指令
+（材料 = 每轮用户消息 + 紧邻的 assistant 回复）。被拦下后继续的那一轮（事件里
+`stop_hook_active=true`）不重复计数。插件已注册；其他宿主自行挂接，克隆仓库本身不会安装任何 hook。
 
-## HTTP 常驻服务
+## 后台进程
 
-### HTTP 常驻服务
+工具调用、主动浮现都由本机一个后台进程执行，嵌入模型只加载一份、所有会话共用。它按需启动，
+不需要开机常驻，也不需要管理员权限：
 
-stdio 模式由宿主把 server 拉成子进程、随会话生灭；HTTP 模式是一个长期运行的本机服务，
-任何能发 HTTP 请求的 agent 宿主注册一个 URL 即得全部二十五个 tool：
+1. `agent-memory mcp` 或 `agent-memory hook surface` 发现它没在跑，就拉起它（Windows 上经
+   WMI 创建，脱离宿主的进程树，会话结束后仍然存活）；
+2. 空闲 `AGENT_MEMORY_DAEMON_IDLE_MINUTES`（默认 30，0 表示不退出）分钟没有请求，它自己退出、释放内存；
+3. 包内代码变了（按 .py 文件的大小与修改时间算指纹），下一次工具调用会先把它停掉重启。
 
-```bash
-uv run python -m agent_memory.server.http_server
-# 默认监听 http://127.0.0.1:8765/mcp（只绑回环地址，天然免鉴权）
-# 覆盖：AGENT_MEMORY_HTTP_HOST / AGENT_MEMORY_HTTP_PORT
-```
+| 命令 | 作用 |
+|---|---|
+| `agent-memory daemon status` | 输出状态 JSON：`running` / `stale`（代码已改，下次调用时重启）/ `stopped` / `foreign`（端口被别的进程占用，退出码 1） |
+| `agent-memory daemon start` | 确保在跑且是最新代码，等就绪后输出状态 |
+| `agent-memory daemon stop` | 停掉它（下次调用会自动再拉起） |
+| `agent-memory daemon serve` | 在前台运行（调试用，Ctrl+C 结束） |
 
-服务另有三个静态路由：`/SKILL.md`（提示层全文）、`/bootstrap`（接入引导指令）和
-`/wm_blocks`（工作记忆注入块，`?scopes=a,b,c` 返回各 scope 的非空渲染块，纯读，
-供会话开头 hook 免 MCP 握手拉取，见 M9 用法）。
-新 agent 接入只需把 `/bootstrap` 的内容给它：注册 `http://127.0.0.1:8765/mcp`
-（传输类型 streamable-http）+ 读取并遵循 `/SKILL.md`，不需要复制任何文件。
-
-### Windows 常驻（计划任务）
-
-本仓库不分发含个人部署路径的 `scripts/start_http_server.cmd` 和 `scripts/register_task_s4u.ps1`。可先按上面的 HTTP 命令启动服务，再根据自己的目录与账户配置后台运行；克隆源码不会自动创建计划任务或修改宿主配置。
-
+后台进程只绑回环地址（`AGENT_MEMORY_HTTP_HOST` / `AGENT_MEMORY_HTTP_PORT`，默认 127.0.0.1:8765），
+日志在 `<数据目录>/logs/daemon.log`。路由：`/mcp`（MCP，无状态 streamable-http）、`/health`（探活与代码指纹，
+不计入空闲计时）、`/surface`（主动浮现）、`/wm_blocks`（工作记忆注入块）、`/SKILL.md`、`/bootstrap`。
+能发 HTTP 请求的宿主也可以直接注册 `http://127.0.0.1:8765/mcp`，但这时要自己先 `agent-memory daemon start`，
+空闲退出后也不会被自动拉起——一般用 stdio 入口即可。
 
 ## 工作记忆、会话日志与会话收尾
 
@@ -231,8 +226,8 @@ profile）→ 工作记忆块（当前任务状态）→ 召回块（传 `query`
 
 ### 会话日志读取与会话收尾
 
-`memory_transcript_read(log_path, adapter?, since_turn?)` 把 agent 会话日志（如 kimi-code 的
-wire.jsonl，按文件名自动识别格式）解析成干净的轮次序列（user/assistant/tool）；`since_turn`
+`memory_transcript_read(log_path, adapter?, since_turn?)` 把 agent 会话日志（Claude Code、Codex 等
+宿主的原生日志，按路径自动识别格式）解析成干净的轮次序列（user/assistant/tool）；`since_turn`
 配合工作记忆水位做增量读取（只返回水位之后的轮次）。
 
 `memory_session_end(scope, conversation_json?|log_path?, ...)` 是会话结束的标准收尾，一次完成：
@@ -260,10 +255,16 @@ wire.jsonl，按文件名自动识别格式）解析成干净的轮次序列（u
 
 ### 会话开头自动注入工作记忆
 
-`scripts/memory_session_context_hook.py` 是宿主中立的"首条用户消息"hook：每个 session 第一次
-触发时向 HTTP 服务拉 `global` + `repo:<当前目录名>` + `agent:<宿主名>` 三个 scope 的工作记忆
-渲染块（`/wm_blocks` 路由），非空则写 stdout 注入上下文；空的 scope 不注入。kimi-code 挂
-`UserPromptSubmit` 事件（stdout 追加进上下文），注册见 `scripts/install_kimi_code.sh`；
-其他宿主用等价事件挂接，宿主名用 `AGENT_MEMORY_AGENT_NAME` 环境变量区分（缺省 kimi-code）。
-`AGENT_MEMORY_WM_HOOK=off` 整体关闭；hook 全程 fail-open，服务不可达静默放行。
+`agent-memory hook wm-inject --agent <宿主名>` 挂在宿主的"会话开始"事件（如 SessionStart）上：
+把 `global` + `repo:<当前目录名>` + `agent:<宿主名>` 三个 scope 的非空工作记忆渲染块写到 stdout，
+由宿主注入上下文。它直接读 `data/working` 文件，不依赖后台进程；每次触发都注入，所以上下文压缩、
+会话恢复之后也会补上。只有"用户提交消息"事件可用的宿主加 `--once`，每个会话只注入一次。
+不传 `--agent` 也没设 `AGENT_MEMORY_AGENT_NAME` 时不注入 agent scope。
+`AGENT_MEMORY_WM_HOOK=off` 整体关闭；hook 全程 fail-open，任何异常都静默放行。
 
+### 主动提醒 hook
+
+`agent-memory hook surface` 挂在"用户提交消息"事件上：把本条消息、当前目录对应的 scope 和本会话
+最近几条消息交给后台进程的记忆副手，返回的 `<surfaced_memories>` 非空才输出。后台进程没在跑时
+只负责拉起它、本次静默放行（加载模型要十几秒，hook 等不起）。`AGENT_MEMORY_SURFACE_HOOK=off`
+关闭，`AGENT_MEMORY_SURFACE_TIMEOUT` 调请求超时（默认 25 秒）。每条消息都会调用 LLM，有成本与延迟。

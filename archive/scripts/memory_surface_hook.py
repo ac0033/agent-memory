@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """主动联想 hook（v0.2，P24–P26）：用户每提交一条消息，请记忆服务判断要不要主动提醒。
 
-挂在宿主的"用户提交消息"事件上（Claude Code / kimi-code 是 UserPromptSubmit，其他宿主用等价事件）：
+挂在宿主的"用户提交消息"事件上（如 UserPromptSubmit，其他宿主用等价事件）：
 读 stdin 的事件 JSON（取 prompt 与 cwd）→ POST 到 HTTP 常驻服务的 /surface →
 返回的 <surfaced_memories> 块非空就打印到 stdout（宿主会把它追加进上下文），空则静默。
 

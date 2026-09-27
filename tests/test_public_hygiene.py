@@ -145,3 +145,33 @@ def test_version_consistent_across_pyproject_package_and_changelog():
         f"版本号不一致：pyproject={pyproject_version}, "
         f"__version__={agent_memory.__version__}, CHANGELOG={m.group(1)}"
     )
+
+
+def test_plugin_manifest_matches_package_and_cli():
+    """插件清单的版本与包一致；hooks 与 .mcp.json 调用的都是 CLI 里真实存在的子命令。"""
+    import json
+
+    from typer.testing import CliRunner
+
+    from agent_memory.cli import app
+
+    plugin = ROOT / "plugins" / "agent-memory"
+    manifest = json.loads(_read(plugin / ".claude-plugin" / "plugin.json"))
+    assert manifest["name"] == "agent-memory"
+    assert manifest["version"] == agent_memory.__version__
+    market = json.loads(_read(ROOT / ".claude-plugin" / "marketplace.json"))
+    assert [p["source"] for p in market["plugins"]] == ["./plugins/agent-memory"]
+    assert (plugin / "skills" / "agent-memory" / "SKILL.md").is_file()
+
+    commands = [
+        [entry["command"]] + entry.get("args", [])
+        for entry in json.loads(_read(plugin / ".mcp.json"))["mcpServers"].values()
+    ]
+    for groups in json.loads(_read(plugin / "hooks" / "hooks.json"))["hooks"].values():
+        for group in groups:
+            commands += [h["command"].split() for h in group["hooks"]]
+    runner = CliRunner()
+    for argv in commands:
+        assert argv[0] == "agent-memory", argv
+        result = runner.invoke(app, [*argv[1:], "--help"])
+        assert result.exit_code == 0, (argv, result.output)

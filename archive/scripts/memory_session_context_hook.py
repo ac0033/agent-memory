@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """会话开头自动注入工作记忆的 hook（M9）。
 
-挂在宿主的"首条用户消息"事件上（kimi-code 是 UserPromptSubmit，其他宿主用
+挂在宿主的"首条用户消息"事件上（如 UserPromptSubmit，其他宿主用
 等价事件）：每个会话只在第一条用户消息时触发一次，向 HTTP 常驻服务拉取
 global + repo:<当前目录名> + agent:<宿主名> 三个 scope 的工作记忆渲染块，
 非空则打印到 stdout（宿主会把它追加进上下文），空则静默。

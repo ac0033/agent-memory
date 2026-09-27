@@ -1,0 +1,10 @@
+{
+  "name": "agent-memory",
+  "version": "0.4.0",
+  "description": "本地长期记忆：跨会话记住偏好、约定与踩过的坑；工作记忆会话开头自动注入，主动提醒，定期沉淀。需先用 uv tool install 安装 agent-memory 本体。",
+  "author": {
+    "name": "YuanLumen"
+  },
+  "license": "MIT",
+  "keywords": ["memory", "mcp", "long-term-memory"]
+}

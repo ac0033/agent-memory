@@ -1,0 +1,16 @@
+{
+  "name": "agent-memory",
+  "owner": {
+    "name": "YuanLumen"
+  },
+  "metadata": {
+    "description": "agent-memory 本地长期记忆的插件市场"
+  },
+  "plugins": [
+    {
+      "name": "agent-memory",
+      "source": "./plugins/agent-memory",
+      "description": "本地长期记忆：MCP 工具 + 使用规范 Skill + 会话开头注入、主动提醒、定期沉淀三个 hook"
+    }
+  ]
+}

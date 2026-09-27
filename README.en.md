@@ -1,10 +1,10 @@
 # agent-memory
 
-**Local, agent-neutral long-term memory infrastructure for LLM agents.** A small service on your own machine that lets any agent (Claude Code, Kimi Code, a LangGraph app, …) remember user preferences, project conventions and past mistakes across sessions. Every write goes through a gate, memories can be forgotten on request, and the system knows *when* to speak up.
+**Local, agent-neutral long-term memory infrastructure for LLM agents.** A small service on your own machine that lets any agent (Claude Code and other coding agents, a LangGraph app, …) remember user preferences, project conventions and past mistakes across sessions. Every write goes through a gate, memories can be forgotten on request, and the system knows *when* to speak up.
 
 The mechanism was not picked from other systems' feature lists. It is derived from a [capability framework](docs/research/agent-memory-capability-framework.md) of 13 capabilities and 3 quality attributes, with one bar for every item: significantly better than naive RAG. Three principles follow: **the original words are the evidence and a memory is only a key to them plus an annotation; reading organizes and never adjudicates; intelligence moves to write time and only adds.** Acceptance runs on several public benchmarks, each once: LoCoMo on unseen conversations **42 vs 33** (p=0.049), PersonaMem-32k and LongMemEval-S tied with naive RAG; the in-repo validation set (92 questions, 11 capability buckets) 88/92; naive RAG 39/45 on the original 45. Governance capabilities (forgetting, poisoning, task state, proactive recall) are measured by MemCompass, a 373-case benchmark that ships with the repo.
 
-> 中文文档见 [README.md](README.md) · License: [MIT](LICENSE) · Python ≥ 3.12 · 850 tests, no network or API key needed · current version v0.3.2 ([CHANGELOG](docs/CHANGELOG.md))
+> 中文文档见 [README.md](README.md) · License: [MIT](LICENSE) · Python ≥ 3.12 · 876 tests, no network or API key needed · current version v0.4.0 ([CHANGELOG](docs/CHANGELOG.md))
 
 ---
 
@@ -89,6 +89,8 @@ The in-repo validation set (one shared history of 55 sessions, 92 questions in 1
 | Poisoning robustness | mp / QA | 97% | 96% | 94% |
 | Detail retention | ca / QA | 90% | 80% | 100% |
 
+The two later releases changed only their target subsets: v0.3.3 cut task-state (ts / system layer) cross-talk from 60% to 0% and raised proactive recall end-to-end (pr / E) F0.5 from 70% to 80% (naive RAG 75%); v0.3.4 cut premature surfacing from 16% to 11% and cross-agent leakage from 17% to 8%. Details: [CHANGELOG](docs/CHANGELOG.md) and design notes §11–12.
+
 **Honest footnotes**
 
 - Each case has only 2–8 sessions; naive RAG ties or wins most plain QA subsets (previous section). A long-history tier (~350k tokens per case) is not built yet and is the most important next step.
@@ -129,44 +131,34 @@ Scopes: `global`, `repo:<name>`, `agent:<name>`; a search sees the current scope
 
 ## Quick start
 
-### 1. Install and run
+### 1. Install
 
 ```bash
-git clone https://github.com/ac0033/agent-memory.git
-cd agent-memory
-uv sync                      # Python ≥ 3.12; bge-m3 embeddings downloaded on first use (~2 GB)
-uv run pytest -q             # 850 tests, no network or API key needed
-
-export AGENT_MEMORY_LLM_API_KEY=sk-...          # any OpenAI-compatible endpoint; default is DeepSeek deepseek-flash
-# optional: AGENT_MEMORY_LLM_BASE_URL / AGENT_MEMORY_LLM_MODEL / AGENT_MEMORY_DATA_DIR
-uv run python -m agent_memory.server.http_server
-# listening on http://127.0.0.1:8765/mcp (loopback only)
+uv tool install git+https://github.com/ac0033/agent-memory   # provides the agent-memory command; Python ≥ 3.12
+# when developing this repo, install it editable so code changes need no reinstall: uv tool install --editable .
 ```
 
-Without an LLM key, everything that does not need distillation still works (search, manual writes, feedback, working memory, archives). Distillation can be delegated to the host (step 3).
+The bge-m3 embedding model is downloaded on first retrieval (about 2 GB). Put settings in `~/.agent-memory/config.env` (`KEY=VALUE`; environment variables win; `AGENT_MEMORY_CONFIG` changes the path) so every process a host spawns reads the same values:
 
-### 2. Connect an agent
-
-**Option A: MCP over HTTP (recommended, any MCP client).** Register `http://127.0.0.1:8765/mcp` as a streamable-HTTP MCP server and have the agent read `http://127.0.0.1:8765/SKILL.md` once. `/bootstrap` returns a paste-ready onboarding instruction.
-
-**Option B: MCP stdio (host spawns the server per session).** Claude Code / Kimi Code config:
-
-```json
-{
-  "mcpServers": {
-    "agent-memory": {
-      "command": "uv",
-      "args": ["run", "python", "-m", "agent_memory.server.mcp_server"],
-      "env": {
-        "AGENT_MEMORY_DATA_DIR": "C:/Users/<you>/.agent-memory/data",
-        "AGENT_MEMORY_LLM_API_KEY": "sk-..."
-      }
-    }
-  }
-}
+```ini
+AGENT_MEMORY_LLM_API_KEY=sk-...        # any OpenAI-compatible endpoint; defaults to DeepSeek deepseek-flash
+# AGENT_MEMORY_LLM_BASE_URL= / AGENT_MEMORY_LLM_MODEL=
+# AGENT_MEMORY_DATA_DIR=               # defaults to ~/.agent-memory/data
+# AGENT_MEMORY_DAEMON_IDLE_MINUTES=30  # idle minutes before the background process exits
 ```
 
-**Option C: Python library (LangGraph / LangChain apps).**
+Without an LLM key, search, manual writes, feedback, working memory and the archive all still work; conversation distillation can be done by the host (see below).
+
+### 2. Ways to connect
+
+| Option | For | How |
+|---|---|---|
+| **Claude Code plugin** (recommended) | Claude Code users | `/plugin marketplace add ac0033/agent-memory`, then `/plugin install agent-memory@agent-memory`. Installs the 25 MCP tools, the usage Skill and three hooks in one step |
+| **MCP stdio** | any MCP host | register the command `agent-memory mcp`, e.g. `claude mcp add agent-memory -- agent-memory mcp`; other hosts use `{"command": "agent-memory", "args": ["mcp"]}`. Then install [SKILL.md](plugins/agent-memory/skills/agent-memory/SKILL.md) into the host's skills directory |
+| **Host hooks** | hosts with command hooks | `agent-memory hook wm-inject --agent <host>` (session start), `agent-memory hook surface` (user prompt), `agent-memory hook turn` (end of a reply); the plugin already wires them |
+| **Python library** | LangGraph / LangChain apps | see the example below; runs in-process, no background process |
+
+**Background process**: tool calls are executed by one local background process, so the model is loaded once and shared by every session. It is not an always-on service: the first call starts it (normal user rights, bound to 127.0.0.1), it exits after 30 idle minutes, and it restarts itself on the next call after the code changes. You normally never touch it; `agent-memory daemon status | start | stop` shows or controls it.
 
 ```python
 from langgraph.prebuilt import create_react_agent
@@ -182,13 +174,11 @@ agent = create_react_agent(model, tools, prompt=prompt, store=store)
 
 Runnable example: `uv run python examples/langgraph_demo.py`.
 
-**Option D: Skill.** Copy `skills/agent-memory/` into the host's skills directory (Claude Code `~/.claude/skills/`, Kimi Code `~/.kimi-code/skills/`) and combine with either MCP option. Kimi Code has a one-shot installer, `scripts/install_kimi_code.sh` (merges mcp.json, installs the Skill and the read-only subagent override, registers the session-start hook).
-
 ### 3. Subscription-only hosts without an API key
 
-The host is itself an LLM, so it can distill: call `memory_distill_prompt()` for the protocol, produce `{"memories": [...]}` in its own context, submit with `memory_add(distilled_json=...)`. The server still validates, redacts, gates and reconciles.
+The host is itself an LLM, so it can distill: `memory_distill_prompt()` returns the protocol → the host produces `{"memories": [...]}` in its own context → `memory_add(distilled_json=...)` submits it. The server still validates, redacts, gates and reconciles.
 
-More usage (CLI distillation, evaluation commands, the evolve loop, human review, hooks, working memory, session end) is in the [usage guide](docs/usage.md) (Chinese); what the host runtime must do itself is in the [integration guide §4](docs/agent-integration.md) (Chinese).
+More (CLI, evaluation commands, offline consolidation, human review, hooks, working memory, session wrap-up): [usage guide](docs/usage.md) (Chinese); what the host runtime must take care of: [integration guide §4](docs/agent-integration.md). Developing this repo: `uv sync` for the environment, `uv run pytest -q` for the tests (no network or API key).
 
 ## The 25 MCP tools
 
@@ -205,7 +195,7 @@ More usage (CLI distillation, evaluation commands, the evolve loop, human review
 | Episodes | `memory_episode_pack` | Save exact details (ids, ports, paths, error text) before context compaction |
 | Forgetting | `memory_forget_request` | Execute an explicit forget request: delete memories and blank matching archive spans, metadata-only audit |
 
-Every write tool's description states it is for the main agent only; subagents are read-only and hand their conclusions back to the main agent. The Kimi Code subagent override lives in `agents/coder.md`.
+Every write tool's description states it is for the main agent only; subagents are read-only and hand their conclusions back to the main agent.
 
 ## Repository map
 
@@ -219,14 +209,14 @@ agent-memory/
 │   │                            resident profile, surfacing) / evolve (offline loop) / adapters/langgraph
 │   ├── working/                 working memory (task state + server-side refresh)
 │   ├── short_term/              transcript adapters for host session logs
-│   └── server/                  MCP stdio server, HTTP server, MemoryService
-├── skills/agent-memory/     # the Skill (SKILL.md), also served at /SKILL.md
-├── agents/coder.md          # Kimi Code subagent override (write tools removed)
-├── scripts/                 # host hooks (periodic distillation, session-start injection, surfacing) and installer
+│   ├── hooks.py                 host hooks (session-start injection, surfacing, periodic distillation), run via agent-memory hook
+│   └── server/                  MemoryService, the stdio forwarder, the on-demand background process and its lifecycle
+├── plugins/agent-memory/    # Claude Code plugin: .mcp.json, hooks, skills/agent-memory/SKILL.md (single source of the Skill)
+├── .claude-plugin/          # plugin marketplace manifest
 ├── examples/                # minimal LangGraph example
-├── evals/                   # trusted root (agents must not edit): layer1–3 / prefix sets + MemCompass frozen copy
+├── evals/                   # trusted root (agents must not edit): layer1–3 / prefix sets; also the MemCompass working copy (not a trusted root, synced from source)
 ├── docs/                    # usage, integration, design, research and benchmark (see below)
-├── tests/                   # 850 tests (slow ones skipped by default: uv run pytest -m slow)
+├── tests/                   # 876 tests (slow ones skipped by default: uv run pytest -m slow)
 └── data/                    # runtime data (gitignored): raw / memory / working / review_queue / snapshots / logs
 ```
 
@@ -254,16 +244,16 @@ All documents except this file are currently in Chinese.
 
 - **D1 Data-layer separation**: `data/raw` is append-only; the Markdown files in `data/memory` are the single source of truth; `data/index.db` is a rebuildable derived index and is never edited by hand.
 - **D2 Gated writes**: raw conversations never enter the store directly; every candidate passes redaction → distillation → gate → reconciliation, and the distiller never extracts instructions.
-- **D6 Trusted root**: `evals/`, rubrics, release thresholds and audit logs may not be modified by agents. The benchmark is authored and verified in `docs/research/benchmark-suite/` and migrated to the frozen copy by the maintainer.
+- **D6 Trusted root**: `evals/`, rubrics, release thresholds and audit logs may not be modified by agents. MemCompass is authored and verified in `docs/research/benchmark-suite/` and synced byte-for-byte to the working copy `evals/memcompass/` with `tools/migrate_to_evals.py`; the copy is never edited on its own.
 - **Fail closed, never fail lost**: invalid config, failed validation or missing evidence raise immediately instead of silently degrading; nothing on the write path is lost to a failure.
-- **Local first**: all data is Markdown and SQLite on your disk; the server binds 127.0.0.1 by default; nothing leaves the machine.
+- **Local first**: all data is Markdown and SQLite on your disk; the background process binds 127.0.0.1; nothing leaves the machine except calls to the LLM endpoint you configure.
 
 ## Known limitations and roadmap
 
 - **The lead is not significant on every external set**: LoCoMo is a significant win, PersonaMem and LongMemEval-S are ties with naive RAG. On LongMemEval-S, temporal reasoning was re-answered by both systems with the question date added (the AML answer template carries no current date, so "how many days ago" is unanswerable for any system); the MemCompass table is from v0.2.2.
 - **PersonaMem's suggest_new_ideas category trails naive RAG** (5 vs 8 of 14); full context also gets only 6/14 there, a "pick the generic option" failure on the answerer's side.
 - **Schema induction (K6, offline) not implemented**: the evolve verifier is part of the trusted root and needs a new proposal type.
-- **Write cost**: with dense sessions about one person, reconciliation makes one LLM call per candidate, so rewriting a few dozen sessions can take hours; batched judgement is the next lever.
+- **Write cost**: reconciliation is judged in batches of 8, but distilling a whole conversation can still take tens of seconds to minutes while MCP clients have fixed timeouts; an asynchronous write (archive, return a job id, poll) is on the roadmap.
 - **The LangGraph adapter covers the 15 base tools**; the 10 v0.2 tools are MCP-only for now.
 - **Chinese-only internal benchmark**, synthetic data; no judge-vs-human agreement study yet.
 

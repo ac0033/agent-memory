@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """每 N 轮对话触发一次强制记忆更新的 Stop hook（M5）。
 
-挂在 kimi-code 的 Stop 事件上（assistant 即将结束一轮回复时触发）：
+挂在宿主的 Stop 事件上（assistant 即将结束一轮回复时触发）：
 - 按 session_id 计数，计数存 <data_dir>/state/turn_counter.json；
 - 计满 N 轮（默认 3，AGENT_MEMORY_REVIEW_TURN_INTERVAL 覆盖）时以退出码 2
   拦截本轮结束，stderr 的指令文本会被注入对话，让 agent 继续完成记忆蒸馏；
@@ -15,7 +15,7 @@ data_dir 解析与记忆系统一致：AGENT_MEMORY_DATA_DIR 环境变量，缺�
 payload 里有没有可区分 subagent 的字段（实测结论决定要不要加 subagent 跳过
 逻辑）。同样 fail-open，写失败不影响计数与拦截。
 
-注意：该 hook 注册在用户级 config.toml 后对所有项目的会话生效；hook 只负责
+注意：该 hook 注册在宿主的用户级配置后对所有项目的会话生效；hook 只负责
 "到点必须做"的时机保证，"做什么、怎么沉淀"由指令文本 + 蒸馏管线规则决定。
 """
 
@@ -28,7 +28,7 @@ from pathlib import Path
 from _hook_io import atomic_write_text, interprocess_lock
 
 # Windows 上 Python 的 stdout/stderr 被管道捕获时默认用系统区域编码（中文系统
-# 为 GBK），而 kimi-code 按 UTF-8 读取 hook 输出——不重配的话中文指令会变乱码
+# 为 GBK），而宿主按 UTF-8 读取 hook 输出——不重配的话中文指令会变乱码
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")

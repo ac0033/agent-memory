@@ -1,6 +1,7 @@
 """agent-memory 命令行入口（typer）。
 
-命令：add / distill / search / list / update / forget / rebuild / stats。
+命令：add / distill / search / list / update / forget / rebuild / stats；
+接入：mcp（stdio 入口）/ daemon（本机后台进程）/ hook（宿主 hook）。
 数据目录由 AGENT_MEMORY_DATA_DIR 或默认 ~/.agent-memory/data 决定。
 写入前一律过 redact 脱敏（红线 D2），命中敏感信息时警告并写入脱敏后文本。
 distill 走完整写入管线：蒸馏 → 评价门 → 对账，需要配置 LLM。
@@ -317,3 +318,141 @@ def stats():
     typer.echo(f"记忆条目：{len(entries)}（索引内 {indexed} 条）")
     for scope, n in sorted(by_scope.items()):
         typer.echo(f"  {scope}: {n}")
+
+
+# ---------------------------------------------------------------- 接入：mcp / daemon / hook
+
+
+@app.command()
+def mcp(
+    direct: bool = typer.Option(
+        False, "--direct", help="不经后台进程，在本进程内加载模型直接服务（单会话调试用）"
+    ),
+    warm: bool = typer.Option(True, "--warm/--no-warm", help="启动时就在后台拉起后台进程"),
+):
+    """stdio MCP 入口（宿主注册的就是这条命令）。默认转发给按需启动的本机后台进程。"""
+    if direct:
+        from agent_memory.server.mcp_server import main as direct_main
+
+        direct_main()
+        return
+    from agent_memory.server.stdio_proxy import main as proxy_main
+
+    proxy_main(warm=warm)
+
+
+daemon_app = typer.Typer(help="本机后台进程：按需启动、空闲自动退出（通常不必手动管理）")
+app.add_typer(daemon_app, name="daemon")
+
+
+def _print_json(data: dict) -> None:
+    import json
+
+    typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+@daemon_app.command("start")
+def daemon_start():
+    """确保后台进程在跑且代码是最新的，等它就绪后输出状态 JSON。"""
+    from agent_memory.server import daemon
+
+    settings = get_settings()
+    try:
+        daemon.ensure_running(settings)
+    except daemon.DaemonError as e:
+        raise _fail(f"后台进程未就绪：{e}") from e
+    _print_json(daemon.status(settings))
+
+
+@daemon_app.command("stop")
+def daemon_stop():
+    """停掉后台进程（下次调用时会自动再拉起）。"""
+    from agent_memory.server import daemon
+
+    settings = get_settings()
+    try:
+        stopped = daemon.stop(settings)
+    except daemon.DaemonError as e:
+        raise _fail(str(e)) from e
+    _print_json({"stopped": stopped, **daemon.status(settings)})
+
+
+@daemon_app.command("status")
+def daemon_status():
+    """输出状态 JSON：running / stale（代码已改，下次调用时重启）/ stopped / foreign。"""
+    from agent_memory.server import daemon
+
+    info = daemon.status(get_settings())
+    _print_json(info)
+    if info["state"] == "foreign":
+        raise typer.Exit(code=1)
+
+
+@daemon_app.command("serve")
+def daemon_serve():
+    """在前台运行后台进程（调试用；Ctrl+C 结束）。"""
+    from agent_memory.server.http_server import main as serve_main
+
+    serve_main([])
+
+
+hook_app = typer.Typer(help="宿主 hook：从 stdin 读事件 JSON，按宿主约定输出；任何异常都放行")
+app.add_typer(hook_app, name="hook")
+
+
+def _run_hook(name: str, **kwargs) -> None:
+    import json
+    import sys
+
+    from agent_memory import hooks
+    from agent_memory.config import load_env
+
+    # Windows 上管道输出默认用系统区域编码（中文系统为 GBK），宿主按 UTF-8 读
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+    try:
+        # 按字节读再以 UTF-8 解码：宿主发的事件 JSON 是 UTF-8，系统区域编码（如 GBK）
+        # 解不开其中的中文路径，会把整条事件当成非法
+        raw = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+        payload = json.loads(raw) if raw.strip() else {}
+    except (ValueError, OSError):
+        payload = None
+    if not isinstance(payload, dict):
+        if name == "turn":
+            raise typer.Exit(0)  # 事件数据不可解析：不计数、不拦截
+        payload = {}
+    try:
+        result = getattr(hooks, name.replace("-", "_"))(payload, load_env(), **kwargs)
+    except Exception:
+        raise typer.Exit(0) from None  # fail-open
+    if result.stdout:
+        print(result.stdout)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr)
+    raise typer.Exit(result.exit_code)
+
+
+@hook_app.command("wm-inject")
+def hook_wm_inject(
+    agent: str | None = typer.Option(
+        None, "--agent", help="宿主名，决定 agent:<名字> scope（缺省 AGENT_MEMORY_AGENT_NAME）"
+    ),
+    once: bool = typer.Option(
+        False, "--once", help="每个会话只注入一次（挂在'用户提交消息'事件上时用）"
+    ),
+):
+    """会话开头注入 global + repo:<当前目录> + agent:<宿主> 的工作记忆。"""
+    _run_hook("wm-inject", agent=agent, once=once)
+
+
+@hook_app.command("surface")
+def hook_surface():
+    """用户提交消息时请后台进程判断要不要主动提醒；后台进程没在跑时拉起它、本次放行。"""
+    _run_hook("surface")
+
+
+@hook_app.command("turn")
+def hook_turn():
+    """每 N 轮以退出码 2 拦截一次本轮结束，注入记忆更新指令。"""
+    _run_hook("turn")

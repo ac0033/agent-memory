@@ -202,3 +202,52 @@ class TestEmbeddingMaxSeqLength:
     def test_non_positive_rejected(self):
         with pytest.raises(ValidationError):
             get_settings(env={"AGENT_MEMORY_EMBEDDING_MAX_SEQ_LENGTH": "0"})
+
+
+class TestDaemonIdleMinutes:
+    def test_default_and_override(self):
+        assert get_settings(env={}).daemon_idle_minutes == 30
+        assert get_settings(env={"AGENT_MEMORY_DAEMON_IDLE_MINUTES": "0"}).daemon_idle_minutes == 0
+
+    def test_negative_rejected(self):
+        with pytest.raises(ValidationError):
+            get_settings(env={"AGENT_MEMORY_DAEMON_IDLE_MINUTES": "-1"})
+
+
+class TestConfigFile:
+    """用户级配置文件：KEY=VALUE，环境变量优先；格式非法 fail-closed。"""
+
+    def test_file_values_used_and_env_wins(self, tmp_path, monkeypatch):
+        from agent_memory.config import load_env
+
+        cfg = tmp_path / "config.env"
+        cfg.write_text(
+            "# 注释\nAGENT_MEMORY_HTTP_PORT=9001\nAGENT_MEMORY_LLM_MODEL=\"m-file\"\n\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AGENT_MEMORY_CONFIG", str(cfg))
+        monkeypatch.setenv("AGENT_MEMORY_LLM_MODEL", "m-env")
+        monkeypatch.delenv("AGENT_MEMORY_HTTP_PORT", raising=False)
+        assert load_env()["AGENT_MEMORY_HTTP_PORT"] == "9001"
+        s = get_settings()
+        assert s.http_port == 9001
+        assert s.llm_model == "m-env"  # 环境变量优先，引号被去掉的文件值被覆盖
+
+    def test_missing_file_is_empty(self, tmp_path):
+        from agent_memory.config import read_config_file
+
+        assert read_config_file(tmp_path / "absent.env") == {}
+
+    def test_malformed_line_rejected_with_location(self, tmp_path):
+        from agent_memory.config import ConfigFileError, read_config_file
+
+        cfg = tmp_path / "config.env"
+        cfg.write_text("AGENT_MEMORY_HTTP_PORT=1\nnot a pair\n", encoding="utf-8")
+        with pytest.raises(ConfigFileError, match=":2:"):
+            read_config_file(cfg)
+
+    def test_explicit_env_ignores_file(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "config.env"
+        cfg.write_text("AGENT_MEMORY_HTTP_PORT=9001\n", encoding="utf-8")
+        monkeypatch.setenv("AGENT_MEMORY_CONFIG", str(cfg))
+        assert get_settings(env={}).http_port == 8765
