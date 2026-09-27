@@ -86,7 +86,7 @@ MCP tool 由 15 个增至 25 个；v0.2 字段全部可选，老数据、老渲�
 
 ### 中期结果（已被上面的正式结果取代；答题器模型不同，数字不能合并）
 
-完整对比没有跑完：DeepSeek 官方账户先是 402，改用的 token-plan 周额度又在 2026-09-14 14:32 左右耗尽（评委与答题器都在这个额度上，09-21 00:43 UTC 重置）。在额度耗尽前完成、确认未受影响的只有 mc-proactive-recall（K7、K8）test 切分的部分用例。中期报告：`benchmark-suite/results/2026-09-14-v02-interim-report.md`；补跑方案见 `benchmark-suite/results/README.md`。
+完整对比没有跑完：DeepSeek 官方账户先是 402，改用的 token-plan 周额度又在 2026-09-14 14:32 左右耗尽（评委与答题器都在这个额度上，09-21 00:43 UTC 重置）。在额度耗尽前完成、确认未受影响的只有 mc-proactive-recall（K7、K8）test 切分的部分用例。中期报告：`archive/docs/research/benchmark-suite/results/2026-09-14-v02-interim-report.md`（仓库根目录，已归档）；补跑方案见 `benchmark-suite/results/README.md`。
 
 | 指标（pr，test） | am_base | am_v2 | 说明 |
 |---|---|---|---|
